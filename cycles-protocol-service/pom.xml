@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.5</version>
+    </parent>
+    <groupId>io.runcycles</groupId>
+    <artifactId>cycles-protocol-service</artifactId>
+    <version>0.1.23</version>
+    <packaging>pom</packaging>
+    <name>Cycles Protocol Service</name>
+    <description>Cycles Protocol Service API v0.1.23</description>
+    <modules>
+        <module>cycles-protocol-service-model</module>
+        <module>cycles-protocol-service-data</module>
+        <module>cycles-protocol-service-api</module>
+    </modules>
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>redis.clients</groupId>
+                <artifactId>jedis</artifactId>
+                <version>5.1.0</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>2.3.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
