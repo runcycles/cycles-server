@@ -322,6 +322,8 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.notFound(message);
             case "RESERVATION_FINALIZED":
                 throw CyclesProtocolException.reservationFinalized("Reservation already finalized");
+            case "BUDGET_NOT_FOUND":
+                throw CyclesProtocolException.budgetNotFound("Incorrect budget owner scope");
             default:
                 throw new RuntimeException("Script error: " + error);
         }

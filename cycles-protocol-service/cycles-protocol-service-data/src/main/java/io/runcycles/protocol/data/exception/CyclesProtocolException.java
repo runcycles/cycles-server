@@ -40,4 +40,7 @@ public class CyclesProtocolException extends RuntimeException {
     public static CyclesProtocolException reservationFinalized(String scope) {
         return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_FINALIZED, "Reservation finalized: " + scope, 400);
     }
+    public static CyclesProtocolException budgetNotFound(String scope) {
+        return new CyclesProtocolException(Enums.ErrorCode.BUDGET_NOT_FOUND, "Budget not found for provided scope: " + scope, 400);
+    }
 }
