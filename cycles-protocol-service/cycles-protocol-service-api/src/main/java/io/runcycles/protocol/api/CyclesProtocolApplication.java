@@ -7,7 +7,7 @@ import org.springframework.context.annotation.ComponentScan;
 
 /** Cycles Protocol v0.1.23 - Main Application */
 @SpringBootApplication
-@ComponentScan(basePackages = "com.cycles.protocol")
+@ComponentScan(basePackages = "io.runcycles.protocol")
 public class CyclesProtocolApplication {
     private static final Logger LOG = LoggerFactory.getLogger(CyclesProtocolApplication.class);
     
