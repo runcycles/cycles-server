@@ -36,7 +36,7 @@ public class RedisReservationRepository {
             String reservationId = UUID.randomUUID().toString();
             List<String> affectedScopes = request.getAffectedScopes() != null ? 
                 request.getAffectedScopes() : scopeService.deriveScopes(request.getSubject());
-            LOG.info("Affectes scopes:affectedScopes={},derivedScopes={}",affectedScopes,scopeService.deriveScopes(request.getSubject()));
+            LOG.info("Affected scopes:affectedScopes={},derivedScopes={}",affectedScopes,scopeService.deriveScopes(request.getSubject()));
             // Build args for Lua script
             List<String> args = new ArrayList<>();
             args.add(reservationId);
@@ -324,6 +324,12 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.reservationFinalized("Reservation already finalized");
             case "BUDGET_NOT_FOUND":
                 throw CyclesProtocolException.budgetNotFound("Incorrect budget owner scope");
+            case "IDEMPOTENCY_MISMATCH":
+                throw CyclesProtocolException.idempotencyMismatch();
+            case "UNIT_MISMATCH":
+                throw CyclesProtocolException.unitMismatch();
+            case "RESERVATION_EXPIRED":
+                throw CyclesProtocolException.reservationExpired();
             default:
                 throw new RuntimeException("Script error: " + error);
         }
