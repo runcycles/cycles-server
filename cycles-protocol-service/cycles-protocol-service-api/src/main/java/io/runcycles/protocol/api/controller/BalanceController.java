@@ -23,10 +23,8 @@ public class BalanceController {
     @GetMapping
     @Operation(operationId = "queryBalances", summary = "Query budget balances")
     public ResponseEntity<BalanceQueryResponse> query(
-            @RequestHeader("X-Cycles-API-Key") String apiKey,
             @RequestParam(required = false) String tenant) {
         LOG.info("GET /v1/balances - tenant: {}", tenant);
-        // In production, derive tenant from API key
         return ResponseEntity.ok(new BalanceQueryResponse(repository.getBalances(tenant)));
     }
 }
