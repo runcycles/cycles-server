@@ -23,7 +23,6 @@ public class ApiKeyRepository {
     @Autowired
     private ObjectMapper objectMapper;
 
-
     public ApiKeyValidationResponse validate(String keySecret) {
         try (Jedis jedis = jedisPool.getResource()) {
             String prefix = extractPrefix(keySecret);
@@ -42,8 +41,12 @@ public class ApiKeyRepository {
             if (!verifyKey(keySecret, key.getKeyHash())) {
                 return ApiKeyValidationResponse.builder().valid(false).reason("INVALID_KEY").build();
             }
-            key.setLastUsedAt(Instant.now());
-            jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            if (key.getTenantId() == null || key.getTenantId().isBlank()){
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_OWNED_BY_TENANT").build();
+            }
+            //Not sure do we need such update on access
+            //key.setLastUsedAt(Instant.now());
+            //jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
             return ApiKeyValidationResponse.builder()
                     .valid(true)
                     .tenantId(key.getTenantId())

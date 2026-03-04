@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/v1/balances")
 @Tag(name = "Balances")
-public class BalanceController {
+public class BalanceController extends BaseController{
     private static final Logger LOG = LoggerFactory.getLogger(BalanceController.class);
     
     @Autowired
@@ -25,6 +25,7 @@ public class BalanceController {
     public ResponseEntity<BalanceQueryResponse> query(
             @RequestParam(required = false) String tenant) {
         LOG.info("GET /v1/balances - tenant: {}", tenant);
+        authorizeTenant(tenant);
         return ResponseEntity.ok(new BalanceQueryResponse(repository.getBalances(tenant)));
     }
 }

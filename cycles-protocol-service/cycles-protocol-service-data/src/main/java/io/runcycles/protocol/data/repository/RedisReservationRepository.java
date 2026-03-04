@@ -305,7 +305,17 @@ public class RedisReservationRepository {
             return balances;
         }
     }
-    
+    public String findReservationTenantById (String reservationId){
+        try(Jedis jedis = jedisPool.getResource()){
+            String key = "reservation:res_"+reservationId;
+            String tenant =jedis.hget(key,"tenant") ;
+            LOG.info("Resolved reservation tenant for: key={}, tenant={}",key,tenant);
+            return tenant ;
+        }catch (Exception e){
+            LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
+            return null;
+        }
+    }
     private void handleScriptError(Map<String, Object> response) {
         String error = (String) response.get("error");
         String message = response.getOrDefault("message", error).toString();

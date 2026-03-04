@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/v1/reservations")
 @Tag(name = "Reservations")
-public class ReservationController {
+public class ReservationController extends BaseController{
     private static final Logger LOG = LoggerFactory.getLogger(ReservationController.class);
     
     @Autowired
@@ -25,11 +25,10 @@ public class ReservationController {
     
     @PostMapping
     @Operation(operationId = "createReservation", summary = "Create budget reservation")
-    public ResponseEntity<ReservationCreateResponse> create(
-            @RequestHeader("X-Cycles-API-Key") String apiKey,
-            @Valid @RequestBody ReservationCreateRequest request) {
+    public ResponseEntity<ReservationCreateResponse> create(@Valid @RequestBody ReservationCreateRequest request) {
         LOG.info("POST /v1/reservations - tenant: {}", request.getSubject().getTenant());
-        String tenant = request.getSubject().getTenant(); // In production, derive from API key
+        String tenant = request.getSubject().getTenant();
+        authorizeTenant(tenant);
         ReservationCreateResponse response = repository.createReservation(request, tenant);
         return ResponseEntity.ok(response);
     }
@@ -40,6 +39,8 @@ public class ReservationController {
             @PathVariable("reservation_id") String reservationId,
             @Valid @RequestBody CommitRequest request) {
         LOG.info("POST /v1/reservations/{}/commit", reservationId);
+        String tenant = repository.findReservationTenantById(reservationId) ;
+        authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request);
         return ResponseEntity.ok(response);
     }
@@ -50,6 +51,8 @@ public class ReservationController {
             @PathVariable("reservation_id") String reservationId,
             @Valid @RequestBody ReleaseRequest request) {
         LOG.info("POST /v1/reservations/{}/release", reservationId);
+        String tenant = repository.findReservationTenantById(reservationId) ;
+        authorizeTenant(tenant);
         ReleaseResponse response = repository.releaseReservation(reservationId, request);
         return ResponseEntity.ok(response);
     }
@@ -60,7 +63,8 @@ public class ReservationController {
             @PathVariable("reservation_id") String reservationId,
             @Valid @RequestBody ReservationExtendRequest request) {
         LOG.info("POST /v1/reservations/{}/extend", reservationId);
-
+        String tenant = repository.findReservationTenantById(reservationId) ;
+        authorizeTenant(tenant);
         ReservationExtendResponse response = repository.extendReservation(reservationId, request);
         return ResponseEntity.ok(response);
     }
@@ -68,16 +72,11 @@ public class ReservationController {
     @GetMapping
     @Operation(operationId = "listReservations", summary = "List reservations")
     public ResponseEntity<ReservationListResponse> list(
-            @RequestParam(required = false) String tenant,
+            @RequestParam(required = true) String tenant,
             @RequestParam(defaultValue = "50") int limit) {
         LOG.info("GET /v1/reservations - tenant: {}", tenant);
         // In production, derive tenant from API key and validate
-
-        ApiKeyAuthentication auth = (ApiKeyAuthentication) SecurityContextHolder
-                        .getContext()
-                        .getAuthentication();
-        LOG.info("Authorized tenant by API key: auth={}",auth.getTenantId());
-
+        authorizeTenant(tenant);
         return ResponseEntity.ok(new ReservationListResponse(
             repository.listReservations(tenant, limit), false));
     }
