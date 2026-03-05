@@ -14,6 +14,19 @@ local idempotency_key = ARGV[8]
 local scope_path = ARGV[9]
 local tenant = ARGV[10]
 
+if idempotency_key ~= "" and idempotency_key ~= nil then
+    local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
+    local existing_res_id = redis.call('GET', idem_key)
+
+    if existing_res_id then
+        -- Found existing reservation identifier - return it immediately
+        --return redis.call('HGET', 'reservation:res_' .. existing_res_id, 'response_json')
+        return cjson.encode({
+            reservation_id = existing_res_id,
+            idempotency_key = idempotency_key,
+        })
+    end
+end
 -- Parse affected scopes
 local affected_scopes = {}
 for i = 11, #ARGV do
@@ -79,12 +92,21 @@ redis.call('HMSET', reservation_key,
     'idempotency_key', idempotency_key
 )
 
--- Set TTL on reservation
+-- Set TTL on reservation, PEXPIRE means that after ttl REDIS will remove the record itself
 -- redis.call('PEXPIRE', reservation_key, ttl_ms + grace_ms)
 redis.call('HSET', reservation_key, 'expires_at', expires_at)
 
 -- Add to reservation index
 redis.call('ZADD', 'reservation:ttl', expires_at, reservation_id)
+
+-- After successful reservation, store idempotency mapping
+if idempotency_key ~= "" and idempotency_key ~= nil then
+    local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
+    -- Store the entire JSON response
+    redis.call('SET', idem_key, reservation_id)
+    -- Setting TTL as reservation that actually expires and removes the record
+    redis.call('PEXPIRE', idem_key, ttl_ms + grace_ms)
+end
 
 return cjson.encode({
     reservation_id = reservation_id,
