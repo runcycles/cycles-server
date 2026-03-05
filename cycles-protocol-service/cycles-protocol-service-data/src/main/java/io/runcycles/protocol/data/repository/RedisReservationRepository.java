@@ -179,56 +179,66 @@ public class RedisReservationRepository {
             throw new RuntimeException(e);
         }
     }
-    
+
     public List<ReservationSummary> listReservations(String tenant, int limit) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
             String cursor = "0";
-            
+
             do {
                 ScanResult<String> scan = jedis.scan(cursor, params);
-                for (String key : scan.getResult()) {
-                    try {
-                        LOG.info("Reservation: key={},jedis.type(key)={}",key,jedis.type(key));
-                        String reservationTenant = jedis.hget(key, "tenant");
-                        LOG.info("Reservation: tenant={}",tenant);
-                        if (!"hash".equals(jedis.type(key))) continue;
-                        //String reservationTenant = jedis.hget(key, "tenant");
+                List<String> keys = scan.getResult();
 
-                        if (tenant.equals(reservationTenant)) {
-                            String reservationId = jedis.hget(key, "reservation_id");
-                            String state = jedis.hget(key, "state");
-                            String subjectJson = jedis.hget(key, "subject_json");
-                            String actionJson = jedis.hget(key, "action_json");
-                            long estimateAmount = Long.parseLong(jedis.hget(key, "estimate_amount"));
-                            String estimateUnit = jedis.hget(key, "estimate_unit");
-                            long createdAt = Long.parseLong(jedis.hget(key, "created_at"));
-                            long expiresAt = Long.parseLong(jedis.hget(key, "expires_at"));
-                            
-                            result.add(ReservationSummary.builder()
-                                .reservationId(reservationId)
-                                .state(Enums.ReservationState.valueOf(state))
-                                .subject(objectMapper.readValue(subjectJson, Subject.class))
-                                .action(objectMapper.readValue(actionJson, Action.class))
-                                .estimate(new Amount(Enums.UnitEnum.valueOf(estimateUnit), estimateAmount))
-                                .createdAt(Instant.ofEpochMilli(createdAt))
-                                .expiresAt(Instant.ofEpochMilli(expiresAt))
+                if (keys.isEmpty()) {
+                    cursor = scan.getCursor();
+                    continue;
+                }
+
+                // ✅ Pipeline: Batch all HGETALL calls
+                Pipeline pipeline = jedis.pipelined();
+                Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+
+                for (String key : keys) {
+                    responses.put(key, pipeline.hgetAll(key));
+                }
+
+                pipeline.sync(); // Execute all at once!
+
+                // Process results
+                for (String key : keys) {
+                    try {
+                        Map<String, String> fields = responses.get(key).get();
+
+                        if (fields.isEmpty()) continue;
+
+                        String reservationTenant = fields.get("tenant");
+                        if (!tenant.equals(reservationTenant)) continue;
+
+                        result.add(ReservationSummary.builder()
+                                .reservationId(fields.get("reservation_id"))
+                                .state(Enums.ReservationState.valueOf(fields.get("state")))
+                                .subject(objectMapper.readValue(fields.get("subject_json"), Subject.class))
+                                .action(objectMapper.readValue(fields.get("action_json"), Action.class))
+                                .estimate(new Amount(
+                                        Enums.UnitEnum.valueOf(fields.get("estimate_unit")),
+                                        Long.parseLong(fields.get("estimate_amount"))
+                                ))
+                                .createdAt(Instant.ofEpochMilli(Long.parseLong(fields.get("created_at"))))
+                                .expiresAt(Instant.ofEpochMilli(Long.parseLong(fields.get("expires_at"))))
                                 .build());
-                            
-                            if (result.size() >= limit) break;
-                        }
+
+                        if (result.size() >= limit) break;
+
                     } catch (Exception e) {
                         LOG.warn("Failed to parse reservation: {}", key, e);
                     }
                 }
+
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor) && result.size() < limit);
-            
+
             return result;
-        } catch (Exception e) {
-            LOG.error("Failed to acquire reservations:tenant={}",tenant,e);
-            throw new RuntimeException(e);
         }
     }
     
