@@ -52,4 +52,7 @@ public class CyclesProtocolException extends RuntimeException {
     public static CyclesProtocolException reservationExpired() {
         return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_EXPIRED, "Provided reservation has already expired", 400);
     }
+    public static CyclesProtocolException reservationExpirationNotFound() {
+        return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_EXPIRATION_NOT_FOUND, "Provided reservation has does not have expiration time", 400);
+    }
 }

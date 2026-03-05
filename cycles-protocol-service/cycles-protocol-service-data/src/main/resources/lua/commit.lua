@@ -48,6 +48,20 @@ if actual_unit ~= estimate_unit then
     return cjson.encode({error = "UNIT_MISMATCH"})
 end
 
+--expiration verify logic--
+local current_expires_at = redis.call('HGET', reservation_key, 'expires_at')
+if not current_expires_at then
+    return cjson.encode({error = "RESERVATION_EXPIRATION_NOT_FOUND"})
+end
+current_expires_at = tonumber(current_expires_at)
+
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+
+if now > current_expires_at then
+    return cjson.encode({error = "RESERVATION_EXPIRED"})
+end
+
 -- Parse affected scopes
 local affected_scopes = cjson.decode(affected_scopes_json)
 
@@ -128,12 +142,12 @@ for _, scope in ipairs(affected_scopes) do
 end
 
 -- Update reservation
-local now = tonumber(redis.call('TIME')[1]) * 1000
+local nowCommit = tonumber(redis.call('TIME')[1]) * 1000
 redis.call('HMSET', reservation_key,
     'state', 'COMMITTED',
     'charged_amount', charged_amount,
     'debt_incurred', total_debt_incurred,
-    'committed_at', now,
+    'committed_at', nowCommit,
     'committed_idempotency_key', idempotency_key
 )
 

@@ -1,8 +1,6 @@
 package io.runcycles.protocol.api.controller;
 
-import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
-import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.*;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -10,7 +8,6 @@ import jakarta.validation.Valid;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 /** Cycles Protocol v0.1.23 - Reservation Controller */
@@ -75,7 +72,6 @@ public class ReservationController extends BaseController{
             @RequestParam(required = true) String tenant,
             @RequestParam(defaultValue = "50") int limit) {
         LOG.info("GET /v1/reservations - tenant: {}", tenant);
-        // In production, derive tenant from API key and validate
         authorizeTenant(tenant);
         return ResponseEntity.ok(new ReservationListResponse(
             repository.listReservations(tenant, limit), false));

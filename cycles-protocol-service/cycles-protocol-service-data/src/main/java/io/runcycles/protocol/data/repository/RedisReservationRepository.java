@@ -339,6 +339,8 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.unitMismatch();
             case "RESERVATION_EXPIRED":
                 throw CyclesProtocolException.reservationExpired();
+            case "RESERVATION_EXPIRATION_NOT_FOUND":
+                throw CyclesProtocolException.reservationExpirationNotFound();
             default:
                 throw new RuntimeException("Script error: " + error);
         }
