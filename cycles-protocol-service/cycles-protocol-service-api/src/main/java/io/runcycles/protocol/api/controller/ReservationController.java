@@ -88,11 +88,13 @@ public class ReservationController extends BaseController{
     @GetMapping
     @Operation(operationId = "listReservations", summary = "List reservations")
     public ResponseEntity<ReservationListResponse> list(
-            @RequestParam(required = true) String tenant,
+            @RequestParam(required = false) String tenant,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String cursor) {
-        LOG.info("GET /v1/reservations - tenant: {}", tenant);
-        authorizeTenant(tenant);
-        return ResponseEntity.ok(repository.listReservations(tenant, limit, cursor));
+        // Spec: if tenant provided it must match auth; if omitted, use auth tenant
+        String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
+        LOG.info("GET /v1/reservations - tenant: {}", effectiveTenant);
+        authorizeTenant(effectiveTenant);
+        return ResponseEntity.ok(repository.listReservations(effectiveTenant, limit, cursor));
     }
 }

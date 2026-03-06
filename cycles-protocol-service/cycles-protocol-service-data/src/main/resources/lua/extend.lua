@@ -17,13 +17,17 @@ if state ~= "ACTIVE" then
 end
 
 local current_expires_at = tonumber(redis.call('HGET', reservation_key, 'expires_at'))
-local grace_ms = tonumber(redis.call('HGET', reservation_key, 'grace_ms'))
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+
+-- Spec NORMATIVE: extend only allowed when server time <= expires_at_ms
+if now > current_expires_at then
+    return cjson.encode({error = "RESERVATION_EXPIRED"})
+end
+
 local new_expires_at = current_expires_at + extend_by_ms
-local now = tonumber(redis.call('TIME')[1]) * 1000
 
 redis.call('HSET', reservation_key, 'expires_at', new_expires_at)
---redis.call('PEXPIRE', reservation_key, (new_expires_at - now) + grace_ms)
-
 redis.call('ZADD', 'reservation:ttl', new_expires_at, reservation_id)
 
 return cjson.encode({

@@ -10,5 +10,5 @@ import lombok.*;
 public class CommitRequest {
     @NotNull @Valid @JsonProperty("actual") private Amount actual;
     @NotNull @Size(min = 1, max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
-    @JsonProperty("standard_metrics") private StandardMetrics standardMetrics;
+    @JsonProperty("metrics") private StandardMetrics metrics;
 }

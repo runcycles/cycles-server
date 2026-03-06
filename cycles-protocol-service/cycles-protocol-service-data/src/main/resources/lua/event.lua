@@ -18,7 +18,7 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         return cjson.encode({
             event_id = existing_event_id,
             idempotency_key = idempotency_key,
-            status = "RECORDED"
+            status = "APPLIED"
         })
     end
 end
@@ -85,6 +85,5 @@ end
 
 return cjson.encode({
     event_id = event_id,
-    status = "RECORDED",
-    charged = amount
+    status = "APPLIED"
 })

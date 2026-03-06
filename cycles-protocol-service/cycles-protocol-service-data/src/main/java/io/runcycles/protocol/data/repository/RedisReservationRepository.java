@@ -46,7 +46,7 @@ public class RedisReservationRepository {
             args.add(String.valueOf(request.getEstimate().getAmount()));
             args.add(request.getEstimate().getUnit().name());
             args.add(String.valueOf(request.getTtlMs() != null ? request.getTtlMs() : 60000));
-            args.add(String.valueOf(request.getGraceMs() != null ? request.getGraceMs() : 5000));
+            args.add(String.valueOf(request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000));
             args.add(request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "");
             args.add(scopePath);
             args.add(tenant);
@@ -96,6 +96,10 @@ public class RedisReservationRepository {
         LOG.info("Committing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
+            // Pre-fetch estimate to compute released amount (spec: "Amount returned from over-reservation")
+            String reservationKey = "reservation:res_" + reservationId;
+            String estimateAmountStr = jedis.hget(reservationKey, "estimate_amount");
+
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getActual().getAmount()),
@@ -112,9 +116,18 @@ public class RedisReservationRepository {
 
             long chargedAmount = ((Number) response.get("charged")).longValue();
 
+            Amount released = null;
+            if (estimateAmountStr != null) {
+                long est = Long.parseLong(estimateAmountStr);
+                if (chargedAmount < est) {
+                    released = new Amount(request.getActual().getUnit(), est - chargedAmount);
+                }
+            }
+
             return CommitResponse.builder()
                 .status("COMMITTED")
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
+                .released(released)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
@@ -305,8 +318,10 @@ public class RedisReservationRepository {
                         long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
                         boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
 
+                        // spec requires both scope and scope_path; trueScope is the full canonical path
                         balances.add(Balance.builder()
                             .scope(trueScope)
+                            .scopePath(trueScope)
                             .remaining(new SignedAmount(unit, remainingVal))
                             .reserved(new Amount(unit, reservedVal))
                             .spent(new Amount(unit, spentVal))
@@ -347,8 +362,7 @@ public class RedisReservationRepository {
         LOG.info("Evaluating decision for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> affectedScopes = request.getAffectedScopes() != null ?
-                request.getAffectedScopes() : scopeService.deriveScopes(request.getSubject());
+            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
 
             long estimateAmount = request.getEstimate().getAmount();
             String unit = request.getEstimate().getUnit().name();
@@ -359,14 +373,14 @@ public class RedisReservationRepository {
 
                 if (budget == null || budget.isEmpty()) {
                     return DecisionResponse.builder()
-                        .decision("REJECT")
+                        .decision("DENY")
                         .reasonCode("BUDGET_NOT_FOUND")
                         .build();
                 }
 
                 if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
                     return DecisionResponse.builder()
-                        .decision("REJECT")
+                        .decision("DENY")
                         .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
                         .build();
                 }
@@ -374,7 +388,7 @@ public class RedisReservationRepository {
                 long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
                 if (debt > 0) {
                     return DecisionResponse.builder()
-                        .decision("REJECT")
+                        .decision("DENY")
                         .reasonCode("DEBT_OUTSTANDING")
                         .build();
                 }
@@ -382,7 +396,7 @@ public class RedisReservationRepository {
                 long remaining = Long.parseLong(budget.getOrDefault("remaining", "0"));
                 if (remaining < estimateAmount) {
                     return DecisionResponse.builder()
-                        .decision("REJECT")
+                        .decision("DENY")
                         .reasonCode("BUDGET_EXCEEDED")
                         .build();
                 }
@@ -402,16 +416,15 @@ public class RedisReservationRepository {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String eventId = UUID.randomUUID().toString();
-            List<String> affectedScopes = request.getAffectedScopes() != null ?
-                request.getAffectedScopes() : scopeService.deriveScopes(request.getSubject());
+            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
             String scopePath = affectedScopes.get(affectedScopes.size() - 1);
 
             List<String> args = new ArrayList<>();
             args.add(eventId);
             args.add(objectMapper.writeValueAsString(request.getSubject()));
             args.add(objectMapper.writeValueAsString(request.getAction()));
-            args.add(String.valueOf(request.getAmount().getAmount()));
-            args.add(request.getAmount().getUnit().name());
+            args.add(String.valueOf(request.getActual().getAmount()));
+            args.add(request.getActual().getUnit().name());
             args.add(request.getIdempotencyKey());
             args.add(scopePath);
             args.add(tenant);
@@ -425,12 +438,13 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
+            // On idempotency hit, Lua returns existing event_id
+            String responseEventId = response.containsKey("event_id") ?
+                (String) response.get("event_id") : eventId;
+
             return EventCreateResponse.builder()
-                .eventId(eventId)
-                .status("RECORDED")
-                .charged(request.getAmount())
-                .scopePath(scopePath)
-                .affectedScopes(affectedScopes)
+                .status("APPLIED")
+                .eventId(responseEventId)
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
