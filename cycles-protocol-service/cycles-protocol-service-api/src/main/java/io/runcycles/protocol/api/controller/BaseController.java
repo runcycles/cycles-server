@@ -29,4 +29,11 @@ abstract public class BaseController {
         }
         LOG.info("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",tenantFromRequest,tenantFromAuthorization);
     }
+
+    public void validateIdempotencyHeader(String headerKey, String bodyKey) {
+        if (headerKey != null && bodyKey != null && !headerKey.equals(bodyKey)) {
+            throw new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH,
+                "X-Idempotency-Key header does not match idempotency_key in request body", 400);
+        }
+    }
 }

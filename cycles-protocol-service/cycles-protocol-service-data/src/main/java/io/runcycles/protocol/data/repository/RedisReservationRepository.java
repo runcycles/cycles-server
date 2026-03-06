@@ -26,6 +26,7 @@ public class RedisReservationRepository {
     @Autowired @Qualifier("commitLuaScript") private String commitScript;
     @Autowired @Qualifier("releaseLuaScript") private String releaseScript;
     @Autowired @Qualifier("extendLuaScript") private String extendScript;
+    @Autowired @Qualifier("eventLuaScript") private String eventScript;
 
     public ReservationCreateResponse createReservation(ReservationCreateRequest request, String tenant) {
         LOG.info("Creating reservation for tenant: {}", tenant);
@@ -38,7 +39,6 @@ public class RedisReservationRepository {
             String scopePath = affectedScopes.get(affectedScopes.size() - 1);
             String overagePolicy = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "REJECT";
 
-            // Build args for Lua script
             List<String> args = new ArrayList<>();
             args.add(reservationId);
             args.add(objectMapper.writeValueAsString(request.getSubject()));
@@ -67,7 +67,7 @@ public class RedisReservationRepository {
                 .affectedScopes(affectedScopes)
                 .scopePath(scopePath)
                 .reserved(request.getEstimate())
-                .expiresAtMs((Long) response.get("expires_at"))
+                .expiresAtMs(((Number) response.get("expires_at")).longValue())
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
@@ -101,12 +101,10 @@ public class RedisReservationRepository {
                 .status("COMMITTED")
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .build();
-        }
-        catch (CyclesProtocolException e){
+        } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
             throw e;
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             LOG.error("Failed to commit reservation", e);
             throw new RuntimeException(e);
         }
@@ -116,7 +114,6 @@ public class RedisReservationRepository {
         LOG.info("Releasing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            // Fetch estimate before releasing so we can report released amount
             String reservationKey = "reservation:res_" + reservationId;
             String estimateAmountStr = jedis.hget(reservationKey, "estimate_amount");
             String estimateUnitStr = jedis.hget(reservationKey, "estimate_unit");
@@ -149,8 +146,7 @@ public class RedisReservationRepository {
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to release reservation:reservationId={},req={}",reservationId,request,e);
             throw e;
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             LOG.error("Failed to release reservation:reservationId={},req={}",reservationId,request,e);
             throw new RuntimeException(e);
         }
@@ -180,128 +176,109 @@ public class RedisReservationRepository {
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to extend reservation:reservationId={},req={}",reservationId,request,e);
             throw e;
-        }
-        catch (Exception e) {
+        } catch (Exception e) {
             LOG.error("Failed to extend reservation: reservationId={},request={},msg={}",reservationId,request,e.getMessage(),e);
             throw new RuntimeException(e);
         }
     }
 
-    public List<ReservationSummary> listReservations(String tenant, int limit) {
+    public ReservationSummary getReservationById(String reservationId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "reservation:res_" + reservationId;
+            Map<String, String> fields = jedis.hgetAll(key);
+            if (fields == null || fields.isEmpty()) {
+                throw CyclesProtocolException.notFound(reservationId);
+            }
+            return buildReservationSummary(fields);
+        } catch (CyclesProtocolException e) {
+            throw e;
+        } catch (Exception e) {
+            LOG.error("Failed to get reservation by id: {}", reservationId, e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    public ReservationListResponse listReservations(String tenant, int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
-            String cursor = "0";
+            String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
 
             do {
                 ScanResult<String> scan = jedis.scan(cursor, params);
                 List<String> keys = scan.getResult();
 
-                if (keys.isEmpty()) {
-                    cursor = scan.getCursor();
-                    continue;
-                }
+                if (!keys.isEmpty()) {
+                    Pipeline pipeline = jedis.pipelined();
+                    Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+                    for (String key : keys) {
+                        responses.put(key, pipeline.hgetAll(key));
+                    }
+                    pipeline.sync();
 
-                // Pipeline: Batch all HGETALL calls
-                Pipeline pipeline = jedis.pipelined();
-                Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+                    for (String key : keys) {
+                        try {
+                            Map<String, String> fields = responses.get(key).get();
+                            if (fields.isEmpty()) continue;
+                            if (!tenant.equals(fields.get("tenant"))) continue;
 
-                for (String key : keys) {
-                    responses.put(key, pipeline.hgetAll(key));
-                }
+                            result.add(buildReservationSummary(fields));
 
-                pipeline.sync();
-
-                // Process results
-                for (String key : keys) {
-                    try {
-                        Map<String, String> fields = responses.get(key).get();
-
-                        if (fields.isEmpty()) continue;
-
-                        String reservationTenant = fields.get("tenant");
-                        if (!tenant.equals(reservationTenant)) continue;
-
-                        String estimateUnitStr = fields.get("estimate_unit");
-                        Enums.UnitEnum unit = Enums.UnitEnum.valueOf(estimateUnitStr);
-                        long estimateAmount = Long.parseLong(fields.get("estimate_amount"));
-
-                        String affectedScopesJson = fields.get("affected_scopes");
-                        List<String> affectedScopes = affectedScopesJson != null
-                            ? objectMapper.readValue(affectedScopesJson, List.class)
-                            : Collections.emptyList();
-
-                        result.add(ReservationSummary.builder()
-                                .reservationId(fields.get("reservation_id"))
-                                .status(Enums.ReservationState.valueOf(fields.get("state")))
-                                .subject(objectMapper.readValue(fields.get("subject_json"), Subject.class))
-                                .action(objectMapper.readValue(fields.get("action_json"), Action.class))
-                                .reserved(new Amount(unit, estimateAmount))
-                                .createdAtMs(Long.parseLong(fields.get("created_at")))
-                                .expiresAtMs(Long.parseLong(fields.get("expires_at")))
-                                .scopePath(fields.get("scope_path"))
-                                .affectedScopes(affectedScopes)
-                                .build());
-
-                        if (result.size() >= limit) break;
-
-                    } catch (Exception e) {
-                        LOG.warn("Failed to parse reservation: {}", key, e);
+                            if (result.size() >= limit) {
+                                String nextCursor = scan.getCursor();
+                                if ("0".equals(nextCursor)) nextCursor = null;
+                                return ReservationListResponse.builder()
+                                    .reservations(result)
+                                    .hasMore(nextCursor != null)
+                                    .nextCursor(nextCursor)
+                                    .build();
+                            }
+                        } catch (Exception e) {
+                            LOG.warn("Failed to parse reservation: {}", key, e);
+                        }
                     }
                 }
 
                 cursor = scan.getCursor();
-            } while (!"0".equals(cursor) && result.size() < limit);
+            } while (!"0".equals(cursor));
 
-            return result;
+            return ReservationListResponse.builder()
+                .reservations(result)
+                .hasMore(false)
+                .nextCursor(null)
+                .build();
         }
     }
 
-    public List<Balance> getBalances(String tenant) {
+    public BalanceQueryResponse getBalances(String tenant, String workspace, String app,
+                                            String workflow, String agent, String toolset,
+                                            int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("budget:*").count(100);
             List<Balance> balances = new ArrayList<>();
-            String cursor = "0";
+            String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
 
             do {
                 ScanResult<String> scan = jedis.scan(cursor, params);
                 for (String key : scan.getResult()) {
                     try {
-                        LOG.info("Processing: key={}",key);
-                        // Check key type before attempting to read
                         String keyType = jedis.type(key);
+                        if (!"hash".equals(keyType)) continue;
 
-                        if ("none".equals(keyType)) {
-                            LOG.debug("Key {} does not exist, skipping", key);
-                            continue;
-                        }
-
-                        if (!"hash".equals(keyType)) {
-                            LOG.warn("Expected hash type but found '{}' for key: {}", keyType, key);
-                            continue;
-                        }
-
-                        // Parse key structure: budget:tenant:<scope>:<unit>
-                        String[] keyParts = key.split(":", 4);
-                        if (keyParts.length < 4) {
-                            LOG.warn("Invalid budget key format: {}", key);
-                            continue;
-                        }
-
-                        String scope = keyParts[2];
-
-                        // Filter by tenant
-                        if (tenant == null || !scope.contains(tenant)) {
-                            continue;
-                        }
-
-                        // Read budget data as hash
                         Map<String, String> budget = jedis.hgetAll(key);
-                        if (budget.isEmpty()) {
-                            LOG.debug("Empty hash for key: {}", key);
-                            continue;
-                        }
+                        if (budget.isEmpty()) continue;
+
                         String trueScope = budget.get("scope");
+                        if (trueScope == null) continue;
+
+                        // Filter by tenant and optional subject fields
+                        if (!trueScope.contains("tenant:" + tenant)) continue;
+                        if (workspace != null && !trueScope.contains("workspace:" + workspace)) continue;
+                        if (app != null && !trueScope.contains("app:" + app)) continue;
+                        if (workflow != null && !trueScope.contains("workflow:" + workflow)) continue;
+                        if (agent != null && !trueScope.contains("agent:" + agent)) continue;
+                        if (toolset != null && !trueScope.contains("toolset:" + toolset)) continue;
+
                         String trueUnitsStr = budget.get("unit");
                         Enums.UnitEnum unit = Enums.UnitEnum.valueOf(trueUnitsStr);
 
@@ -313,7 +290,6 @@ public class RedisReservationRepository {
                         long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
                         boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
 
-                        // Build Balance object using Amount/SignedAmount per spec
                         balances.add(Balance.builder()
                             .scope(trueScope)
                             .remaining(new SignedAmount(unit, remainingVal))
@@ -325,6 +301,16 @@ public class RedisReservationRepository {
                             .isOverLimit(isOverLimit ? true : null)
                             .build());
 
+                        if (balances.size() >= limit) {
+                            String nextCursor = scan.getCursor();
+                            if ("0".equals(nextCursor)) nextCursor = null;
+                            return BalanceQueryResponse.builder()
+                                .balances(balances)
+                                .hasMore(nextCursor != null)
+                                .nextCursor(nextCursor)
+                                .build();
+                        }
+
                     } catch (IllegalArgumentException e) {
                         LOG.warn("Invalid enum value in budget key: {}", key, e);
                     } catch (Exception e) {
@@ -334,20 +320,144 @@ public class RedisReservationRepository {
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor));
 
-            return balances;
+            return BalanceQueryResponse.builder()
+                .balances(balances)
+                .hasMore(false)
+                .nextCursor(null)
+                .build();
         }
     }
 
-    public String findReservationTenantById (String reservationId){
-        try(Jedis jedis = jedisPool.getResource()){
-            String key = "reservation:res_"+reservationId;
-            String tenant =jedis.hget(key,"tenant");
+    public DecisionResponse decide(DecisionRequest request, String tenant) {
+        LOG.info("Evaluating decision for tenant: {}", tenant);
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> affectedScopes = request.getAffectedScopes() != null ?
+                request.getAffectedScopes() : scopeService.deriveScopes(request.getSubject());
+
+            long estimateAmount = request.getEstimate().getAmount();
+            String unit = request.getEstimate().getUnit().name();
+
+            for (String scope : affectedScopes) {
+                String budgetKey = "budget:" + scope + ":" + unit;
+                Map<String, String> budget = jedis.hgetAll(budgetKey);
+
+                if (budget == null || budget.isEmpty()) {
+                    return DecisionResponse.builder()
+                        .decision("REJECT")
+                        .reasonCode("BUDGET_NOT_FOUND")
+                        .build();
+                }
+
+                if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
+                    return DecisionResponse.builder()
+                        .decision("REJECT")
+                        .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
+                        .build();
+                }
+
+                long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
+                if (debt > 0) {
+                    return DecisionResponse.builder()
+                        .decision("REJECT")
+                        .reasonCode("DEBT_OUTSTANDING")
+                        .build();
+                }
+
+                long remaining = Long.parseLong(budget.getOrDefault("remaining", "0"));
+                if (remaining < estimateAmount) {
+                    return DecisionResponse.builder()
+                        .decision("REJECT")
+                        .reasonCode("BUDGET_EXCEEDED")
+                        .build();
+                }
+            }
+
+            return DecisionResponse.builder()
+                .decision("ALLOW")
+                .build();
+        } catch (Exception e) {
+            LOG.error("Failed to evaluate decision", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    public EventCreateResponse createEvent(EventCreateRequest request, String tenant) {
+        LOG.info("Creating event for tenant: {}", tenant);
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            String eventId = UUID.randomUUID().toString();
+            List<String> affectedScopes = request.getAffectedScopes() != null ?
+                request.getAffectedScopes() : scopeService.deriveScopes(request.getSubject());
+            String scopePath = affectedScopes.get(affectedScopes.size() - 1);
+
+            List<String> args = new ArrayList<>();
+            args.add(eventId);
+            args.add(objectMapper.writeValueAsString(request.getSubject()));
+            args.add(objectMapper.writeValueAsString(request.getAction()));
+            args.add(String.valueOf(request.getAmount().getAmount()));
+            args.add(request.getAmount().getUnit().name());
+            args.add(request.getIdempotencyKey());
+            args.add(scopePath);
+            args.add(tenant);
+            args.addAll(affectedScopes);
+
+            Object result = jedis.eval(eventScript, 0, args.toArray(new String[0]));
+            Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
+            LOG.info("Response from event script: {}", response);
+
+            if (response.containsKey("error")) {
+                handleScriptError(response);
+            }
+
+            return EventCreateResponse.builder()
+                .eventId(eventId)
+                .status("RECORDED")
+                .charged(request.getAmount())
+                .scopePath(scopePath)
+                .affectedScopes(affectedScopes)
+                .build();
+        } catch (CyclesProtocolException e) {
+            throw e;
+        } catch (Exception e) {
+            LOG.error("Failed to create event", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    public String findReservationTenantById(String reservationId) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "reservation:res_" + reservationId;
+            String tenant = jedis.hget(key, "tenant");
             LOG.info("Resolved reservation tenant for: key={}, tenant={}",key,tenant);
             return tenant;
-        }catch (Exception e){
+        } catch (Exception e) {
             LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
             return null;
         }
+    }
+
+    private ReservationSummary buildReservationSummary(Map<String, String> fields) throws Exception {
+        String estimateUnitStr = fields.get("estimate_unit");
+        Enums.UnitEnum unit = Enums.UnitEnum.valueOf(estimateUnitStr);
+        long estimateAmount = Long.parseLong(fields.get("estimate_amount"));
+
+        String affectedScopesJson = fields.get("affected_scopes");
+        List<String> affectedScopes = affectedScopesJson != null
+            ? objectMapper.readValue(affectedScopesJson, List.class)
+            : Collections.emptyList();
+
+        return ReservationSummary.builder()
+            .reservationId(fields.get("reservation_id"))
+            .status(Enums.ReservationState.valueOf(fields.get("state")))
+            .subject(objectMapper.readValue(fields.get("subject_json"), Subject.class))
+            .action(objectMapper.readValue(fields.get("action_json"), Action.class))
+            .reserved(new Amount(unit, estimateAmount))
+            .createdAtMs(Long.parseLong(fields.get("created_at")))
+            .expiresAtMs(Long.parseLong(fields.get("expires_at")))
+            .scopePath(fields.get("scope_path"))
+            .affectedScopes(affectedScopes)
+            .build();
     }
 
     private void handleScriptError(Map<String, Object> response) {

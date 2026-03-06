@@ -16,16 +16,24 @@ import org.springframework.web.bind.annotation.*;
 @Tag(name = "Balances")
 public class BalanceController extends BaseController{
     private static final Logger LOG = LoggerFactory.getLogger(BalanceController.class);
-    
+
     @Autowired
     private RedisReservationRepository repository;
-    
+
     @GetMapping
     @Operation(operationId = "queryBalances", summary = "Query budget balances")
     public ResponseEntity<BalanceQueryResponse> query(
-            @RequestParam(required = true) String tenant) {
+            @RequestParam(required = true) String tenant,
+            @RequestParam(required = false) String workspace,
+            @RequestParam(required = false) String app,
+            @RequestParam(required = false) String workflow,
+            @RequestParam(required = false) String agent,
+            @RequestParam(required = false) String toolset,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor) {
         LOG.info("GET /v1/balances - tenant: {}", tenant);
         authorizeTenant(tenant);
-        return ResponseEntity.ok(new BalanceQueryResponse(repository.getBalances(tenant)));
+        BalanceQueryResponse response = repository.getBalances(tenant, workspace, app, workflow, agent, toolset, limit, cursor);
+        return ResponseEntity.ok(response);
     }
 }
