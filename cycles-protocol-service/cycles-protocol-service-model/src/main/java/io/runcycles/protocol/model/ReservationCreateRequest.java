@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.23 */
 @Data @NoArgsConstructor @AllArgsConstructor
@@ -16,4 +17,5 @@ public class ReservationCreateRequest {
     @Min(0) @Max(60000) @JsonProperty("grace_period_ms") private Long gracePeriodMs;
     @JsonProperty("overage_policy") private Enums.CommitOveragePolicy overagePolicy;
     @JsonProperty("dry_run") private Boolean dryRun;
+    @JsonProperty("metadata") private Map<String, Object> metadata;
 }

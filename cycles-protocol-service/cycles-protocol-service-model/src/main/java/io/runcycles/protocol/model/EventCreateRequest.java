@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.*;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -13,4 +14,7 @@ public class EventCreateRequest {
     @NotNull @Valid @JsonProperty("action") private Action action;
     @NotNull @Valid @JsonProperty("actual") private Amount actual;
     @JsonProperty("overage_policy") private Enums.CommitOveragePolicy overagePolicy;
+    @JsonProperty("metrics") private StandardMetrics metrics;
+    @JsonProperty("client_time_ms") private Long clientTimeMs;
+    @JsonProperty("metadata") private Map<String, Object> metadata;
 }

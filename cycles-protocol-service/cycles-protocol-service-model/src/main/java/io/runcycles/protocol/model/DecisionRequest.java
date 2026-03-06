@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -13,4 +14,5 @@ public class DecisionRequest {
     @NotNull @Valid @JsonProperty("subject") private Subject subject;
     @NotNull @Valid @JsonProperty("action") private Action action;
     @NotNull @Valid @JsonProperty("estimate") private Amount estimate;
+    @JsonProperty("metadata") private Map<String, Object> metadata;
 }

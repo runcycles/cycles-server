@@ -419,49 +419,72 @@ public class RedisReservationRepository {
         LOG.info("Evaluating decision for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
+            // Idempotency: replay if same (tenant, key) seen before
+            String idempotencyKey = request.getIdempotencyKey();
+            if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
+                String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
+                String cached = jedis.get(idemKey);
+                if (cached != null) {
+                    return objectMapper.readValue(cached, DecisionResponse.class);
+                }
+            }
 
+            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
             long estimateAmount = request.getEstimate().getAmount();
             String unit = request.getEstimate().getUnit().name();
 
+            DecisionResponse response = null;
             for (String scope : affectedScopes) {
                 String budgetKey = "budget:" + scope + ":" + unit;
                 Map<String, String> budget = jedis.hgetAll(budgetKey);
 
                 if (budget == null || budget.isEmpty()) {
-                    return DecisionResponse.builder()
+                    response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("BUDGET_NOT_FOUND")
                         .build();
+                    break;
                 }
-
                 if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
-                    return DecisionResponse.builder()
+                    response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
                         .build();
+                    break;
                 }
-
                 long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
                 if (debt > 0) {
-                    return DecisionResponse.builder()
+                    response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("DEBT_OUTSTANDING")
                         .build();
+                    break;
                 }
-
                 long remaining = Long.parseLong(budget.getOrDefault("remaining", "0"));
                 if (remaining < estimateAmount) {
-                    return DecisionResponse.builder()
+                    response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("BUDGET_EXCEEDED")
                         .build();
+                    break;
                 }
             }
 
-            return DecisionResponse.builder()
-                .decision("ALLOW")
-                .build();
+            if (response == null) {
+                response = DecisionResponse.builder()
+                    .decision("ALLOW")
+                    .affectedScopes(affectedScopes)
+                    .build();
+            }
+
+            // Store idempotency result (24 h TTL)
+            if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
+                String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
+                jedis.set(idemKey, objectMapper.writeValueAsString(response));
+                jedis.pexpire(idemKey, 86400000L);
+            }
+
+            return response;
         } catch (Exception e) {
             LOG.error("Failed to evaluate decision", e);
             throw new RuntimeException(e);
@@ -536,6 +559,7 @@ public class RedisReservationRepository {
         return ReservationSummary.builder()
             .reservationId(fields.get("reservation_id"))
             .status(Enums.ReservationState.valueOf(fields.get("state")))
+            .idempotencyKey(fields.get("idempotency_key"))
             .subject(objectMapper.readValue(fields.get("subject_json"), Subject.class))
             .action(objectMapper.readValue(fields.get("action_json"), Action.class))
             .reserved(new Amount(unit, estimateAmount))
