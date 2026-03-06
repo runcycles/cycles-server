@@ -40,7 +40,8 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         String apiKey = request.getHeader("X-Cycles-API-Key");
-        LOG.info("Authorization filter request got: apiKey={}",apiKey);
+        LOG.info("Authorization filter request got: apiKey={}",
+                apiKey != null && apiKey.length() > 8 ? apiKey.substring(0, 8) + "***" : "***");
 
         if (apiKey == null || apiKey.isBlank()) {
             LOG.error("Missing API key: path={}",request.getRequestURI());
@@ -50,7 +51,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         ApiKeyValidationResponse result = apiKeyValidationService.isValid(apiKey);
 
         if (!result.isValid()) {
-            LOG.error("API key validation failed: result={},apiKey={}",result,apiKey);
+            LOG.error("API key validation failed: result={}",result);
             sendErrorResponse(response, result.getReason());
             return;
         }

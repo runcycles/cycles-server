@@ -277,7 +277,7 @@ public class RedisReservationRepository {
                         String scope = keyParts[2];
 
                         // Filter by tenant
-                        if (!scope.contains(tenant)) {
+                        if (tenant == null || !scope.contains(tenant)) {
                             continue;
                         }
                         
@@ -352,7 +352,7 @@ public class RedisReservationRepository {
             case "RESERVATION_EXPIRATION_NOT_FOUND":
                 throw CyclesProtocolException.reservationExpirationNotFound();
             default:
-                throw new RuntimeException("Script error: " + error);
+                throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, "Script error: " + error, 500);
         }
     }
 }
