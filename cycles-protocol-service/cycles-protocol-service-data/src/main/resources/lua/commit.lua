@@ -132,10 +132,10 @@ for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. actual_unit
     redis.call('HINCRBY', budget_key, 'reserved', -estimate_amount)
 
-    -- If actual < estimate, return unused to remaining and spent is handled in a way that only used funds are added
+    -- If actual < estimate, return unused portion to remaining; record only actual as spent
     if delta < 0 then
         redis.call('HINCRBY', budget_key, 'remaining', -delta)
-        redis.call('HINCRBY', budget_key, 'spent', -delta)
+        redis.call('HINCRBY', budget_key, 'spent', actual_amount)
     else
         redis.call('HINCRBY', budget_key, 'spent', estimate_amount)
     end

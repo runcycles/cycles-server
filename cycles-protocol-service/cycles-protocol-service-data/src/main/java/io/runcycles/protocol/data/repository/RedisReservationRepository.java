@@ -61,6 +61,21 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
+            // Idempotency hit: Lua returns existing reservation_id without expires_at.
+            // Fetch the stored reservation to build a complete, accurate response.
+            if (!response.containsKey("expires_at")) {
+                String existingId = (String) response.get("reservation_id");
+                ReservationSummary existing = getReservationById(existingId);
+                return ReservationCreateResponse.builder()
+                    .decision("ALLOW")
+                    .reservationId(existingId)
+                    .affectedScopes(existing.getAffectedScopes())
+                    .scopePath(existing.getScopePath())
+                    .reserved(existing.getReserved())
+                    .expiresAtMs(existing.getExpiresAtMs())
+                    .build();
+            }
+
             return ReservationCreateResponse.builder()
                 .decision("ALLOW")
                 .reservationId(reservationId)
