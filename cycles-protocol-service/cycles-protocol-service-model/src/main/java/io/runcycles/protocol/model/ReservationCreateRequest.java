@@ -14,6 +14,7 @@ public class ReservationCreateRequest {
     @NotNull @Valid @JsonProperty("estimate") private Amount estimate;
     @Positive @JsonProperty("ttl_ms") private Long ttlMs;
     @JsonProperty("grace_ms") private Long graceMs;
-    @Size(min = 1, max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
+    @NotNull @Size(min = 1, max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
+    @JsonProperty("overage_policy") private Enums.CommitOveragePolicy overagePolicy;
     @JsonProperty("affected_scopes") private List<String> affectedScopes;
 }

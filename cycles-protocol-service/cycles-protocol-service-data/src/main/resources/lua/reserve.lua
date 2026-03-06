@@ -13,6 +13,7 @@ local grace_ms = tonumber(ARGV[7])
 local idempotency_key = ARGV[8]
 local scope_path = ARGV[9]
 local tenant = ARGV[10]
+local overage_policy = ARGV[11] or "REJECT"
 
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
@@ -29,7 +30,7 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
 end
 -- Parse affected scopes
 local affected_scopes = {}
-for i = 11, #ARGV do
+for i = 12, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -79,7 +80,7 @@ local reservation_key = "reservation:res_" .. reservation_id
 redis.call('HMSET', reservation_key,
     'reservation_id', reservation_id,
     'tenant', tenant,
-    'state', 'RESERVED',
+    'state', 'ACTIVE',
     'subject_json', subject_json,
     'action_json', action_json,
     'estimate_amount', estimate_amount,
@@ -89,7 +90,8 @@ redis.call('HMSET', reservation_key,
     'created_at', now,
     'expires_at', expires_at,
     'grace_ms', grace_ms,
-    'idempotency_key', idempotency_key
+    'idempotency_key', idempotency_key,
+    'overage_policy', overage_policy
 )
 
 -- Set TTL on reservation, PEXPIRE means that after ttl REDIS will remove the record itself
@@ -110,7 +112,7 @@ end
 
 return cjson.encode({
     reservation_id = reservation_id,
-    state = "RESERVED",
+    state = "ACTIVE",
     expires_at = expires_at,
     affected_scopes = affected_scopes
 })

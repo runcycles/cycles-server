@@ -2,17 +2,18 @@ package io.runcycles.protocol.model;
 
 import com.fasterxml.jackson.annotation.*;
 import lombok.*;
-import java.time.Instant;
+import java.util.List;
 
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ReservationCreateResponse {
+    @JsonProperty("decision") private String decision;
     @JsonProperty("reservation_id") private String reservationId;
-    @JsonProperty("state") private Enums.ReservationState state;
-    @JsonProperty("subject") private Subject subject;
-    @JsonProperty("action") private Action action;
-    @JsonProperty("estimate") private Amount estimate;
-    @JsonProperty("affected_scopes") private java.util.List<String> affectedScopes;
-    @JsonProperty("expires_at") private Instant expiresAt;
-    @JsonProperty("soft_landing") private Caps softLanding;
+    @JsonProperty("affected_scopes") private List<String> affectedScopes;
+    @JsonProperty("expires_at_ms") private Long expiresAtMs;
+    @JsonProperty("scope_path") private String scopePath;
+    @JsonProperty("reserved") private Amount reserved;
+    @JsonProperty("caps") private Caps caps;
+    @JsonProperty("reason_code") private String reasonCode;
+    @JsonProperty("retry_after_ms") private Integer retryAfterMs;
 }

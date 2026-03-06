@@ -5,8 +5,7 @@
 local reservation_id = ARGV[1]
 local actual_amount = tonumber(ARGV[2])
 local actual_unit = ARGV[3]
-local overage_policy = ARGV[4] or "REJECT"
-local idempotency_key = ARGV[5]
+local idempotency_key = ARGV[4]
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -21,6 +20,7 @@ local estimate_amount = tonumber(redis.call('HGET', reservation_key, 'estimate_a
 local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
 local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scopes')
 local stored_idempotency_key = redis.call('HGET', reservation_key, 'committed_idempotency_key')
+local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or "REJECT"
 
 -- Check if already committed (idempotent)
 if state == "COMMITTED" then
@@ -39,7 +39,7 @@ if state == "COMMITTED" then
 end
 
 -- Check if expired or released
-if state ~= "RESERVED" then
+if state ~= "ACTIVE" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = state})
 end
 

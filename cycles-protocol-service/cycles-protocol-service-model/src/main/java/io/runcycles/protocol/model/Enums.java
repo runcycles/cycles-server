@@ -16,7 +16,7 @@ public class Enums {
     }
     
     public enum ReservationState {
-        RESERVED, COMMITTED, RELEASED, EXPIRED
+        ACTIVE, COMMITTED, RELEASED, EXPIRED
     }
     
     public enum ErrorCode {
