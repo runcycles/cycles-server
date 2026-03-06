@@ -23,7 +23,7 @@ public class BalanceController extends BaseController{
     @GetMapping
     @Operation(operationId = "queryBalances", summary = "Query budget balances")
     public ResponseEntity<BalanceQueryResponse> query(
-            @RequestParam(required = false) String tenant) {
+            @RequestParam(required = true) String tenant) {
         LOG.info("GET /v1/balances - tenant: {}", tenant);
         authorizeTenant(tenant);
         return ResponseEntity.ok(new BalanceQueryResponse(repository.getBalances(tenant)));

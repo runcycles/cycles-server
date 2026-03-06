@@ -24,7 +24,7 @@ abstract public class BaseController {
         String tenantFromAuthorization = extractAuthTenantId ();
         if (tenantFromRequest != null && !tenantFromRequest.isBlank()){
             if (!tenantFromRequest.equalsIgnoreCase(tenantFromAuthorization)){
-                throw new CyclesProtocolException(Enums.ErrorCode.UNAUTHORIZED, "Tenant provided in the rquest body does not match tenant resolved from authorization token",401) ;
+                throw new CyclesProtocolException(Enums.ErrorCode.UNAUTHORIZED, "Tenant provided in the request body does not match tenant resolved from authorization token",401) ;
             }
         }
         LOG.info("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",tenantFromRequest,tenantFromAuthorization);
