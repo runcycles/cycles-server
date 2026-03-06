@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -42,7 +43,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         LOG.info("Authorization filter request got: apiKey={}",apiKey);
 
         if (apiKey == null || apiKey.isBlank()) {
-            LOG.error("Missing API key");
+            LOG.error("Missing API key: path={}",request.getRequestURI());
             sendErrorResponse(response, "Missing API key");
             return;
         }
@@ -63,6 +64,18 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
         filterChain.doFilter(request, response);
+    }
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        AntPathMatcher matcher = new AntPathMatcher();
+
+        for (String pattern : SecurityConfig.PUBLIC_PATHS) {
+            if (matcher.match(pattern, path)) {
+                return true;
+            }
+        }
+        return false;
     }
     private void sendErrorResponse(HttpServletResponse response, String reason) throws IOException {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);

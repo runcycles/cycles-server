@@ -9,6 +9,17 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 @Configuration
 public class SecurityConfig {
+    public static final String[] PUBLIC_PATHS = {
+            "/api-docs/**",
+            "/swagger-ui/**",
+            "/swagger-ui.html",
+            "/swagger-resources/**",
+            "/v3/api-docs/**",
+            "/webjars/**",
+            "/favicon.ico",
+            "/.well-known/**",
+            "/actuator/health"  // Add health check too
+    };
     @Bean
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
@@ -18,7 +29,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .addFilterBefore(apiKeyFilter, UsernamePasswordAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api-docs/**","/swagger-ui/**","/swagger-ui.html").permitAll()
+                        .requestMatchers(PUBLIC_PATHS).permitAll()
                         .anyRequest().authenticated())
                 .build();
     }
