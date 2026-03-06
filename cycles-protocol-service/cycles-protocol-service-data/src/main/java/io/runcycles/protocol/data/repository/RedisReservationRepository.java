@@ -32,12 +32,16 @@ public class RedisReservationRepository {
         LOG.info("Creating reservation for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            String reservationId = UUID.randomUUID().toString();
-            List<String> affectedScopes = request.getAffectedScopes() != null ?
-                request.getAffectedScopes() : scopeService.deriveScopes(request.getSubject());
-            LOG.info("Affected scopes:affectedScopes={},derivedScopes={}",affectedScopes,scopeService.deriveScopes(request.getSubject()));
+            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
             String scopePath = affectedScopes.get(affectedScopes.size() - 1);
             String overagePolicy = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "REJECT";
+
+            // dry_run: evaluate budget without persisting a reservation
+            if (Boolean.TRUE.equals(request.getDryRun())) {
+                return evaluateDryRun(jedis, request, affectedScopes, scopePath);
+            }
+
+            String reservationId = UUID.randomUUID().toString();
 
             List<String> args = new ArrayList<>();
             args.add(reservationId);
@@ -90,6 +94,59 @@ public class RedisReservationRepository {
             LOG.error("Failed to create reservation", e);
             throw new RuntimeException(e);
         }
+    }
+
+    private ReservationCreateResponse evaluateDryRun(Jedis jedis, ReservationCreateRequest request,
+                                                      List<String> affectedScopes, String scopePath) {
+        long estimateAmount = request.getEstimate().getAmount();
+        String unit = request.getEstimate().getUnit().name();
+
+        for (String scope : affectedScopes) {
+            String budgetKey = "budget:" + scope + ":" + unit;
+            Map<String, String> budget = jedis.hgetAll(budgetKey);
+
+            if (budget == null || budget.isEmpty()) {
+                return ReservationCreateResponse.builder()
+                    .decision("DENY")
+                    .reasonCode("BUDGET_NOT_FOUND")
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build();
+            }
+            if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
+                return ReservationCreateResponse.builder()
+                    .decision("DENY")
+                    .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build();
+            }
+            long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
+            if (debt > 0) {
+                return ReservationCreateResponse.builder()
+                    .decision("DENY")
+                    .reasonCode("DEBT_OUTSTANDING")
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build();
+            }
+            long remaining = Long.parseLong(budget.getOrDefault("remaining", "0"));
+            if (remaining < estimateAmount) {
+                return ReservationCreateResponse.builder()
+                    .decision("DENY")
+                    .reasonCode("BUDGET_EXCEEDED")
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build();
+            }
+        }
+
+        return ReservationCreateResponse.builder()
+            .decision("ALLOW")
+            .affectedScopes(affectedScopes)
+            .scopePath(scopePath)
+            .reserved(request.getEstimate())
+            .build();
     }
 
     public CommitResponse commitReservation(String reservationId, CommitRequest request) {

@@ -38,13 +38,13 @@ public class CyclesProtocolException extends RuntimeException {
         return new CyclesProtocolException(Enums.ErrorCode.DEBT_OUTSTANDING, "Outstanding debt blocks new reservation for: " + scope, 409);
     }
     public static CyclesProtocolException reservationFinalized(String scope) {
-        return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_FINALIZED, "Reservation finalized: " + scope, 400);
+        return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_FINALIZED, "Reservation finalized: " + scope, 409);
     }
     public static CyclesProtocolException budgetNotFound(String scope) {
         return new CyclesProtocolException(Enums.ErrorCode.NOT_FOUND, "Budget not found for provided scope: " + scope, 404);
     }
     public static CyclesProtocolException idempotencyMismatch() {
-        return new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH, "Provided idempotency does not match the stored one", 400);
+        return new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH, "Provided idempotency does not match the stored one", 409);
     }
     public static CyclesProtocolException unitMismatch() {
         return new CyclesProtocolException(Enums.ErrorCode.UNIT_MISMATCH, "Provided units does not match the stored ones", 400);

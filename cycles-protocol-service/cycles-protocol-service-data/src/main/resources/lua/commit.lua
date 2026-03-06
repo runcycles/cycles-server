@@ -54,11 +54,13 @@ if not current_expires_at then
     return cjson.encode({error = "RESERVATION_EXPIRATION_NOT_FOUND"})
 end
 current_expires_at = tonumber(current_expires_at)
+local grace_ms = tonumber(redis.call('HGET', reservation_key, 'grace_ms') or 0)
 
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 
-if now > current_expires_at then
+-- Spec: commit allowed until expires_at_ms + grace_period_ms
+if now > current_expires_at + grace_ms then
     return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
