@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.22 - Commit Lua Script
+-- Cycles Protocol v0.1.23 - Commit Lua Script
 -- Atomically commit actual spend with overdraft support
 --local cjson = require("cjson")
 
@@ -119,9 +119,9 @@ if delta > 0 then
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
                 
-                -- Check if now over-limit
+                -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
                 local new_debt = current_debt + deficit
-                if new_debt > overdraft_limit then
+                if overdraft_limit > 0 and new_debt >= overdraft_limit then
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end
             end

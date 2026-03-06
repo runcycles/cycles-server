@@ -237,14 +237,15 @@ public class RedisReservationRepository {
         }
     }
 
-    public ReservationExtendResponse extendReservation(String reservationId, ReservationExtendRequest request) {
+    public ReservationExtendResponse extendReservation(String reservationId, ReservationExtendRequest request, String tenant) {
         LOG.info("Extending reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getExtendByMs()),
-                request.getIdempotencyKey() != null ? request.getIdempotencyKey() : ""
+                request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
+                tenant != null ? tenant : ""
             );
 
             Object result = jedis.eval(extendScript, 0, args.toArray(new String[0]));

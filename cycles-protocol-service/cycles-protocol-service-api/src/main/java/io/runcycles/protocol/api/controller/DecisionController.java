@@ -22,8 +22,11 @@ public class DecisionController extends BaseController {
 
     @PostMapping
     @Operation(operationId = "decide", summary = "Evaluate budget decision without reserving")
-    public ResponseEntity<DecisionResponse> decide(@Valid @RequestBody DecisionRequest request) {
+    public ResponseEntity<DecisionResponse> decide(
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
+            @Valid @RequestBody DecisionRequest request) {
         LOG.info("POST /v1/decide - tenant: {}", request.getSubject().getTenant());
+        validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);
         DecisionResponse response = repository.decide(request, tenant);

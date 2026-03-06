@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.22 - Release Lua Script
+-- Cycles Protocol v0.1.23 - Release Lua Script
 --local cjson = require("cjson")
 
 local reservation_id = ARGV[1]
