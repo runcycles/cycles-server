@@ -1,9 +1,19 @@
--- Cycles Protocol v0.1.22 - Extend TTL Lua Script
+-- Cycles Protocol v0.1.23 - Extend TTL Lua Script
 --local cjson = require("cjson")
 
 local reservation_id = ARGV[1]
 local extend_by_ms = tonumber(ARGV[2])
 local idempotency_key = ARGV[3]
+local tenant = ARGV[4]
+
+-- Idempotency: replay prior extend result if same (tenant, key) seen before
+if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
+    local idem_key = "idem:" .. tenant .. ":extend:" .. idempotency_key
+    local cached = redis.call('GET', idem_key)
+    if cached then
+        return cached
+    end
+end
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -30,8 +40,17 @@ local new_expires_at = current_expires_at + extend_by_ms
 redis.call('HSET', reservation_key, 'expires_at', new_expires_at)
 redis.call('ZADD', 'reservation:ttl', new_expires_at, reservation_id)
 
-return cjson.encode({
+local result = cjson.encode({
     reservation_id = reservation_id,
     expires_at_ms = new_expires_at,
     extended_at = now
 })
+
+-- Store idempotency result (TTL = the extension duration)
+if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
+    local idem_key = "idem:" .. tenant .. ":extend:" .. idempotency_key
+    redis.call('SET', idem_key, result)
+    redis.call('PEXPIRE', idem_key, extend_by_ms)
+end
+
+return result

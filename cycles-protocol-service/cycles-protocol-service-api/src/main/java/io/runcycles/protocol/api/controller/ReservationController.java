@@ -81,7 +81,7 @@ public class ReservationController extends BaseController{
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        ReservationExtendResponse response = repository.extendReservation(reservationId, request);
+        ReservationExtendResponse response = repository.extendReservation(reservationId, request, tenant);
         return ResponseEntity.ok(response);
     }
 

@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.22 - Release Lua Script
+-- Cycles Protocol v0.1.23 - Release Lua Script
 --local cjson = require("cjson")
 
 local reservation_id = ARGV[1]
@@ -26,6 +26,15 @@ end
 -- Check if can be released
 if state == "COMMITTED" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = "COMMITTED"})
+end
+
+-- Spec: release disallowed beyond expires_at_ms + grace_period_ms
+local current_expires_at = tonumber(redis.call('HGET', reservation_key, 'expires_at') or 0)
+local grace_ms = tonumber(redis.call('HGET', reservation_key, 'grace_ms') or 0)
+local t = redis.call('TIME')
+local now_ms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+if now_ms > current_expires_at + grace_ms then
+    return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
 -- Get reservation data

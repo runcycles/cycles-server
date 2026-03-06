@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.22 - Reserve Lua Script
+-- Cycles Protocol v0.1.23 - Reserve Lua Script
 -- Atomically reserve budget across all affected scopes
 --local cjson = require("cjson")
 
@@ -34,7 +34,8 @@ for i = 12, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
-local now = tonumber(redis.call('TIME')[1]) * 1000
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local expires_at = now + ttl_ms
 
 -- Check all scopes first (fail fast)

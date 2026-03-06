@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.22 - Commit Lua Script
+-- Cycles Protocol v0.1.23 - Commit Lua Script
 -- Atomically commit actual spend with overdraft support
 --local cjson = require("cjson")
 
@@ -54,11 +54,13 @@ if not current_expires_at then
     return cjson.encode({error = "RESERVATION_EXPIRATION_NOT_FOUND"})
 end
 current_expires_at = tonumber(current_expires_at)
+local grace_ms = tonumber(redis.call('HGET', reservation_key, 'grace_ms') or 0)
 
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 
-if now > current_expires_at then
+-- Spec: commit allowed until expires_at_ms + grace_period_ms
+if now > current_expires_at + grace_ms then
     return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
@@ -117,9 +119,9 @@ if delta > 0 then
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
                 
-                -- Check if now over-limit
+                -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
                 local new_debt = current_debt + deficit
-                if new_debt > overdraft_limit then
+                if overdraft_limit > 0 and new_debt >= overdraft_limit then
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end
             end
