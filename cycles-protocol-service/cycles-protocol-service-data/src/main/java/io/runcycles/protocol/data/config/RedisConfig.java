@@ -55,7 +55,12 @@ public class RedisConfig {
     public String extendLuaScript() throws IOException {
         return loadLuaScript("lua/extend.lua");
     }
-    
+
+    @Bean(name = "eventLuaScript")
+    public String eventLuaScript() throws IOException {
+        return loadLuaScript("lua/event.lua");
+    }
+
     private String loadLuaScript(String path) throws IOException {
         try (InputStream is = getClass().getClassLoader().getResourceAsStream(path);
              BufferedReader reader = new BufferedReader(new InputStreamReader(is))) {

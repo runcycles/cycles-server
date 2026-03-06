@@ -8,12 +8,11 @@ import lombok.*;
 public class Balance {
     @JsonProperty("scope") private String scope;
     @JsonProperty("scope_path") private String scopePath;
-    @JsonProperty("unit") private Enums.UnitEnum unit;
-    @JsonProperty("allocated") private Long allocated;
-    @JsonProperty("remaining") private Long remaining;
-    @JsonProperty("reserved") private Long reserved;
-    @JsonProperty("spent") private Long spent;
-    @JsonProperty("debt") private Long debt;
-    @JsonProperty("overdraft_limit") private Long overdraftLimit;
+    @JsonProperty("remaining") private SignedAmount remaining;
+    @JsonProperty("reserved") private Amount reserved;
+    @JsonProperty("spent") private Amount spent;
+    @JsonProperty("allocated") private Amount allocated;
+    @JsonProperty("debt") private Amount debt;
+    @JsonProperty("overdraft_limit") private Amount overdraftLimit;
     @JsonProperty("is_over_limit") private Boolean isOverLimit;
 }

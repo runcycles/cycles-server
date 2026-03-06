@@ -24,9 +24,16 @@ abstract public class BaseController {
         String tenantFromAuthorization = extractAuthTenantId ();
         if (tenantFromRequest != null && !tenantFromRequest.isBlank()){
             if (!tenantFromRequest.equalsIgnoreCase(tenantFromAuthorization)){
-                throw new CyclesProtocolException(Enums.ErrorCode.UNAUTHORIZED, "Tenant provided in the request body does not match tenant resolved from authorization token",401) ;
+                throw new CyclesProtocolException(Enums.ErrorCode.FORBIDDEN, "Tenant provided in the request body does not match tenant resolved from authorization token",403) ;
             }
         }
         LOG.info("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",tenantFromRequest,tenantFromAuthorization);
+    }
+
+    public void validateIdempotencyHeader(String headerKey, String bodyKey) {
+        if (headerKey != null && bodyKey != null && !headerKey.equals(bodyKey)) {
+            throw new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH,
+                "X-Idempotency-Key header does not match idempotency_key in request body", 400);
+        }
     }
 }

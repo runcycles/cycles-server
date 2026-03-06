@@ -7,6 +7,6 @@ import lombok.*;
 /** Cycles Protocol v0.1.23 */
 @Data @NoArgsConstructor @AllArgsConstructor
 public class ReservationExtendRequest {
-    @Positive @JsonProperty("additional_ttl_ms") private Long additionalTtlMs;
-    @Size(min = 1, max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
+    @NotNull @Positive @JsonProperty("extend_by_ms") private Long extendByMs;
+    @NotNull @Size(min = 1, max = 256) @JsonProperty("idempotency_key") private String idempotencyKey;
 }

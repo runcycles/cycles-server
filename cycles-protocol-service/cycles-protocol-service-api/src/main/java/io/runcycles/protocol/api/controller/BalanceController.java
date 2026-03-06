@@ -1,5 +1,6 @@
 package io.runcycles.protocol.api.controller;
 
+import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.BalanceQueryResponse;
@@ -16,16 +17,31 @@ import org.springframework.web.bind.annotation.*;
 @Tag(name = "Balances")
 public class BalanceController extends BaseController{
     private static final Logger LOG = LoggerFactory.getLogger(BalanceController.class);
-    
+
     @Autowired
     private RedisReservationRepository repository;
-    
+
     @GetMapping
     @Operation(operationId = "queryBalances", summary = "Query budget balances")
     public ResponseEntity<BalanceQueryResponse> query(
-            @RequestParam(required = true) String tenant) {
-        LOG.info("GET /v1/balances - tenant: {}", tenant);
-        authorizeTenant(tenant);
-        return ResponseEntity.ok(new BalanceQueryResponse(repository.getBalances(tenant)));
+            @RequestParam(required = false) String tenant,
+            @RequestParam(required = false) String workspace,
+            @RequestParam(required = false) String app,
+            @RequestParam(required = false) String workflow,
+            @RequestParam(required = false) String agent,
+            @RequestParam(required = false) String toolset,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor) {
+        // Spec NORMATIVE: at least one subject filter must be provided
+        if (tenant == null && workspace == null && app == null && workflow == null && agent == null && toolset == null) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "At least one of tenant/workspace/app/workflow/agent/toolset must be provided", 400);
+        }
+        // If tenant provided, it must match auth context; if omitted, use auth tenant
+        String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
+        LOG.info("GET /v1/balances - tenant: {}", effectiveTenant);
+        authorizeTenant(effectiveTenant);
+        BalanceQueryResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, limit, cursor);
+        return ResponseEntity.ok(response);
     }
 }

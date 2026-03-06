@@ -2,16 +2,18 @@ package io.runcycles.protocol.model;
 
 import com.fasterxml.jackson.annotation.*;
 import lombok.*;
-import java.time.Instant;
+import java.util.List;
 
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ReservationSummary {
     @JsonProperty("reservation_id") private String reservationId;
-    @JsonProperty("state") private Enums.ReservationState state;
+    @JsonProperty("status") private Enums.ReservationState status;
     @JsonProperty("subject") private Subject subject;
     @JsonProperty("action") private Action action;
-    @JsonProperty("estimate") private Amount estimate;
-    @JsonProperty("created_at") private Instant createdAt;
-    @JsonProperty("expires_at") private Instant expiresAt;
+    @JsonProperty("reserved") private Amount reserved;
+    @JsonProperty("created_at_ms") private Long createdAtMs;
+    @JsonProperty("expires_at_ms") private Long expiresAtMs;
+    @JsonProperty("scope_path") private String scopePath;
+    @JsonProperty("affected_scopes") private List<String> affectedScopes;
 }

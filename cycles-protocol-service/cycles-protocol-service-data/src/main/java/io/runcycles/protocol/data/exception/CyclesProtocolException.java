@@ -41,7 +41,7 @@ public class CyclesProtocolException extends RuntimeException {
         return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_FINALIZED, "Reservation finalized: " + scope, 400);
     }
     public static CyclesProtocolException budgetNotFound(String scope) {
-        return new CyclesProtocolException(Enums.ErrorCode.BUDGET_NOT_FOUND, "Budget not found for provided scope: " + scope, 400);
+        return new CyclesProtocolException(Enums.ErrorCode.NOT_FOUND, "Budget not found for provided scope: " + scope, 404);
     }
     public static CyclesProtocolException idempotencyMismatch() {
         return new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH, "Provided idempotency does not match the stored one", 400);
@@ -50,9 +50,9 @@ public class CyclesProtocolException extends RuntimeException {
         return new CyclesProtocolException(Enums.ErrorCode.UNIT_MISMATCH, "Provided units does not match the stored ones", 400);
     }
     public static CyclesProtocolException reservationExpired() {
-        return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_EXPIRED, "Provided reservation has already expired", 400);
+        return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_EXPIRED, "Provided reservation has already expired", 410);
     }
     public static CyclesProtocolException reservationExpirationNotFound() {
-        return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_EXPIRATION_NOT_FOUND, "Provided reservation has does not have expiration time", 400);
+        return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, "Reservation does not have an expiration time", 500);
     }
 }
