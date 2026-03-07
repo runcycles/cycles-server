@@ -202,6 +202,8 @@ Evaluate whether a budget operation would be allowed **without** reserving. Retu
 }
 ```
 
+Only `decision` is required. `affected_scopes`, `reason_code`, `retry_after_ms`, and `caps` are optional.
+
 On `DENY` (insufficient budget, debt, or over-limit):
 ```json
 {
@@ -247,6 +249,7 @@ Reserve budget before executing an action. Returns `200 OK`.
 | `subject` | yes | — | at least one standard field |
 | `action.kind` | yes | — | max 64 chars |
 | `action.name` | yes | — | max 256 chars |
+| `action.tags` | no | — | max 10 items, each max 64 chars |
 | `estimate.unit` | yes | — | see Units |
 | `estimate.amount` | yes | — | ≥ 0 |
 | `ttl_ms` | no | `60000` | 1000–86400000 ms |
@@ -265,6 +268,8 @@ Reserve budget before executing an action. Returns `200 OK`.
   "reserved": { "unit": "TOKENS", "amount": 5000 }
 }
 ```
+
+`decision` and `affected_scopes` are always present. Optional fields: `caps` (when `ALLOW_WITH_CAPS`), `reason_code`, `retry_after_ms`, `balances`.
 
 When `dry_run=true`, `reservation_id` and `expires_at_ms` are absent. `balances` MAY be included. `decision` may be `DENY` with a `reason_code`.
 
@@ -500,7 +505,7 @@ All errors use this envelope:
 | Code | HTTP | Meaning |
 |---|---|---|
 | `INVALID_REQUEST` | 400 | Missing or invalid field |
-| `UNIT_MISMATCH` | 400 | Commit/event unit differs from reservation unit |
+| `UNIT_MISMATCH` | 400 | Commit unit differs from reservation unit, or event unit not supported for target scope |
 | `UNAUTHORIZED` | 401 | Missing or invalid API key |
 | `FORBIDDEN` | 403 | Tenant in request does not match API key |
 | `NOT_FOUND` | 404 | Reservation or resource not found |
