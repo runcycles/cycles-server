@@ -16,4 +16,5 @@ public class ReservationCreateResponse {
     @JsonProperty("caps") private Caps caps;
     @JsonProperty("reason_code") private String reasonCode;
     @JsonProperty("retry_after_ms") private Integer retryAfterMs;
+    @JsonProperty("balances") private List<Balance> balances;
 }

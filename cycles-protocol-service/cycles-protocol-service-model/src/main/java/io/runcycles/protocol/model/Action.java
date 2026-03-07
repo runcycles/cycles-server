@@ -10,5 +10,5 @@ import java.util.List;
 public class Action {
     @NotBlank @Size(max = 64) @JsonProperty("kind") private String kind;
     @NotBlank @Size(max = 256) @JsonProperty("name") private String name;
-    @Size(max = 10) @JsonProperty("tags") private List<String> tags;
+    @Size(max = 10) @JsonProperty("tags") private List<@Size(max = 64) String> tags;
 }

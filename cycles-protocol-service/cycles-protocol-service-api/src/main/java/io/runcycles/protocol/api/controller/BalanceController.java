@@ -22,7 +22,7 @@ public class BalanceController extends BaseController{
     private RedisReservationRepository repository;
 
     @GetMapping
-    @Operation(operationId = "queryBalances", summary = "Query budget balances")
+    @Operation(operationId = "getBalances", summary = "Query budget balances")
     public ResponseEntity<BalanceQueryResponse> query(
             @RequestParam(required = false) String tenant,
             @RequestParam(required = false) String workspace,
@@ -30,6 +30,7 @@ public class BalanceController extends BaseController{
             @RequestParam(required = false) String workflow,
             @RequestParam(required = false) String agent,
             @RequestParam(required = false) String toolset,
+            @RequestParam(required = false, defaultValue = "false") boolean includeChildren,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String cursor) {
         // Spec NORMATIVE: at least one subject filter must be provided
@@ -41,7 +42,7 @@ public class BalanceController extends BaseController{
         String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
         LOG.info("GET /v1/balances - tenant: {}", effectiveTenant);
         authorizeTenant(effectiveTenant);
-        BalanceQueryResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, limit, cursor);
+        BalanceQueryResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, includeChildren, limit, cursor);
         return ResponseEntity.ok(response);
     }
 }
