@@ -27,15 +27,15 @@ public class CyclesProtocolException extends RuntimeException {
     }
     
     public static CyclesProtocolException budgetExceeded(String scope) {
-        return new CyclesProtocolException(Enums.ErrorCode.BUDGET_EXCEEDED, "Budget exceeded for: " + scope, 422);
+        return new CyclesProtocolException(Enums.ErrorCode.BUDGET_EXCEEDED, "Budget exceeded for: " + scope, 409);
     }
 
     public static CyclesProtocolException overdraftLimitExceeded(String scope) {
-        return new CyclesProtocolException(Enums.ErrorCode.OVERDRAFT_LIMIT_EXCEEDED, "Overdraft limit exceeded for: " + scope, 422);
+        return new CyclesProtocolException(Enums.ErrorCode.OVERDRAFT_LIMIT_EXCEEDED, "Overdraft limit exceeded for: " + scope, 409);
     }
 
     public static CyclesProtocolException debtOutstanding(String scope) {
-        return new CyclesProtocolException(Enums.ErrorCode.DEBT_OUTSTANDING, "Outstanding debt blocks new reservation for: " + scope, 422);
+        return new CyclesProtocolException(Enums.ErrorCode.DEBT_OUTSTANDING, "Outstanding debt blocks new reservation for: " + scope, 409);
     }
     public static CyclesProtocolException reservationFinalized(String scope) {
         return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_FINALIZED, "Reservation finalized: " + scope, 409);

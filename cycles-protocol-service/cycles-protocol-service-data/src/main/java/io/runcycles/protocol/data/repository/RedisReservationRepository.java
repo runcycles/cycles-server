@@ -370,7 +370,7 @@ public class RedisReservationRepository {
                             if (agent != null && !scopeHasSegment(scopePath, "agent:" + agent.toLowerCase())) continue;
                             if (toolset != null && !scopeHasSegment(scopePath, "toolset:" + toolset.toLowerCase())) continue;
 
-                            result.add(buildReservationSummary(fields));
+                            result.add(toSummary(buildReservationSummary(fields)));
 
                             if (result.size() >= limit) {
                                 String nextCursor = scan.getCursor();
@@ -653,6 +653,21 @@ public class RedisReservationRepository {
         boolean startOk = idx == 0 || scopePath.charAt(idx - 1) == '/';
         boolean endOk = end == scopePath.length() || scopePath.charAt(end) == '/';
         return startOk && endOk;
+    }
+
+    private ReservationSummary toSummary(ReservationDetail detail) {
+        return ReservationSummary.builder()
+            .reservationId(detail.getReservationId())
+            .status(detail.getStatus())
+            .idempotencyKey(detail.getIdempotencyKey())
+            .subject(detail.getSubject())
+            .action(detail.getAction())
+            .reserved(detail.getReserved())
+            .createdAtMs(detail.getCreatedAtMs())
+            .expiresAtMs(detail.getExpiresAtMs())
+            .scopePath(detail.getScopePath())
+            .affectedScopes(detail.getAffectedScopes())
+            .build();
     }
 
     private ReservationDetail buildReservationSummary(Map<String, String> fields) throws Exception {

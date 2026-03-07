@@ -94,7 +94,7 @@ public class ReservationController extends BaseController{
     @Operation(operationId = "listReservations", summary = "List reservations")
     public ResponseEntity<ReservationListResponse> list(
             @RequestParam(required = false) String tenant,
-            @RequestParam(required = false) String idempotencyKey,
+            @RequestParam(value = "idempotency_key", required = false) String idempotencyKey,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String workspace,
             @RequestParam(required = false) String app,
