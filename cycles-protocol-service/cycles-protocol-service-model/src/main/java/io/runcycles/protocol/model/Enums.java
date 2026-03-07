@@ -6,19 +6,24 @@ package io.runcycles.protocol.model;
  */
 public class Enums {
     public static final String PROTOCOL_VERSION = "0.1.23";
-    
+
     public enum UnitEnum {
         USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS
     }
-    
+
+    public enum DecisionEnum {
+        ALLOW, ALLOW_WITH_CAPS, DENY
+    }
+
     public enum CommitOveragePolicy {
         REJECT, ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT
     }
-    
-    public enum ReservationState {
+
+    /** YAML schema name: ReservationStatus */
+    public enum ReservationStatus {
         ACTIVE, COMMITTED, RELEASED, EXPIRED
     }
-    
+
     public enum ErrorCode {
         INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, NOT_FOUND,
         BUDGET_EXCEEDED, RESERVATION_EXPIRED, RESERVATION_FINALIZED,

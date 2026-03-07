@@ -26,6 +26,7 @@ public class DecisionController extends BaseController {
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody DecisionRequest request) {
         LOG.info("POST /v1/decide - tenant: {}", request.getSubject().getTenant());
+        validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);

@@ -46,6 +46,13 @@ for _, scope in ipairs(affected_scopes) do
         return cjson.encode({error = "BUDGET_NOT_FOUND", scope = scope})
     end
 
+    -- Spec NORMATIVE: event actual.unit must be supported for the target scope
+    local budget_unit = redis.call('HGET', budget_key, 'unit')
+    if budget_unit and budget_unit ~= unit then
+        return cjson.encode({error = "UNIT_MISMATCH", scope = scope,
+            expected = budget_unit, actual = unit})
+    end
+
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
     if remaining < amount then
         if overage_policy == "REJECT" or overage_policy == "ALLOW_IF_AVAILABLE" then

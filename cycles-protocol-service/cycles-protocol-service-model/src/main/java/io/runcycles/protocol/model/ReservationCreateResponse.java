@@ -7,7 +7,7 @@ import java.util.List;
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ReservationCreateResponse {
-    @JsonProperty("decision") private String decision;
+    @JsonProperty("decision") private Enums.DecisionEnum decision;
     @JsonProperty("reservation_id") private String reservationId;
     @JsonProperty("affected_scopes") private List<String> affectedScopes;
     @JsonProperty("expires_at_ms") private Long expiresAtMs;

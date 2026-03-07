@@ -8,7 +8,7 @@ import java.util.List;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ReservationSummary {
     @JsonProperty("reservation_id") private String reservationId;
-    @JsonProperty("status") private Enums.ReservationState status;
+    @JsonProperty("status") private Enums.ReservationStatus status;
     @JsonProperty("idempotency_key") private String idempotencyKey;
     @JsonProperty("subject") private Subject subject;
     @JsonProperty("action") private Action action;

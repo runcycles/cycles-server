@@ -15,6 +15,6 @@ public class EventCreateRequest {
     @NotNull @Valid @JsonProperty("actual") private Amount actual;
     @JsonProperty("overage_policy") private Enums.CommitOveragePolicy overagePolicy;
     @JsonProperty("metrics") private StandardMetrics metrics;
-    @JsonProperty("client_time_ms") private Long clientTimeMs;
+    @Min(0) @JsonProperty("client_time_ms") private Long clientTimeMs;
     @JsonProperty("metadata") private Map<String, Object> metadata;
 }
