@@ -86,7 +86,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         Map<String, Object> body = Map.of(
                 "error", Enums.ErrorCode.UNAUTHORIZED,
                 "message", reason,
-                "requestId", UUID.randomUUID().toString()
+                "request_id", UUID.randomUUID().toString()
         );
 
         objectMapper.writeValue(response.getWriter(), body);

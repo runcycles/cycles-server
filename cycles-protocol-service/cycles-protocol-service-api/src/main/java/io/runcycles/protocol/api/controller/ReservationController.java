@@ -31,7 +31,9 @@ public class ReservationController extends BaseController{
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);
         ReservationCreateResponse response = repository.createReservation(request, tenant);
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        // DENY means no reservation was created (dry_run or budget check failed without throwing)
+        HttpStatus status = "DENY".equals(response.getDecision()) ? HttpStatus.OK : HttpStatus.CREATED;
+        return ResponseEntity.status(status).body(response);
     }
 
     @GetMapping("/{reservation_id}")
