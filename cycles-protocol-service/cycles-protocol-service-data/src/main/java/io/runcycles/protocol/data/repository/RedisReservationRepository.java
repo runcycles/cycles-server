@@ -549,8 +549,20 @@ public class RedisReservationRepository {
 
     private ReservationSummary buildReservationSummary(Map<String, String> fields) throws Exception {
         String estimateUnitStr = fields.get("estimate_unit");
+        String estimateAmountStr = fields.get("estimate_amount");
+        String stateStr = fields.get("state");
+        String subjectJson = fields.get("subject_json");
+        String actionJson = fields.get("action_json");
+        String createdAtStr = fields.get("created_at");
+        String expiresAtStr = fields.get("expires_at");
+        if (estimateUnitStr == null || estimateAmountStr == null || stateStr == null
+                || subjectJson == null || actionJson == null
+                || createdAtStr == null || expiresAtStr == null) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
+                "Reservation data is corrupted: reservationId=" + fields.get("reservation_id"), 500);
+        }
         Enums.UnitEnum unit = Enums.UnitEnum.valueOf(estimateUnitStr);
-        long estimateAmount = Long.parseLong(fields.get("estimate_amount"));
+        long estimateAmount = Long.parseLong(estimateAmountStr);
 
         String affectedScopesJson = fields.get("affected_scopes");
         List<String> affectedScopes = affectedScopesJson != null
@@ -559,13 +571,13 @@ public class RedisReservationRepository {
 
         return ReservationSummary.builder()
             .reservationId(fields.get("reservation_id"))
-            .status(Enums.ReservationState.valueOf(fields.get("state")))
+            .status(Enums.ReservationState.valueOf(stateStr))
             .idempotencyKey(fields.get("idempotency_key"))
-            .subject(objectMapper.readValue(fields.get("subject_json"), Subject.class))
-            .action(objectMapper.readValue(fields.get("action_json"), Action.class))
+            .subject(objectMapper.readValue(subjectJson, Subject.class))
+            .action(objectMapper.readValue(actionJson, Action.class))
             .reserved(new Amount(unit, estimateAmount))
-            .createdAtMs(Long.parseLong(fields.get("created_at")))
-            .expiresAtMs(Long.parseLong(fields.get("expires_at")))
+            .createdAtMs(Long.parseLong(createdAtStr))
+            .expiresAtMs(Long.parseLong(expiresAtStr))
             .scopePath(fields.get("scope_path"))
             .affectedScopes(affectedScopes)
             .build();

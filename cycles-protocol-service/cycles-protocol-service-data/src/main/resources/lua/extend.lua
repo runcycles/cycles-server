@@ -46,11 +46,14 @@ local result = cjson.encode({
     extended_at = now
 })
 
--- Store idempotency result (TTL = the extension duration)
+-- Store idempotency result (TTL = remaining reservation lifetime after extension)
 if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
     local idem_key = "idem:" .. tenant .. ":extend:" .. idempotency_key
     redis.call('SET', idem_key, result)
-    redis.call('PEXPIRE', idem_key, extend_by_ms)
+    local idem_ttl = new_expires_at - now
+    if idem_ttl > 0 then
+        redis.call('PEXPIRE', idem_key, idem_ttl)
+    end
 end
 
 return result
