@@ -1,15 +1,16 @@
 package io.runcycles.protocol.model;
 
 import com.fasterxml.jackson.annotation.*;
+import jakarta.validation.constraints.*;
 import lombok.*;
 import java.util.Map;
 
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
 public class StandardMetrics {
-    @JsonProperty("tokens_input") private Long tokensInput;
-    @JsonProperty("tokens_output") private Long tokensOutput;
-    @JsonProperty("latency_ms") private Long latencyMs;
-    @JsonProperty("model_version") private String modelVersion;
+    @Min(0) @JsonProperty("tokens_input") private Long tokensInput;
+    @Min(0) @JsonProperty("tokens_output") private Long tokensOutput;
+    @Min(0) @JsonProperty("latency_ms") private Long latencyMs;
+    @Size(max = 128) @JsonProperty("model_version") private String modelVersion;
     @JsonProperty("custom") private Map<String, Object> custom;
 }

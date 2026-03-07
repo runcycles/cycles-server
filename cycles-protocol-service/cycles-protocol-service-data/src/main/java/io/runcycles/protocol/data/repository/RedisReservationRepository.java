@@ -268,7 +268,7 @@ public class RedisReservationRepository {
         }
     }
 
-    public ReservationSummary getReservationById(String reservationId) {
+    public ReservationDetail getReservationById(String reservationId) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "reservation:res_" + reservationId;
             Map<String, String> fields = jedis.hgetAll(key);
@@ -284,7 +284,10 @@ public class RedisReservationRepository {
         }
     }
 
-    public ReservationListResponse listReservations(String tenant, int limit, String startCursor) {
+    public ReservationListResponse listReservations(String tenant, String idempotencyKey,
+                                                    String status, String workspace, String app,
+                                                    String workflow, String agent, String toolset,
+                                                    int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
@@ -307,6 +310,14 @@ public class RedisReservationRepository {
                             Map<String, String> fields = responses.get(key).get();
                             if (fields.isEmpty()) continue;
                             if (!tenant.equals(fields.get("tenant"))) continue;
+                            if (status != null && !status.equals(fields.get("state"))) continue;
+                            if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) continue;
+                            String scopePath = fields.getOrDefault("scope_path", "");
+                            if (workspace != null && !scopeHasSegment(scopePath, "workspace:" + workspace.toLowerCase())) continue;
+                            if (app != null && !scopeHasSegment(scopePath, "app:" + app.toLowerCase())) continue;
+                            if (workflow != null && !scopeHasSegment(scopePath, "workflow:" + workflow.toLowerCase())) continue;
+                            if (agent != null && !scopeHasSegment(scopePath, "agent:" + agent.toLowerCase())) continue;
+                            if (toolset != null && !scopeHasSegment(scopePath, "toolset:" + toolset.toLowerCase())) continue;
 
                             result.add(buildReservationSummary(fields));
 
@@ -338,7 +349,7 @@ public class RedisReservationRepository {
 
     public BalanceQueryResponse getBalances(String tenant, String workspace, String app,
                                             String workflow, String agent, String toolset,
-                                            int limit, String startCursor) {
+                                            boolean includeChildren, int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("budget:*").count(100);
             List<Balance> balances = new ArrayList<>();
@@ -567,7 +578,7 @@ public class RedisReservationRepository {
         return startOk && endOk;
     }
 
-    private ReservationSummary buildReservationSummary(Map<String, String> fields) throws Exception {
+    private ReservationDetail buildReservationSummary(Map<String, String> fields) throws Exception {
         String estimateUnitStr = fields.get("estimate_unit");
         String estimateAmountStr = fields.get("estimate_amount");
         String stateStr = fields.get("state");
@@ -589,18 +600,34 @@ public class RedisReservationRepository {
             ? objectMapper.readValue(affectedScopesJson, List.class)
             : Collections.emptyList();
 
-        return ReservationSummary.builder()
-            .reservationId(fields.get("reservation_id"))
-            .status(Enums.ReservationState.valueOf(stateStr))
-            .idempotencyKey(fields.get("idempotency_key"))
-            .subject(objectMapper.readValue(subjectJson, Subject.class))
-            .action(objectMapper.readValue(actionJson, Action.class))
-            .reserved(new Amount(unit, estimateAmount))
-            .createdAtMs(Long.parseLong(createdAtStr))
-            .expiresAtMs(Long.parseLong(expiresAtStr))
-            .scopePath(fields.get("scope_path"))
-            .affectedScopes(affectedScopes)
-            .build();
+        // Build committed amount if reservation was finalized
+        Amount committed = null;
+        Long finalizedAtMs = null;
+        String chargedAmountStr = fields.get("charged_amount");
+        if (chargedAmountStr != null) {
+            committed = new Amount(unit, Long.parseLong(chargedAmountStr));
+        }
+        String committedAtStr = fields.get("committed_at");
+        if (committedAtStr != null) {
+            finalizedAtMs = Long.parseLong(committedAtStr);
+        }
+        String releasedAtStr = fields.get("released_at");
+        if (releasedAtStr != null) {
+            finalizedAtMs = Long.parseLong(releasedAtStr);
+        }
+
+        ReservationDetail detail = new ReservationDetail(committed, finalizedAtMs);
+        detail.setReservationId(fields.get("reservation_id"));
+        detail.setStatus(Enums.ReservationState.valueOf(stateStr));
+        detail.setIdempotencyKey(fields.get("idempotency_key"));
+        detail.setSubject(objectMapper.readValue(subjectJson, Subject.class));
+        detail.setAction(objectMapper.readValue(actionJson, Action.class));
+        detail.setReserved(new Amount(unit, estimateAmount));
+        detail.setCreatedAtMs(Long.parseLong(createdAtStr));
+        detail.setExpiresAtMs(Long.parseLong(expiresAtStr));
+        detail.setScopePath(fields.get("scope_path"));
+        detail.setAffectedScopes(affectedScopes);
+        return detail;
     }
 
     private void handleScriptError(Map<String, Object> response) {

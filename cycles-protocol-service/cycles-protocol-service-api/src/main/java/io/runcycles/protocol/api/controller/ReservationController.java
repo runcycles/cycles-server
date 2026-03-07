@@ -5,16 +5,19 @@ import io.runcycles.protocol.model.*;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 /** Cycles Protocol v0.1.23 - Reservation Controller */
 @RestController
 @RequestMapping("/v1/reservations")
 @Tag(name = "Reservations")
+@Validated
 public class ReservationController extends BaseController{
     private static final Logger LOG = LoggerFactory.getLogger(ReservationController.class);
 
@@ -31,20 +34,18 @@ public class ReservationController extends BaseController{
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);
         ReservationCreateResponse response = repository.createReservation(request, tenant);
-        // DENY means no reservation was created (dry_run or budget check failed without throwing)
-        HttpStatus status = "DENY".equals(response.getDecision()) ? HttpStatus.OK : HttpStatus.CREATED;
-        return ResponseEntity.status(status).body(response);
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/{reservation_id}")
     @Operation(operationId = "getReservation", summary = "Get reservation by ID")
-    public ResponseEntity<ReservationSummary> get(
+    public ResponseEntity<ReservationDetail> get(
             @PathVariable("reservation_id") String reservationId) {
         LOG.info("GET /v1/reservations/{}", reservationId);
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        ReservationSummary summary = repository.getReservationById(reservationId);
-        return ResponseEntity.ok(summary);
+        ReservationDetail detail = repository.getReservationById(reservationId);
+        return ResponseEntity.ok(detail);
     }
 
     @PostMapping("/{reservation_id}/commit")
@@ -93,12 +94,20 @@ public class ReservationController extends BaseController{
     @Operation(operationId = "listReservations", summary = "List reservations")
     public ResponseEntity<ReservationListResponse> list(
             @RequestParam(required = false) String tenant,
-            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String idempotencyKey,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String workspace,
+            @RequestParam(required = false) String app,
+            @RequestParam(required = false) String workflow,
+            @RequestParam(required = false) String agent,
+            @RequestParam(required = false) String toolset,
+            @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
             @RequestParam(required = false) String cursor) {
         // Spec: if tenant provided it must match auth; if omitted, use auth tenant
         String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
         LOG.info("GET /v1/reservations - tenant: {}", effectiveTenant);
         authorizeTenant(effectiveTenant);
-        return ResponseEntity.ok(repository.listReservations(effectiveTenant, limit, cursor));
+        return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
+                status, workspace, app, workflow, agent, toolset, limit, cursor));
     }
 }
