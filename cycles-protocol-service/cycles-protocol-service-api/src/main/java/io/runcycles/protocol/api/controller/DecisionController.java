@@ -26,10 +26,15 @@ public class DecisionController extends BaseController {
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody DecisionRequest request) {
         LOG.info("POST /v1/decide - tenant: {}", request.getSubject().getTenant());
+        validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);
         DecisionResponse response = repository.decide(request, tenant);
-        return ResponseEntity.ok(response);
+        // Spec: /decide 200 response includes X-RateLimit-Remaining and X-RateLimit-Reset (optional in v0)
+        return ResponseEntity.ok()
+            .header("X-RateLimit-Remaining", "-1")
+            .header("X-RateLimit-Reset", "0")
+            .body(response);
     }
 }

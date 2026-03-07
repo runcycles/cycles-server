@@ -27,6 +27,7 @@ public class EventController extends BaseController {
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody EventCreateRequest request) {
         LOG.info("POST /v1/events - tenant: {}", request.getSubject().getTenant());
+        validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);

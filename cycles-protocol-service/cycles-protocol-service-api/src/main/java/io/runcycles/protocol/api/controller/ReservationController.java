@@ -30,6 +30,7 @@ public class ReservationController extends BaseController{
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody ReservationCreateRequest request) {
         LOG.info("POST /v1/reservations - tenant: {}", request.getSubject().getTenant());
+        validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = request.getSubject().getTenant();
         authorizeTenant(tenant);

@@ -3,6 +3,7 @@ package io.runcycles.protocol.api.controller;
 import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.Enums;
+import io.runcycles.protocol.model.Subject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -34,6 +35,17 @@ abstract public class BaseController {
         if (headerKey != null && bodyKey != null && !headerKey.equals(bodyKey)) {
             throw new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH,
                 "X-Idempotency-Key header does not match idempotency_key in request body", 409);
+        }
+    }
+
+    /**
+     * YAML spec: Subject uses anyOf — at least one standard field must be provided.
+     * A Subject with only dimensions is invalid.
+     */
+    public void validateSubject(Subject subject) {
+        if (subject == null || !subject.hasAtLeastOneStandardField()) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "Subject must have at least one standard field (tenant, workspace, app, workflow, agent, or toolset)", 400);
         }
     }
 }
