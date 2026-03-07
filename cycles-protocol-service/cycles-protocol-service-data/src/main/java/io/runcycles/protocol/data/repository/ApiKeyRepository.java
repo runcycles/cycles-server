@@ -13,6 +13,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
+import java.util.Collections;
 
 @Repository
 public class ApiKeyRepository {
@@ -31,6 +32,9 @@ public class ApiKeyRepository {
                 return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
             }
             String data = jedis.get("apikey:" + keyId);
+            if (data == null) {
+                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+            }
             ApiKey key = objectMapper.readValue(data, ApiKey.class);
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
                 return ApiKeyValidationResponse.builder().valid(false).reason("KEY_" + key.getStatus()).build();
@@ -51,7 +55,7 @@ public class ApiKeyRepository {
                     .valid(true)
                     .tenantId(key.getTenantId())
                     .keyId(key.getKeyId())
-                    .permissions(key.getPermissions())
+                    .permissions(key.getPermissions() != null ? key.getPermissions() : Collections.emptyList())
                     .scopeFilter(key.getScopeFilter())
                     .expiresAt(key.getExpiresAt())
                     .build();

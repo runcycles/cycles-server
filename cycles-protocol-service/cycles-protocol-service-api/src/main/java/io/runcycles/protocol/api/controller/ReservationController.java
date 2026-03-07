@@ -39,8 +39,9 @@ public class ReservationController extends BaseController{
     public ResponseEntity<ReservationSummary> get(
             @PathVariable("reservation_id") String reservationId) {
         LOG.info("GET /v1/reservations/{}", reservationId);
+        String tenant = repository.findReservationTenantById(reservationId);
+        authorizeTenant(tenant);
         ReservationSummary summary = repository.getReservationById(reservationId);
-        authorizeTenant(summary.getSubject().getTenant());
         return ResponseEntity.ok(summary);
     }
 

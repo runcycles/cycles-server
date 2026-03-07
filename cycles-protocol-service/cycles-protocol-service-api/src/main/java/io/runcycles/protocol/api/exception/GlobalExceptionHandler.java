@@ -9,8 +9,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /** Cycles Protocol v0.1.23 - Exception Handler */
 @RestControllerAdvice
@@ -30,6 +32,18 @@ public class GlobalExceptionHandler {
             .message(ex.getMessage())
             .requestId(resolveRequestId(request))
             .details(ex.getDetails())
+            .build());
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationException(MethodArgumentNotValidException ex, HttpServletRequest request) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+            .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+            .collect(Collectors.joining(", "));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
+            .error(Enums.ErrorCode.INVALID_REQUEST)
+            .message("Validation failed: " + message)
+            .requestId(resolveRequestId(request))
             .build());
     }
 
