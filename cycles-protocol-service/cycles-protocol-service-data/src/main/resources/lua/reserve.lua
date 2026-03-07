@@ -15,23 +15,29 @@ local scope_path = ARGV[9]
 local tenant = ARGV[10]
 local overage_policy = ARGV[11] or "REJECT"
 local metadata_json   = ARGV[12] or ""
+local payload_hash    = ARGV[13] or ""
 
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
     local existing_res_id = redis.call('GET', idem_key)
 
     if existing_res_id then
-        -- Found existing reservation identifier - return it immediately
-        --return redis.call('HGET', 'reservation:res_' .. existing_res_id, 'response_json')
+        -- Spec MUST: detect payload mismatch on idempotent replay
+        if payload_hash ~= "" then
+            local stored_hash = redis.call('GET', idem_key .. ':hash')
+            if stored_hash and stored_hash ~= payload_hash then
+                return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+            end
+        end
         return cjson.encode({
             reservation_id = existing_res_id,
             idempotency_key = idempotency_key,
         })
     end
 end
--- Parse affected scopes (fixed args end at ARGV[12]; scopes start at ARGV[13])
+-- Parse affected scopes (fixed args end at ARGV[13]; scopes start at ARGV[14])
 local affected_scopes = {}
-for i = 13, #ARGV do
+for i = 14, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -103,10 +109,15 @@ redis.call('ZADD', 'reservation:ttl', expires_at, reservation_id)
 -- After successful reservation, store idempotency mapping
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
-    -- Store the entire JSON response
+    -- Minimum 24h TTL to avoid premature idempotency key recycling on short-lived reservations
+    local idem_ttl = math.max(ttl_ms + grace_ms, 86400000)
     redis.call('SET', idem_key, reservation_id)
-    -- Setting TTL as reservation that actually expires and removes the record
-    redis.call('PEXPIRE', idem_key, ttl_ms + grace_ms)
+    redis.call('PEXPIRE', idem_key, idem_ttl)
+    -- Store payload hash for idempotency mismatch detection (spec MUST)
+    if payload_hash ~= "" then
+        redis.call('SET', idem_key .. ':hash', payload_hash)
+        redis.call('PEXPIRE', idem_key .. ':hash', idem_ttl)
+    end
 end
 
 return cjson.encode({

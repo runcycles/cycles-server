@@ -3,6 +3,7 @@
 
 local reservation_id = ARGV[1]
 local idempotency_key = ARGV[2]
+local payload_hash    = ARGV[3] or ""
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -17,6 +18,13 @@ local stored_idempotency_key = redis.call('HGET', reservation_key, 'released_ide
 -- Check if already released (idempotent replay or finalized)
 if state == "RELEASED" then
     if stored_idempotency_key == idempotency_key then
+        -- Spec MUST: detect payload mismatch on idempotent replay
+        if payload_hash ~= "" then
+            local stored_hash = redis.call('HGET', reservation_key, 'released_payload_hash')
+            if stored_hash and stored_hash ~= payload_hash then
+                return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+            end
+        end
         return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})
     else
         -- Different key on already-released reservation = finalized, not idempotency mismatch
@@ -59,7 +67,8 @@ local now = tonumber(tRelease[1]) * 1000 + math.floor(tonumber(tRelease[2]) / 10
 redis.call('HMSET', reservation_key,
     'state', 'RELEASED',
     'released_at', now,
-    'released_idempotency_key', idempotency_key
+    'released_idempotency_key', idempotency_key,
+    'released_payload_hash', payload_hash
 )
 
 return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})

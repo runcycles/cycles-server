@@ -12,6 +12,8 @@ import redis.clients.jedis.*;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.*;
 
 /** Cycles Protocol v0.1.23 - Repository with Lua script execution */
@@ -55,9 +57,10 @@ public class RedisReservationRepository {
             args.add(scopePath);
             args.add(tenant);
             args.add(overagePolicy);
-            // ARGV[12] = metadata_json (empty string if absent); scopes start at ARGV[13]
+            // ARGV[12] = metadata_json, ARGV[13] = payload_hash; scopes start at ARGV[14]
             args.add(request.getMetadata() != null
                 ? objectMapper.writeValueAsString(request.getMetadata()) : "");
+            args.add(computePayloadHash(request));
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(reserveScript, 0, args.toArray(new String[0]));
@@ -112,10 +115,18 @@ public class RedisReservationRepository {
 
         // Idempotency: replay cached result for same (tenant, key) within 24 h
         String idempotencyKey = request.getIdempotencyKey();
+        String payloadHash = computePayloadHash(request);
         if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
             String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
             String cached = jedis.get(idemKey);
             if (cached != null) {
+                // Spec MUST: detect payload mismatch on idempotent replay
+                if (!payloadHash.isEmpty()) {
+                    String storedHash = jedis.get(idemKey + ":hash");
+                    if (storedHash != null && !storedHash.equals(payloadHash)) {
+                        throw CyclesProtocolException.idempotencyMismatch();
+                    }
+                }
                 return objectMapper.readValue(cached, ReservationCreateResponse.class);
             }
         }
@@ -191,6 +202,10 @@ public class RedisReservationRepository {
             String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
             jedis.set(idemKey, objectMapper.writeValueAsString(dryRunResponse));
             jedis.pexpire(idemKey, 86400000L);
+            if (!payloadHash.isEmpty()) {
+                jedis.set(idemKey + ":hash", payloadHash);
+                jedis.pexpire(idemKey + ":hash", 86400000L);
+            }
         }
 
         return dryRunResponse;
@@ -200,15 +215,21 @@ public class RedisReservationRepository {
         LOG.info("Committing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            // Pre-fetch estimate to compute released amount (spec: "Amount returned from over-reservation")
+            // Pre-fetch estimate and affected scopes for released amount and balances
             String reservationKey = "reservation:res_" + reservationId;
-            String estimateAmountStr = jedis.hget(reservationKey, "estimate_amount");
+            List<String> prefetch = jedis.hmget(reservationKey, "estimate_amount", "estimate_unit", "affected_scopes");
+            String estimateAmountStr = prefetch.get(0);
+            String estimateUnitStr = prefetch.get(1);
+            String affectedScopesJson = prefetch.get(2);
 
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getActual().getAmount()),
                 request.getActual().getUnit().name(),
-                request.getIdempotencyKey() != null ? request.getIdempotencyKey() : ""
+                request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
+                computePayloadHash(request),
+                request.getMetrics() != null ? objectMapper.writeValueAsString(request.getMetrics()) : "",
+                request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : ""
             );
 
             Object result = jedis.eval(commitScript, 0, args.toArray(new String[0]));
@@ -228,10 +249,18 @@ public class RedisReservationRepository {
                 }
             }
 
+            // Populate balances snapshot for operator visibility
+            List<Balance> balances = null;
+            if (affectedScopesJson != null && estimateUnitStr != null) {
+                List<String> scopes = objectMapper.readValue(affectedScopesJson, List.class);
+                balances = fetchBalancesForScopes(jedis, scopes, Enums.UnitEnum.valueOf(estimateUnitStr));
+            }
+
             return CommitResponse.builder()
                 .status("COMMITTED")
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
+                .balances(balances)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
@@ -247,12 +276,15 @@ public class RedisReservationRepository {
 
         try (Jedis jedis = jedisPool.getResource()) {
             String reservationKey = "reservation:res_" + reservationId;
-            String estimateAmountStr = jedis.hget(reservationKey, "estimate_amount");
-            String estimateUnitStr = jedis.hget(reservationKey, "estimate_unit");
+            List<String> prefetch = jedis.hmget(reservationKey, "estimate_amount", "estimate_unit", "affected_scopes");
+            String estimateAmountStr = prefetch.get(0);
+            String estimateUnitStr = prefetch.get(1);
+            String affectedScopesJson = prefetch.get(2);
 
             List<String> args = Arrays.asList(
                 reservationId,
-                request.getIdempotencyKey() != null ? request.getIdempotencyKey() : ""
+                request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
+                computePayloadHash(request)
             );
 
             Object result = jedis.eval(releaseScript, 0, args.toArray(new String[0]));
@@ -271,9 +303,17 @@ public class RedisReservationRepository {
                 );
             }
 
+            // Populate balances snapshot for operator visibility
+            List<Balance> balances = null;
+            if (affectedScopesJson != null && estimateUnitStr != null) {
+                List<String> scopes = objectMapper.readValue(affectedScopesJson, List.class);
+                balances = fetchBalancesForScopes(jedis, scopes, Enums.UnitEnum.valueOf(estimateUnitStr));
+            }
+
             return ReleaseResponse.builder()
                 .status("RELEASED")
                 .released(releasedAmount)
+                .balances(balances)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to release reservation:reservationId={},req={}",reservationId,request,e);
@@ -288,11 +328,19 @@ public class RedisReservationRepository {
         LOG.info("Extending reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
+            // Pre-fetch affected scopes and unit for balances
+            String reservationKey = "reservation:res_" + reservationId;
+            List<String> prefetch = jedis.hmget(reservationKey, "estimate_unit", "affected_scopes");
+            String estimateUnitStr = prefetch.get(0);
+            String affectedScopesJson = prefetch.get(1);
+
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getExtendByMs()),
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
-                tenant != null ? tenant : ""
+                tenant != null ? tenant : "",
+                computePayloadHash(request),
+                request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : ""
             );
 
             Object result = jedis.eval(extendScript, 0, args.toArray(new String[0]));
@@ -302,9 +350,17 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
+            // Populate balances snapshot for operator visibility
+            List<Balance> balances = null;
+            if (affectedScopesJson != null && estimateUnitStr != null) {
+                List<String> scopes = objectMapper.readValue(affectedScopesJson, List.class);
+                balances = fetchBalancesForScopes(jedis, scopes, Enums.UnitEnum.valueOf(estimateUnitStr));
+            }
+
             return ReservationExtendResponse.builder()
                 .status("ACTIVE")
                 .expiresAtMs(((Number) response.get("expires_at_ms")).longValue())
+                .balances(balances)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to extend reservation:reservationId={},req={}",reservationId,request,e);
@@ -491,10 +547,18 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             // Idempotency: replay if same (tenant, key) seen before
             String idempotencyKey = request.getIdempotencyKey();
+            String payloadHash = computePayloadHash(request);
             if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
                 String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
                 String cached = jedis.get(idemKey);
                 if (cached != null) {
+                    // Spec MUST: detect payload mismatch on idempotent replay
+                    if (!payloadHash.isEmpty()) {
+                        String storedHash = jedis.get(idemKey + ":hash");
+                        if (storedHash != null && !storedHash.equals(payloadHash)) {
+                            throw CyclesProtocolException.idempotencyMismatch();
+                        }
+                    }
                     return objectMapper.readValue(cached, DecisionResponse.class);
                 }
             }
@@ -569,6 +633,10 @@ public class RedisReservationRepository {
                 String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
                 jedis.set(idemKey, objectMapper.writeValueAsString(response));
                 jedis.pexpire(idemKey, 86400000L);
+                if (!payloadHash.isEmpty()) {
+                    jedis.set(idemKey + ":hash", payloadHash);
+                    jedis.pexpire(idemKey + ":hash", 86400000L);
+                }
             }
 
             return response;
@@ -598,11 +666,12 @@ public class RedisReservationRepository {
             args.add(scopePath);
             args.add(tenant);
             args.add(eventOveragePolicy);
-            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms; scopes start at ARGV[12]
+            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms, ARGV[12] = payload_hash; scopes start at ARGV[13]
             args.add(request.getMetrics() != null
                 ? objectMapper.writeValueAsString(request.getMetrics()) : "");
             args.add(request.getClientTimeMs() != null
                 ? String.valueOf(request.getClientTimeMs()) : "");
+            args.add(computePayloadHash(request));
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(eventScript, 0, args.toArray(new String[0]));
@@ -617,9 +686,13 @@ public class RedisReservationRepository {
             String responseEventId = response.containsKey("event_id") ?
                 (String) response.get("event_id") : eventId;
 
+            // Populate balances snapshot for operator visibility
+            List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getActual().getUnit());
+
             return EventCreateResponse.builder()
                 .status("APPLIED")
                 .eventId(responseEventId)
+                .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
@@ -637,7 +710,7 @@ public class RedisReservationRepository {
             return tenant;
         } catch (Exception e) {
             LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
-            return null;
+            throw new RuntimeException("Failed to resolve reservation tenant", e);
         }
     }
 
@@ -727,6 +800,51 @@ public class RedisReservationRepository {
         detail.setScopePath(fields.get("scope_path"));
         detail.setAffectedScopes(affectedScopes);
         return detail;
+    }
+
+    /**
+     * Compute a SHA-256 hex digest of the canonical JSON serialization of a request object.
+     * Used for idempotency payload mismatch detection (spec MUST).
+     */
+    private String computePayloadHash(Object request) {
+        try {
+            String json = objectMapper.writeValueAsString(request);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(json.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            LOG.warn("Failed to compute payload hash, skipping mismatch detection", e);
+            return "";
+        }
+    }
+
+    /**
+     * Fetch current balances for a list of scopes and unit.
+     * Used to populate the optional balances field in mutation responses.
+     */
+    private List<Balance> fetchBalancesForScopes(Jedis jedis, List<String> scopes, Enums.UnitEnum unit) {
+        List<Balance> balances = new ArrayList<>();
+        for (String scope : scopes) {
+            String budgetKey = "budget:" + scope + ":" + unit.name();
+            Map<String, String> budget = jedis.hgetAll(budgetKey);
+            if (budget != null && !budget.isEmpty()) {
+                long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
+                long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+                boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
+                balances.add(Balance.builder()
+                    .scope(scope)
+                    .scopePath(scope)
+                    .remaining(new SignedAmount(unit, Long.parseLong(budget.getOrDefault("remaining", "0"))))
+                    .reserved(new Amount(unit, Long.parseLong(budget.getOrDefault("reserved", "0"))))
+                    .spent(new Amount(unit, Long.parseLong(budget.getOrDefault("spent", "0"))))
+                    .allocated(new Amount(unit, Long.parseLong(budget.getOrDefault("allocated", "0"))))
+                    .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
+                    .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
+                    .isOverLimit(isOverLimit ? true : null)
+                    .build());
+            }
+        }
+        return balances;
     }
 
     private void handleScriptError(Map<String, Object> response) {

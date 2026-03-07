@@ -6,6 +6,9 @@ local reservation_id = ARGV[1]
 local actual_amount = tonumber(ARGV[2])
 local actual_unit = ARGV[3]
 local idempotency_key = ARGV[4]
+local payload_hash    = ARGV[5] or ""
+local metrics_json    = ARGV[6] or ""
+local metadata_json   = ARGV[7] or ""
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -25,6 +28,13 @@ local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or 
 -- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
     if stored_idempotency_key == idempotency_key then
+        -- Spec MUST: detect payload mismatch on idempotent replay
+        if payload_hash ~= "" then
+            local stored_hash = redis.call('HGET', reservation_key, 'committed_payload_hash')
+            if stored_hash and stored_hash ~= payload_hash then
+                return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+            end
+        end
         local charged = tonumber(redis.call('HGET', reservation_key, 'charged_amount'))
         local debt_incurred = tonumber(redis.call('HGET', reservation_key, 'debt_incurred') or 0)
         return cjson.encode({
@@ -182,7 +192,10 @@ redis.call('HMSET', reservation_key,
     'charged_amount', charged_amount,
     'debt_incurred', total_debt_incurred,
     'committed_at', nowCommit,
-    'committed_idempotency_key', idempotency_key
+    'committed_idempotency_key', idempotency_key,
+    'committed_payload_hash', payload_hash,
+    'committed_metrics_json', metrics_json,
+    'committed_metadata_json', metadata_json
 )
 
 return cjson.encode({

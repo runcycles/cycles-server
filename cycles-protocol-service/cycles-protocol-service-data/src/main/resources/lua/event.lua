@@ -12,12 +12,20 @@ local tenant = ARGV[8]
 local overage_policy  = ARGV[9] or "REJECT"
 local metrics_json    = ARGV[10] or ""
 local client_time_ms  = ARGV[11] or ""
+local payload_hash    = ARGV[12] or ""
 
 -- Check idempotency
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
     local existing_event_id = redis.call('GET', idem_key)
     if existing_event_id then
+        -- Spec MUST: detect payload mismatch on idempotent replay
+        if payload_hash ~= "" then
+            local stored_hash = redis.call('GET', idem_key .. ':hash')
+            if stored_hash and stored_hash ~= payload_hash then
+                return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+            end
+        end
         return cjson.encode({
             event_id = existing_event_id,
             idempotency_key = idempotency_key,
@@ -27,12 +35,10 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
 end
 
 -- Parse affected scopes.
--- Fixed args: ARGV[1]=event_id, [2]=subject_json, [3]=action_json,
---             [4]=amount, [5]=unit, [6]=idempotency_key, [7]=scope_path,
---             [8]=tenant, [9]=overage_policy, [10]=metrics_json, [11]=client_time_ms.
--- Affected scopes are the variadic tail starting at ARGV[12].
+-- Fixed args: ARGV[1]=event_id .. [12]=payload_hash.
+-- Affected scopes are the variadic tail starting at ARGV[13].
 local affected_scopes = {}
-for i = 12, #ARGV do
+for i = 13, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -115,6 +121,11 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
     redis.call('SET', idem_key, event_id)
     redis.call('PEXPIRE', idem_key, 604800000)
+    -- Store payload hash for idempotency mismatch detection (spec MUST)
+    if payload_hash ~= "" then
+        redis.call('SET', idem_key .. ':hash', payload_hash)
+        redis.call('PEXPIRE', idem_key .. ':hash', 604800000)
+    end
 end
 
 return cjson.encode({

@@ -5,12 +5,21 @@ local reservation_id = ARGV[1]
 local extend_by_ms = tonumber(ARGV[2])
 local idempotency_key = ARGV[3]
 local tenant = ARGV[4]
+local payload_hash    = ARGV[5] or ""
+local metadata_json   = ARGV[6] or ""
 
 -- Idempotency: replay prior extend result if same (tenant, key) seen before
 if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
     local idem_key = "idem:" .. tenant .. ":extend:" .. reservation_id .. ":" .. idempotency_key
     local cached = redis.call('GET', idem_key)
     if cached then
+        -- Spec MUST: detect payload mismatch on idempotent replay
+        if payload_hash ~= "" then
+            local stored_hash = redis.call('GET', idem_key .. ':hash')
+            if stored_hash and stored_hash ~= payload_hash then
+                return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+            end
+        end
         return cached
     end
 end
@@ -48,6 +57,11 @@ local result = cjson.encode({
     extended_at = now
 })
 
+-- Store extend metadata in reservation hash if provided
+if metadata_json ~= "" then
+    redis.call('HSET', reservation_key, 'extend_metadata_json', metadata_json)
+end
+
 -- Store idempotency result (TTL = remaining reservation lifetime after extension)
 if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
     local idem_key = "idem:" .. tenant .. ":extend:" .. reservation_id .. ":" .. idempotency_key
@@ -55,6 +69,11 @@ if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant 
     local idem_ttl = new_expires_at - now
     if idem_ttl > 0 then
         redis.call('PEXPIRE', idem_key, idem_ttl)
+        -- Store payload hash for idempotency mismatch detection (spec MUST)
+        if payload_hash ~= "" then
+            redis.call('SET', idem_key .. ':hash', payload_hash)
+            redis.call('PEXPIRE', idem_key .. ':hash', idem_ttl)
+        end
     end
 end
 
