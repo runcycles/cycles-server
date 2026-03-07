@@ -8,7 +8,7 @@ local tenant = ARGV[4]
 
 -- Idempotency: replay prior extend result if same (tenant, key) seen before
 if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
-    local idem_key = "idem:" .. tenant .. ":extend:" .. idempotency_key
+    local idem_key = "idem:" .. tenant .. ":extend:" .. reservation_id .. ":" .. idempotency_key
     local cached = redis.call('GET', idem_key)
     if cached then
         return cached
@@ -48,7 +48,7 @@ local result = cjson.encode({
 
 -- Store idempotency result (TTL = remaining reservation lifetime after extension)
 if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
-    local idem_key = "idem:" .. tenant .. ":extend:" .. idempotency_key
+    local idem_key = "idem:" .. tenant .. ":extend:" .. reservation_id .. ":" .. idempotency_key
     redis.call('SET', idem_key, result)
     local idem_ttl = new_expires_at - now
     if idem_ttl > 0 then

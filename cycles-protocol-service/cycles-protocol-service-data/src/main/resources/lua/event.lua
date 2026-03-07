@@ -69,7 +69,8 @@ for _, scope in ipairs(affected_scopes) do
 end
 
 -- All checks passed - debit across all scopes
-local now = tonumber(redis.call('TIME')[1]) * 1000
+local t_now = redis.call('TIME')
+local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
