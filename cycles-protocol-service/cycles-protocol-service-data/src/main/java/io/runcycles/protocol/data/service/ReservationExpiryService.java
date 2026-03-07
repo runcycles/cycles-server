@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
-import java.util.Set;
+import java.util.List;
 
 /**
  * Cycles Protocol v0.1.23 - Background job that marks expired reservations.
@@ -34,7 +34,7 @@ public class ReservationExpiryService {
         try (Jedis jedis = jedisPool.getResource()) {
             // Fetch all reservation IDs whose score (expires_at_ms) <= now.
             // Any that are still in their grace period will be skipped by the Lua script.
-            Set<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now);
+            List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now);
             if (candidates.isEmpty()) return;
 
             LOG.debug("Expiry sweep: {} candidate(s)", candidates.size());
