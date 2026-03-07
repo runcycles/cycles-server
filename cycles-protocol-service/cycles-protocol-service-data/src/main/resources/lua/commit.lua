@@ -22,7 +22,7 @@ local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scope
 local stored_idempotency_key = redis.call('HGET', reservation_key, 'committed_idempotency_key')
 local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or "REJECT"
 
--- Check if already committed (idempotent)
+-- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
     if stored_idempotency_key == idempotency_key then
         local charged = tonumber(redis.call('HGET', reservation_key, 'charged_amount'))
@@ -34,7 +34,8 @@ if state == "COMMITTED" then
             debt_incurred = debt_incurred
         })
     else
-        return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+        -- Different key on already-committed reservation = finalized, not idempotency mismatch
+        return cjson.encode({error = "RESERVATION_FINALIZED", state = "COMMITTED"})
     end
 end
 
@@ -129,7 +130,7 @@ if delta > 0 then
 
                 -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
                 local new_debt = current_debt + deficit
-                if overdraft_limit > 0 and new_debt >= overdraft_limit then
+                if overdraft_limit > 0 and new_debt > overdraft_limit then
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end
             end

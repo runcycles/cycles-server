@@ -36,22 +36,14 @@ for i = 12, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
--- Check all scopes first (fail fast, no mutations)
+-- Check all scopes first (fail fast, no mutations).
+-- Spec: debt/is_over_limit checks only block *reservations*, not events.
+-- Events use their overage_policy to handle insufficient budget.
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
 
     if redis.call('EXISTS', budget_key) == 0 then
         return cjson.encode({error = "BUDGET_NOT_FOUND", scope = scope})
-    end
-
-    local is_over_limit = redis.call('HGET', budget_key, 'is_over_limit')
-    if is_over_limit == "true" then
-        return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope})
-    end
-
-    local debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-    if debt > 0 then
-        return cjson.encode({error = "DEBT_OUTSTANDING", scope = scope, debt = debt})
     end
 
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
@@ -85,7 +77,7 @@ for _, scope in ipairs(affected_scopes) do
         redis.call('HINCRBY', budget_key, 'spent', amount)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         local new_debt = current_debt + deficit
-        if overdraft_limit > 0 and new_debt >= overdraft_limit then
+        if overdraft_limit > 0 and new_debt > overdraft_limit then
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
         end
     else

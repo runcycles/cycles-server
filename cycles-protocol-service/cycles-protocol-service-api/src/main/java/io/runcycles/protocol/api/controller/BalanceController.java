@@ -34,7 +34,7 @@ public class BalanceController extends BaseController{
             @RequestParam(required = false) String workflow,
             @RequestParam(required = false) String agent,
             @RequestParam(required = false) String toolset,
-            @RequestParam(required = false, defaultValue = "false") boolean includeChildren,
+            @RequestParam(value = "include_children", required = false, defaultValue = "false") boolean includeChildren,
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
             @RequestParam(required = false) String cursor) {
         // Spec NORMATIVE: at least one subject filter must be provided

@@ -14,12 +14,13 @@ end
 local state = redis.call('HGET', reservation_key, 'state')
 local stored_idempotency_key = redis.call('HGET', reservation_key, 'released_idempotency_key')
 
--- Check if already released (idempotent)
+-- Check if already released (idempotent replay or finalized)
 if state == "RELEASED" then
     if stored_idempotency_key == idempotency_key then
         return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})
     else
-        return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+        -- Different key on already-released reservation = finalized, not idempotency mismatch
+        return cjson.encode({error = "RESERVATION_FINALIZED", state = "RELEASED"})
     end
 end
 

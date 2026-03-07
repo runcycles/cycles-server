@@ -341,7 +341,7 @@ public class RedisReservationRepository {
                                                     int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
-            List<ReservationDetail> result = new ArrayList<>();
+            List<ReservationSummary> result = new ArrayList<>();
             String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
 
             do {
@@ -370,14 +370,16 @@ public class RedisReservationRepository {
                             if (agent != null && !scopeHasSegment(scopePath, "agent:" + agent.toLowerCase())) continue;
                             if (toolset != null && !scopeHasSegment(scopePath, "toolset:" + toolset.toLowerCase())) continue;
 
-                            result.add(buildReservationSummary(fields));
+                            result.add(toSummary(buildReservationSummary(fields)));
 
                             if (result.size() >= limit) {
                                 String nextCursor = scan.getCursor();
                                 if ("0".equals(nextCursor)) nextCursor = null;
+                                // hasMore is always true here: we stopped early due to limit,
+                                // so there may be unprocessed keys in this or future scan pages.
                                 return ReservationListResponse.builder()
                                     .reservations(result)
-                                    .hasMore(nextCursor != null)
+                                    .hasMore(true)
                                     .nextCursor(nextCursor)
                                     .build();
                             }
@@ -457,9 +459,11 @@ public class RedisReservationRepository {
                         if (balances.size() >= limit) {
                             String nextCursor = scan.getCursor();
                             if ("0".equals(nextCursor)) nextCursor = null;
+                            // hasMore is always true here: we stopped early due to limit,
+                            // so there may be unprocessed keys in this or future scan pages.
                             return BalanceQueryResponse.builder()
                                 .balances(balances)
-                                .hasMore(nextCursor != null)
+                                .hasMore(true)
                                 .nextCursor(nextCursor)
                                 .build();
                         }
@@ -649,6 +653,21 @@ public class RedisReservationRepository {
         boolean startOk = idx == 0 || scopePath.charAt(idx - 1) == '/';
         boolean endOk = end == scopePath.length() || scopePath.charAt(end) == '/';
         return startOk && endOk;
+    }
+
+    private ReservationSummary toSummary(ReservationDetail detail) {
+        return ReservationSummary.builder()
+            .reservationId(detail.getReservationId())
+            .status(detail.getStatus())
+            .idempotencyKey(detail.getIdempotencyKey())
+            .subject(detail.getSubject())
+            .action(detail.getAction())
+            .reserved(detail.getReserved())
+            .createdAtMs(detail.getCreatedAtMs())
+            .expiresAtMs(detail.getExpiresAtMs())
+            .scopePath(detail.getScopePath())
+            .affectedScopes(detail.getAffectedScopes())
+            .build();
     }
 
     private ReservationDetail buildReservationSummary(Map<String, String> fields) throws Exception {
