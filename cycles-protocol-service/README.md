@@ -28,11 +28,14 @@ http://localhost:8080/swagger-ui.html
 ## Endpoints
 
 - POST   /v1/reservations - Create reservation
+- GET    /v1/reservations - List reservations
+- GET    /v1/reservations/{id} - Get reservation by ID
 - POST   /v1/reservations/{id}/commit - Commit spend
 - POST   /v1/reservations/{id}/release - Release reservation
 - POST   /v1/reservations/{id}/extend - Extend TTL
-- GET    /v1/reservations - List reservations
 - GET    /v1/balances - Query balances
+- POST   /v1/decide - Evaluate budget decision without reserving
+- POST   /v1/events - Record direct debit event without reservation
 
 ## Version 0.1.23 Updates
 
