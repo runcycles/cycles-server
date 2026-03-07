@@ -1,0 +1,1393 @@
+openapi: 3.1.0
+info:
+  title: Cycles Budget Authority API
+  version: 0.1.23
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  summary: v0 protocol for deterministic budget governance (reserve/commit) with optional decide + balance queries, plus debt/overdraft support with soft-limit reconciliation.
+  description: |-
+    PURPOSE (v0):
+      - Provide a minimal, language-agnostic protocol to enforce deterministic spend exposure for agent runtimes
+        via concurrency-safe reservations and idempotent commits.
+      - Include optional integration endpoints: /decide (soft landing) and /balances (operator visibility).
+
+    NON-GOALS (v0) (NORMATIVE):
+      - Budget establishment and funding operations are out of scope for v0.
+        v0 defines the reservation/commit/release enforcement plane and balance reporting only.
+      - v0 provides no API for budget CRUD (create/update/delete), allocation setting, credit/deposit, or debit/withdrawal.
+        Implementations MAY provide these via an operator/admin plane or a separate API; future versions may standardize them.
+      - A reservation lifecycle is denominated in exactly one unit (single-unit reserve/commit/release).
+        Multi-unit atomic reservation/settlement is a v1+ concern.
+
+    AUTH & TENANCY (NORMATIVE):
+      - Requests are authenticated via X-Cycles-API-Key.
+      - Server determines an "effective tenant" from the API key (or other auth context).
+      - Subject.tenant is a budgeting dimension and MUST be validated against the effective tenant.
+        If mismatched, server MUST return 403 FORBIDDEN.
+      - Reservation ownership MUST be enforced: every reservation is bound to the effective tenant at creation.
+        Any subsequent GET/commit/release for a reservation that exists but is owned by a different tenant
+        MUST return 403 FORBIDDEN.
+      - Balance visibility MUST be tenant-scoped: the server MUST only return balances within the effective tenant.
+        If a request attempts to query another tenant (e.g., tenant filter mismatches), server MUST return 403 FORBIDDEN.
+
+    EVOLUTION CONTRACT:
+      - This API starts at v0.1.0 with /v1 paths to avoid future client churn.
+      - v1+ evolution MUST be backward-compatible by default: new fields are additive, existing field meanings MUST NOT change.
+      - Breaking changes (e.g., new required fields, semantic changes) require a new major API path (e.g., /v2).
+
+    CORE INVARIANTS:
+      - Reserve is atomic across all derived scopes.
+      - Commit and release are idempotent.
+      - No double-charge on retries (idempotency key enforced).
+
+    ERROR SEMANTICS (NORMATIVE):
+      - Budget denials MUST return HTTP 409 with error=BUDGET_EXCEEDED.
+      - Overdraft limit exceeded MUST return HTTP 409 with error=OVERDRAFT_LIMIT_EXCEEDED in two cases:
+        1. During commit: when overage_policy=ALLOW_WITH_OVERDRAFT and (current_debt + delta) > overdraft_limit at commit time
+        2. During reservation: when the scope is in over-limit state (debt > overdraft_limit due to prior concurrent commits)
+      - Outstanding debt blocking reservation MUST return HTTP 409 with error=DEBT_OUTSTANDING
+        (when debt > 0 and new reservation is attempted).
+      - Finalized reservations MUST return HTTP 409 with error=RESERVATION_FINALIZED.
+      - Expired reservations MUST return HTTP 410 with error=RESERVATION_EXPIRED.
+        (commit/release: beyond expires_at_ms + grace_period_ms; extend: beyond expires_at_ms).
+      - Reservations that never existed MUST return HTTP 404 with error=NOT_FOUND.
+      - HTTP 429 is reserved for server-side throttling/rate limiting (optional in v0), not deterministic budget exhaustion.
+      - Unit mismatch on commit (actual.unit ≠ reservation unit) or event (actual.unit not supported for the target scope) MUST return HTTP 400 with error=UNIT_MISMATCH.
+      - For expiry comparisons, “now” refers to server time (not client-provided time).
+      - When is_over_limit=true, server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED for new reservations. 
+        This takes precedence over DEBT_OUTSTANDING even when debt > 0.
+
+    OVERDRAFT RECONCILIATION (NORMATIVE):
+      - When concurrent commits cause debt > overdraft_limit on a scope, the server MUST mark that scope as "over-limit" (is_over_limit=true).
+      - Over-limit scopes MUST reject ALL new reservation attempts with 409 OVERDRAFT_LIMIT_EXCEEDED until debt is reduced below overdraft_limit.
+      - Operators reconcile over-limit scopes via budget funding operations (out-of-scope for this API). 
+        When debt is repaid below overdraft_limit, is_over_limit automatically returns to false.
+      - Servers SHOULD provide monitoring/alerting when scopes enter over-limit state:
+          * Log events with scope identifier, current debt, and overdraft_limit
+          * Optionally emit webhooks or notifications to operators
+          * Optionally expose metrics endpoint showing over-limit scope count
+      - Clients SHOULD handle 409 OVERDRAFT_LIMIT_EXCEEDED on reservation as a signal to wait/retry with exponential backoff, or escalate to operators.
+
+    IDEMPOTENCY (NORMATIVE):
+      - If X-Idempotency-Key header is present and body.idempotency_key is present, they MUST match.
+      - Server MUST enforce idempotency per (effective tenant, endpoint, idempotency_key).
+      - On replay of an idempotent request that previously succeeded, server MUST return the original successful
+        response payload (including any server-generated identifiers such as reservation_id).
+      - If the same key is reused with a different request payload, server MUST return 409 IDEMPOTENCY_MISMATCH.
+      - Servers SHOULD compare idempotency payloads using a canonical JSON representation
+        (e.g., RFC 8785 JSON Canonicalization Scheme) or an equivalent stable serialization.
+
+    SCOPE DERIVATION (NORMATIVE):
+      - Server derives canonical scope identifiers and a canonical scope_path from Subject fields.
+      - Canonical ordering is: tenant → workspace → app → workflow → agent → toolset.
+      - affected_scopes returned by the server MUST be in that canonical order.
+
+    RESERVATION LEASING (GUIDANCE):
+      - To mitigate "zombie reservations" (client crash after reserve), SDKs SHOULD:
+        * keep ttl_ms short (typically 10s–30s),
+        * include modest estimation buffers when using overage_policy=REJECT,
+        * reserve in small initial leases and increase gradually ("slow start") for long or bursty operations,
+        * prefer chunked reserve/commit cycles for long-running actions rather than a single large reservation.
+
+    OVERDRAFT MONITORING (GUIDANCE):
+      - Implementations SHOULD provide visibility into over-limit states:
+          * Dashboard showing scopes with is_over_limit=true
+          * Alerts when debt exceeds overdraft_limit
+          * Time-series metrics: debt_utilization = debt / overdraft_limit
+      - Recommended alerting thresholds:
+          * Warning at 80% of overdraft_limit
+          * Critical at 100% (over-limit state)
+      - Recommended operator runbook:
+          1. Investigate which reservations caused the over-limit state
+          2. Determine if overdraft_limit should be increased (normal variance) or if this represents anomalous consumption (incident)
+          3. Fund the scope to repay debt below limit
+          4. Monitor that is_over_limit returns to false
+          5. Resume operations automatically
+
+    CHANGELOG:
+      v0.1.23 (2026-02-21):
+        - Renamed Subject.toolGroup → Subject.toolset across all endpoints, schemas,
+          and normative text for consistency with scope hierarchy naming conventions.
+        - Added ALLOW_WITH_OVERDRAFT semantics to EventCreateRequest.overage_policy
+          (finding: behavior was previously unspecified for events).
+        - Clarified DecisionResponse.decision description: DENY is a valid live-path
+          outcome on /decide; removed erroneous dry_run framing copied from
+          ReservationCreateResponse.
+        - Added ERROR SEMANTICS precedence rule: when is_over_limit=true, server MUST
+          return 409 OVERDRAFT_LIMIT_EXCEEDED for new reservations, taking precedence
+          over DEBT_OUTSTANDING even when debt > 0.
+        - Added DEBT/OVERDRAFT STATE normative block to /decide: server SHOULD return
+          decision=DENY under debt or over-limit conditions; MUST NOT return 409.
+
+      v0.1.22 (2026-02-18):
+        - Added overdraft/debt model: ALLOW_WITH_OVERDRAFT overage policy, debt and
+          overdraft_limit fields on Balance, is_over_limit flag, OVERDRAFT_LIMIT_EXCEEDED
+          and DEBT_OUTSTANDING error codes.
+        - Added SignedAmount schema to support negative remaining in overdraft state.
+        - Added OVERDRAFT RECONCILIATION normative section and OVERDRAFT MONITORING
+          guidance section including recommended alerting thresholds and operator runbook.
+        - Added OVER-LIMIT BLOCKING normative block to createReservation.
+
+      v0.1.0 → v0.1.21:
+        - Initial protocol definition: reserve/commit/release lifecycle, idempotency,
+          scope derivation, /decide, /balances, /events, dry_run shadow mode,
+          reservation extend/list/get endpoints, soft enforcement via Caps.
+
+servers:
+  - url: https://api.cycles.local
+    description: Replace with your implementation endpoint
+
+tags:
+  - name: Decisions
+    description: Optional preflight checks (no reservation created)
+  - name: Reservations
+    description: Reservation, commit, release, and (optional) get-by-id operations
+  - name: Balances
+    description: Query balances for operator visibility
+  - name: Events
+    description: Optional post-only accounting for non-estimable actions
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Cycles-API-Key
+
+  headers:
+    X-Request-Id:
+      description: Unique request identifier for debugging
+      schema:
+        type: string
+    X-RateLimit-Remaining:
+      description: Number of requests remaining in current window (optional in v0)
+      schema:
+        type: integer
+    X-RateLimit-Reset:
+      description: Unix timestamp (seconds) when rate limit resets (optional in v0)
+      schema:
+        type: integer
+        format: int64
+    X-Cycles-Tenant:
+      description: Effective tenant identifier derived from auth context (optional in v0)
+      schema:
+        type: string
+
+  parameters:
+    IdempotencyKeyHeader:
+      name: X-Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional idempotency key header. If both header and body idempotency_key are provided, they MUST match.
+        Server MUST enforce idempotency per endpoint by (effective tenant, endpoint, idempotency_key).
+        On replay of an idempotent request that previously succeeded, server MUST return the original successful
+        response payload (including any server-generated identifiers such as reservation_id).
+      schema:
+        $ref: '#/components/schemas/IdempotencyKey'
+
+    ReservationId:
+      name: reservation_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+      description: Maximum number of results to return
+
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Opaque cursor from previous response
+
+  responses:
+    ErrorResponse:
+      description: Error response
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    IdempotencyKey:
+      type: string
+      minLength: 1
+      maxLength: 256
+
+    ErrorCode:
+      type: string
+      enum:
+        - INVALID_REQUEST
+        - UNAUTHORIZED
+        - FORBIDDEN
+        - NOT_FOUND
+        - BUDGET_EXCEEDED
+        - RESERVATION_EXPIRED
+        - RESERVATION_FINALIZED
+        - IDEMPOTENCY_MISMATCH
+        - UNIT_MISMATCH
+        - OVERDRAFT_LIMIT_EXCEEDED
+        - DEBT_OUTSTANDING
+        - INTERNAL_ERROR
+
+    ErrorResponse:
+      type: object
+      required: [error, message, request_id]
+      additionalProperties: false
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        request_id:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    DecisionEnum:
+      type: string
+      enum: [ALLOW, ALLOW_WITH_CAPS, DENY]
+
+    UnitEnum:
+      type: string
+      description: >
+        Standard units.
+
+        USD_MICROCENTS preserves precision for per-call and batched accounting (int64).
+          - 1 USD_MICROCENTS = 10^-6 cents = 10^-8 dollars
+          - 1 USD = 100 cents = 10^8 USD_MICROCENTS
+          - Max int64 ≈ 9.22e18 USD_MICROCENTS ≈ $92.2B
+
+        TOKENS are integer token counts.
+        CREDITS/RISK_POINTS are generic integer units (optional in v0 implementations).
+      enum: [USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS]
+
+    Amount:
+      type: object
+      required: [unit, amount]
+      additionalProperties: false
+      properties:
+        unit:
+          $ref: '#/components/schemas/UnitEnum'
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+
+    SignedAmount:
+      type: object
+      required: [unit, amount]
+      additionalProperties: false
+      description: >-
+        Like Amount, but allows negative values. Used for Balance.remaining which can be negative in overdraft scenarios.
+      properties:
+        unit:
+          $ref: '#/components/schemas/UnitEnum'
+        amount:
+          type: integer
+          format: int64
+          description: >-
+            Signed integer amount. Can be negative when representing remaining balance in overdraft state
+            (debt > allocated - spent - reserved).
+
+    Subject:
+      type: object
+      description: >
+        Dimension bag for hierarchical budgets. At least one standard field (tenant, workspace, app, workflow, agent, or toolset) MUST be provided.
+        A subject containing only `dimensions` is invalid; server MUST return 400 INVALID_REQUEST. 
+        Hierarchy: tenant → workspace → app → workflow → agent → toolset.
+
+        EXTENSIBILITY (v0):
+        - dimensions is an optional, user-defined map for alternative taxonomies
+          (e.g., cost_center/department/project) and policy/reporting.
+        - v0 servers MAY ignore dimensions for budgeting decisions; if they do, they still MUST accept and round-trip it.
+        - Keys SHOULD be lowercase and match ^[a-z0-9_.-]+$ for stable canonicalization; values are opaque strings.
+      additionalProperties: false
+      minProperties: 1
+      anyOf:
+        - required: [tenant]
+        - required: [workspace]
+        - required: [app]
+        - required: [workflow]
+        - required: [agent]
+        - required: [toolset]
+      properties:
+        tenant:
+          type: string
+          maxLength: 128
+        workspace:
+          type: string
+          maxLength: 128
+        app:
+          type: string
+          maxLength: 128
+        workflow:
+          type: string
+          maxLength: 128
+        agent:
+          type: string
+          maxLength: 128
+        toolset:
+          type: string
+          maxLength: 128
+        dimensions:
+          type: object
+          description: Optional custom dimensions for enterprise taxonomies and policy/reporting.
+          additionalProperties:
+            type: string
+            maxLength: 256
+          maxProperties: 16
+
+    Action:
+      type: object
+      required: [kind, name]
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          maxLength: 64
+          description: >
+            Action type identifier. Recommended format: <category>.<operation>
+            Examples: llm.completion, llm.embedding, tool.search, tool.calculator,
+            db.query, db.write, http.get, http.post, file.upload, message.email, webhook.outbound
+        name:
+          type: string
+          maxLength: 256
+          description: Provider/model/tool identifier (e.g., "openai:gpt-4o-mini", "web.search")
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 64
+          description: Optional policy tags (e.g., ["prod","customer-facing"])
+
+    Caps:
+      type: object
+      description: >
+        Optional soft-landing constraints returned by /decide or reservation ALLOW_WITH_CAPS.
+        v0 intentionally keeps caps simple and concrete (no condition language).
+
+        PRECEDENCE RULES:
+        - If tool_allowlist is non-empty, ONLY those tools are allowed (denylist ignored).
+        - Otherwise, if tool_denylist is non-empty, all tools EXCEPT those are allowed.
+        - If both are empty/null, no tool restrictions apply.
+        - Tool names are case-sensitive and match Action.name exactly.
+      additionalProperties: false
+      properties:
+        max_tokens:
+          type: integer
+          minimum: 0
+        max_steps_remaining:
+          type: integer
+          minimum: 0
+        tool_allowlist:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        tool_denylist:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+        cooldown_ms:
+          type: integer
+          minimum: 0
+
+    # ---- Decide (optional) ----
+    DecisionRequest:
+      type: object
+      required: [idempotency_key, subject, action, estimate]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        subject:
+          $ref: '#/components/schemas/Subject'
+        action:
+          $ref: '#/components/schemas/Action'
+        estimate:
+          $ref: '#/components/schemas/Amount'
+        metadata:
+          type: object
+          additionalProperties: true
+
+    DecisionResponse:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision:
+          $ref: '#/components/schemas/DecisionEnum'
+          description: >
+            ALLOW indicates sufficient budget exists. ALLOW_WITH_CAPS indicates budget exists 
+            but soft constraints apply. DENY indicates insufficient budget or policy block.
+            Note: /decide does not create a reservation; a subsequent reservation call may 
+            still fail if concurrent activity depletes budget between the two calls.
+        caps:
+          $ref: '#/components/schemas/Caps'
+          description: Present only when decision=ALLOW_WITH_CAPS; MUST be absent otherwise.
+        reason_code:
+          type: string
+          maxLength: 128
+          description: Stable machine-readable reason (extensible).
+        retry_after_ms:
+          type: integer
+          minimum: 0
+        affected_scopes:
+          type: array
+          items:
+            type: string
+          description: Canonical scope identifiers impacted by this decision, in canonical order.
+
+    # ---- Reservations (core) ----
+    CommitOveragePolicy:
+      type: string
+      description: >
+        How server handles commits where actual > reserved.
+        
+        REJECT: reject commit (client must reserve a buffer or over-estimate).
+          Recommended: add 10-20% buffer to estimates when using REJECT.
+          If the action already happened externally, this creates an unaccounted gap.
+        
+        ALLOW_IF_AVAILABLE: if remaining budget supports the delta, commit and charge the delta atomically across all derived scopes. 
+        The delta check and charge MUST be performed as a single atomic operation; 
+        if budget is exhausted between check and commit, server MUST return 409 BUDGET_EXCEEDED.
+        
+        ALLOW_WITH_OVERDRAFT: if remaining budget supports the delta, commit normally.
+        Otherwise, check if (debt + delta) <= overdraft_limit across all affected scopes.
+          If yes: commit succeeds, add delta to debt, remaining can go negative.
+          If no: commit fails with 409 OVERDRAFT_LIMIT_EXCEEDED.
+        This policy ensures the ledger always reflects reality even when budget is exhausted at commit time.
+        
+        CONCURRENCY (NORMATIVE):
+          - The overdraft_limit check is performed per-commit and is NOT atomic across concurrent commits to the same scope.
+          - Multiple commits may each individually pass the (debt + delta) <= limit check but collectively cause debt to exceed overdraft_limit.
+          - This is acceptable: all commits succeed (actions already happened), and the scope enters "over-limit" state, 
+            blocking future reservations until reconciled.
+          - Servers SHOULD use optimistic locking or compare-and-swap on debt updates to ensure individual commit atomicity, 
+            but cross-commit atomicity is not required.
+      enum: [REJECT, ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT]
+
+    ReservationStatus:
+      type: string
+      description: Reservation lifecycle state (v1+ may add additional terminal states).
+      enum: [ACTIVE, COMMITTED, RELEASED, EXPIRED]
+
+    ReservationCreateRequest:
+      type: object
+      required: [idempotency_key, subject, action, estimate]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        subject:
+          $ref: '#/components/schemas/Subject'
+        action:
+          $ref: '#/components/schemas/Action'
+        estimate:
+          $ref: '#/components/schemas/Amount'
+        ttl_ms:
+          type: integer
+          minimum: 1000
+          maximum: 86400000
+          default: 60000
+        grace_period_ms:
+          type: integer
+          minimum: 0
+          maximum: 60000
+          default: 5000
+          description: >
+            Grace window after TTL for in-flight commits. Default 5s.
+
+            OPERATIONAL GUIDANCE:
+            - For high-latency actions (streaming LLM, slow APIs), consider setting higher (10-30s).
+
+            INTEROP / SAFETY RATIONALE:
+            - The 60s maximum is an interoperability ceiling to limit long-lived "in-flight" commit windows and reduce
+              zombie-reservation and abuse surface (grace extends the time that a crashed client can keep budget locked).
+
+            LONG-RUNNING WORKFLOWS:
+            - For multi-minute operations, clients SHOULD keep ttl_ms relatively short and use /v1/reservations/{reservation_id}/extend
+              as a heartbeat, and/or use chunked reserve/commit cycles rather than relying on large grace_period_ms.
+        overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+          default: REJECT
+        dry_run:
+          type: boolean
+          default: false
+          description: >
+            Shadow-mode evaluation. If true, the server MUST evaluate the reservation request and return
+            decision/caps/affected_scopes as if it would reserve, but MUST NOT modify balances, persist a
+            reservation, or require commit/release. Intended for safe rollout and testing of full reserve-path logic.
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Balance:
+      type: object
+      required: [scope, scope_path, remaining]
+      additionalProperties: false
+      description: >-
+        Ledger state for a single (scope, unit) balance.
+
+        UNIT CONSISTENCY (NORMATIVE):
+          - All Amount fields within a Balance (remaining/reserved/spent/allocated/debt/overdraft_limit), if present, MUST share the same unit.
+          - Servers MUST NOT emit a Balance with mixed units; clients MAY treat such responses as invalid.
+
+        LEDGER INVARIANT (NORMATIVE):
+           - If allocated, spent, reserved, and debt are all present, then remaining MUST satisfy: 
+             remaining.amount = allocated.amount - spent.amount - reserved.amount - debt.amount (same unit).
+           - Note that remaining.amount can be negative when debt exceeds available budget.
+           - If allocated is absent, remaining is authoritative and clients MUST treat it as opaque (i.e., MUST NOT derive it from other fields).
+           - Servers MUST NOT emit a Balance where the invariant is violated when all fields are present.
+        
+        DEBT SEMANTICS (NORMATIVE):
+           - debt represents actual consumption that occurred when insufficient budget was available to cover a commit overage.
+           - debt is created only when overage_policy=ALLOW_WITH_OVERDRAFT and (remaining + released_reservation) < actual at commit time.
+           - When debt > 0, new reservations MUST be rejected with 409 DEBT_OUTSTANDING (unless explicitly allowed by policy).
+           - debt MUST be repaid via budget funding operations (out-of-scope for this API) before new reservations are permitted.
+           - When budget is added to a scope with debt > 0, debt MUST be repaid first, then remaining funds added to remaining.
+        
+        OVERDRAFT LIMIT (NORMATIVE):
+           - overdraft_limit defines the target maximum debt for this scope.
+           - If overdraft_limit is absent or amount=0, no overdraft is permitted (behaves as ALLOW_IF_AVAILABLE).
+           - The overdraft_limit is enforced per-commit but is NOT atomic across concurrent commits.
+             Multiple concurrent commits MAY cause cumulative debt to briefly exceed overdraft_limit.
+           - Individual commits are rejected with 409 OVERDRAFT_LIMIT_EXCEEDED only if (current_debt + delta) > overdraft_limit 
+             at the moment of that specific commit.
+           - When debt > overdraft_limit after reconciliation (due to concurrent commits), the scope enters an "over-limit" state:
+               * The server MUST set is_over_limit=true on the Balance
+               * ALL new reservations against that scope MUST be rejected with 409 OVERDRAFT_LIMIT_EXCEEDED (not DEBT_OUTSTANDING)
+               * Existing active reservations MAY be committed or released normally
+               * The server SHOULD emit alerts/events for operator intervention
+           - Once debt is repaid below overdraft_limit, is_over_limit returns to false and normal reservation operation resumes.
+      properties:
+        scope:
+          type: string
+          description: Canonical scope identifier (server-derived), e.g. "tenant:t1", "workflow:run123"
+        scope_path:
+          type: string
+          description: Canonical hierarchical path (server-derived)
+        remaining:
+          $ref: '#/components/schemas/SignedAmount'
+          description: >-
+            Available budget for new reservations. Can be negative when debt exceeds allocated budget.
+            Formula: remaining = allocated - spent - reserved - debt
+        reserved:
+          $ref: '#/components/schemas/Amount'
+          description: Amount currently locked by active reservations
+        spent:
+          $ref: '#/components/schemas/Amount'
+          description: Amount successfully committed through reservations
+        debt:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Overdraft amount from commits where actual > reserved and insufficient budget existed to cover the delta.
+            Represents consumption that happened but couldn't be paid from available budget at commit time.
+            Must be repaid before new reservations are allowed (unless policy permits otherwise).
+        allocated:
+          $ref: '#/components/schemas/Amount'
+          description: Optional total budget cap if a fixed allocation exists.
+        overdraft_limit:
+          $ref: '#/components/schemas/Amount'
+          description: >-
+            Optional maximum debt allowed for this scope. If absent or amount=0, no overdraft is permitted.
+            When present and amount > 0, commits can succeed by creating debt up to this limit.
+        is_over_limit:
+          type: boolean
+          description: >-
+            True when debt > overdraft_limit due to concurrent commits creating cumulative debt beyond the limit.
+            When true, ALL new reservations against this scope are blocked with 409 OVERDRAFT_LIMIT_EXCEEDED 
+            until debt is reduced below overdraft_limit. Defaults to false when absent.
+
+    ReservationCreateResponse:
+      type: object
+      required: [decision, affected_scopes]
+      additionalProperties: false
+      properties:
+        decision:
+          $ref: '#/components/schemas/DecisionEnum'
+          description: >
+            For dry_run=true, decision MAY be DENY. For dry_run=false, insufficient budget MUST be expressed via 409 BUDGET_EXCEEDED (not decision=DENY).
+        reservation_id:
+          type: string
+          description: Present if decision is ALLOW or ALLOW_WITH_CAPS and dry_run is false. MUST be absent when dry_run is true.
+        reserved:
+          $ref: '#/components/schemas/Amount'
+        expires_at_ms:
+          type: integer
+          format: int64
+        scope_path:
+          type: string
+          description: Canonical scope path (server-derived)
+        affected_scopes:
+          type: array
+          items:
+            type: string
+          description: Canonical scope identifiers impacted by this reservation, in canonical order.
+        caps:
+          $ref: '#/components/schemas/Caps'
+          description: Present only when decision=ALLOW_WITH_CAPS; MUST be absent otherwise.
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+        reason_code:
+          type: string
+          maxLength: 128
+        retry_after_ms:
+          type: integer
+          minimum: 0
+
+    StandardMetrics:
+      type: object
+      description: >
+        Optional standard metrics for commit/event. All fields are optional.
+        Recommended for consistency across clients. For custom fields, use `custom`.
+      additionalProperties: false
+      properties:
+        tokens_input:
+          type: integer
+          minimum: 0
+          description: Input tokens consumed
+        tokens_output:
+          type: integer
+          minimum: 0
+          description: Output tokens generated
+        latency_ms:
+          type: integer
+          minimum: 0
+          description: Total operation latency in milliseconds
+        model_version:
+          type: string
+          maxLength: 128
+          description: Actual model/tool version used
+        custom:
+          type: object
+          additionalProperties: true
+          description: Arbitrary additional metrics
+
+    CommitRequest:
+      type: object
+      required: [idempotency_key, actual]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        actual:
+          $ref: '#/components/schemas/Amount'
+        metrics:
+          $ref: '#/components/schemas/StandardMetrics'
+        metadata:
+          type: object
+          additionalProperties: true
+
+    CommitResponse:
+      type: object
+      required: [status, charged]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [COMMITTED]
+        charged:
+          $ref: '#/components/schemas/Amount'
+        released:
+          $ref: '#/components/schemas/Amount'
+          description: Amount returned from over-reservation (if any)
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+
+    ReleaseRequest:
+      type: object
+      required: [idempotency_key]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        reason:
+          type: string
+          maxLength: 256
+
+    ReleaseResponse:
+      type: object
+      required: [status, released]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [RELEASED]
+        released:
+          $ref: '#/components/schemas/Amount'
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+
+    ReservationDetail:
+      type: object
+      description: >
+        Reservation details returned by GET /v1/reservations/{reservation_id}. Useful for debugging.
+      required:
+        - reservation_id
+        - status
+        - subject
+        - action
+        - reserved
+        - created_at_ms
+        - expires_at_ms
+        - scope_path
+        - affected_scopes
+      additionalProperties: false
+      properties:
+        reservation_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+          description: Present if the server persists reservation creation idempotency keys for debugging/recovery.
+        subject:
+          $ref: '#/components/schemas/Subject'
+        action:
+          $ref: '#/components/schemas/Action'
+        reserved:
+          $ref: '#/components/schemas/Amount'
+        committed:
+          $ref: '#/components/schemas/Amount'
+        created_at_ms:
+          type: integer
+          format: int64
+        expires_at_ms:
+          type: integer
+          format: int64
+        finalized_at_ms:
+          type: integer
+          format: int64
+        scope_path:
+          type: string
+          description: Canonical scope path (server-derived)
+        affected_scopes:
+          type: array
+          items:
+            type: string
+          description: Canonical scope identifiers impacted by this reservation, in canonical order.
+        metadata:
+          type: object
+          additionalProperties: true
+
+    BalanceResponse:
+      type: object
+      required: [balances]
+      additionalProperties: false
+      properties:
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+        next_cursor:
+          type: string
+          description: Opaque cursor for next page (if any).
+        has_more:
+          type: boolean
+          description: True if next_cursor is present and more results may be available.
+
+    # ---- Events (optional) ----
+    EventCreateRequest:
+      type: object
+      required: [idempotency_key, subject, action, actual]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        subject:
+          $ref: '#/components/schemas/Subject'
+        action:
+          $ref: '#/components/schemas/Action'
+        actual:
+          $ref: '#/components/schemas/Amount'
+        overage_policy:
+          $ref: '#/components/schemas/CommitOveragePolicy'
+          default: REJECT
+          description: >
+            How server handles events where actual would exceed remaining budget.
+            REJECT (default): server MUST return 409 BUDGET_EXCEEDED if actual > remaining across any derived scope.
+            ALLOW_IF_AVAILABLE: server MUST atomically apply the full `actual` amount only if sufficient remaining exists 
+            across all derived scopes at apply time; otherwise MUST return 409 BUDGET_EXCEEDED.
+            ALLOW_WITH_OVERDRAFT: if remaining budget supports actual, apply normally. Otherwise, check if
+            (current_debt + actual) <= overdraft_limit across all derived scopes. If yes: apply succeeds,
+            add actual to debt, remaining can go negative. If no: server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED.
+            Concurrency semantics are identical to commit: the overdraft_limit check is per-event and NOT
+            atomic across concurrent events; scopes may enter over-limit state if concurrent events collectively
+            exceed overdraft_limit.
+        metrics:
+          $ref: '#/components/schemas/StandardMetrics'
+        client_time_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Optional client-observed timestamp (ms). This value is advisory only and MUST NOT be used for authorization, expiry, 
+            idempotency or budget enforcement decisions. The server's receipt time governs all budget comparisons and invariants.
+        metadata:
+          type: object
+          additionalProperties: true
+      description: >
+        NOTE: Events MUST be applied atomically across derived scopes (same as reservations), or rejected.
+
+    EventCreateResponse:
+      type: object
+      required: [status, event_id]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [APPLIED]
+        event_id:
+          type: string
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+
+    ReservationSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - reservation_id
+        - status
+        - subject
+        - action
+        - reserved
+        - created_at_ms
+        - expires_at_ms
+        - scope_path
+        - affected_scopes
+      properties:
+        reservation_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+          description: Present if the server persists reservation creation idempotency keys.
+        subject:
+          $ref: '#/components/schemas/Subject'
+        action:
+          $ref: '#/components/schemas/Action'
+        reserved:
+          $ref: '#/components/schemas/Amount'
+        created_at_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        expires_at_ms:
+          type: integer
+          format: int64
+          minimum: 0
+        scope_path:
+          type: string
+        affected_scopes:
+          type: array
+          items:
+            type: string
+
+    ReservationListResponse:
+      type: object
+      additionalProperties: false
+      required: [reservations]
+      properties:
+        reservations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReservationSummary'
+        next_cursor:
+          type: string
+          description: Opaque cursor for next page (if any).
+        has_more:
+          type: boolean
+          description: True if next_cursor is present and more results may be available.
+
+    ReservationExtendRequest:
+      type: object
+      required: [idempotency_key, extend_by_ms]
+      additionalProperties: false
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        extend_by_ms:
+          type: integer
+          minimum: 1
+          maximum: 86400000
+          description: >
+            Amount of time (ms) to extend the reservation expiry relative to its current expires_at_ms 
+            (i.e., not relative to request time). This does NOT change reserved amount. Server MAY clamp
+            the effective extension to policy limits; the returned expires_at_ms is authoritative.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Optional debugging/audit metadata.
+
+    ReservationExtendResponse:
+      type: object
+      required: [status, expires_at_ms]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [ACTIVE]
+          description: Reservation remains ACTIVE after a successful extension.
+        expires_at_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          description: New server-authoritative expiry timestamp (ms).
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Balance'
+          description: Optional updated balances snapshot after extension (nice-to-have).
+
+paths:
+  /v1/decide:
+    post:
+      tags: [Decisions]
+      operationId: decide
+      summary: Optional preflight policy decision (no reservation created)
+      description: >-
+        Returns ALLOW / DENY, optionally with Caps for soft landing. This endpoint does not reserve budget. Clients that require
+        concurrency safety MUST use /v1/reservations.
+
+        IDEMPOTENCY (NORMATIVE): 
+        - On replay with the same idempotency_key, the server MUST return the original successful response payload.
+
+        TENANCY (NORMATIVE): 
+        - subject.tenant MUST match the effective tenant derived from auth; otherwise the server MUST return 403 FORBIDDEN.
+        
+        DEBT/OVERDRAFT STATE (NORMATIVE):
+        - If the subject scope has debt > 0 or is_over_limit=true, server SHOULD return 
+        decision=DENY with reason_code=DEBT_OUTSTANDING or reason_code=OVERDRAFT_LIMIT_EXCEEDED 
+        respectively. Server MUST NOT return 409 for these conditions on /decide.
+
+        Idempotency on /decide is for request deduplication only. A replayed ALLOW response reflects budget state at the time of 
+        the original call; clients MUST NOT treat a replayed decision as current budget authorization.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DecisionRequest'}
+      responses:
+        "200":
+          description: Decision result
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+            X-RateLimit-Remaining: {$ref: '#/components/headers/X-RateLimit-Remaining'}
+            X-RateLimit-Reset: {$ref: '#/components/headers/X-RateLimit-Reset'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DecisionResponse'}
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "409": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/reservations:
+    post:
+      tags: [Reservations]
+      operationId: createReservation
+      summary: Reserve budget for a planned action (concurrency-safe)
+      description: >-
+        Atomically reserves the estimated amount across server-derived scopes and returns a reservation_id. Reservations expire
+        at expires_at_ms; commits are accepted through (expires_at_ms + grace_period_ms). 
+
+        If dry_run=true, server MUST evaluate the full reservation request and return decision/caps/affected_scopes/balances
+        as if the reservation were live, but MUST NOT modify balances, persist a reservation, or require commit/release.
+
+        DRY-RUN RESPONSE RULES (NORMATIVE):
+        - reservation_id and expires_at_ms MUST be absent.
+        - affected_scopes MUST be populated regardless of decision outcome (ALLOW / ALLOW_WITH_CAPS / DENY).
+        - If decision=ALLOW_WITH_CAPS, caps MUST be present; otherwise caps MUST be absent.
+        - If decision=DENY, reason_code SHOULD be populated; it is the primary diagnostic signal for why the dry_run was denied.
+        - balances MAY be populated (recommended for operator visibility), but MUST reflect a non-mutating evaluation.
+
+        OVER-LIMIT BLOCKING (NORMATIVE):
+        - If ANY affected scope has debt > overdraft_limit (is_over_limit=true), the reservation MUST be rejected 
+          with 409 OVERDRAFT_LIMIT_EXCEEDED, regardless of available remaining budget.
+        - This blocks new work when overdraft reconciliation is needed.
+
+        IDEMPOTENCY (NORMATIVE):
+        - On replay with the same idempotency_key, the server MUST return the original successful response payload, 
+        including the original reservation_id (if any).
+
+        TENANCY (NORMATIVE): 
+        - subject.tenant MUST match the effective tenant derived from auth; otherwise the server MUST return 403 FORBIDDEN.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReservationCreateRequest'}
+      responses:
+        "200":
+          description: Reservation decision (ALLOW/DENY with optional caps)
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReservationCreateResponse'}
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "409": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+    get:
+      tags: [Reservations]
+      operationId: listReservations
+      summary: List reservations (optional recovery/debug endpoint)
+      description: >-
+        Lists reservations visible to the effective tenant. This endpoint is OPTIONAL in v0 deployments.
+
+
+        RECOVERY (NORMATIVE):
+          - If a client loses reservation_id, it MAY recover it by querying with idempotency_key and/or subject filters.
+          - If idempotency_key is provided, the server SHOULD return at most one matching reservation (uniqueness is expected per (effective tenant, endpoint, idempotency_key)).
+          - Servers SHOULD support filtering by status=ACTIVE to identify "stuck" reservations.
+
+        SUBJECT FILTERS (GUIDANCE):
+          - Query parameters tenant/workspace/app/workflow/agent/toolset filter on the canonical Subject fields.
+          - Filtering on Subject.dimensions is out of scope for v0 unless explicitly implemented by the server.
+
+        TENANCY (NORMATIVE):
+          - The server MUST scope results to the effective tenant derived from auth.
+          - If the tenant query parameter is provided, it is validation-only and MUST match the effective tenant; otherwise the server MUST return 403 FORBIDDEN.
+          - If tenant is omitted, the effective tenant is used.
+      parameters:
+        - name: idempotency_key
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/IdempotencyKey'
+          description: Lookup handle to recover the reservation_id from a prior createReservation call.
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ReservationStatus'
+          description: Filter by reservation status (e.g., ACTIVE).
+        - name: tenant
+          in: query
+          required: false
+          schema: {type: string}
+        - name: workspace
+          in: query
+          required: false
+          schema: {type: string}
+        - name: app
+          in: query
+          required: false
+          schema: {type: string}
+        - name: workflow
+          in: query
+          required: false
+          schema: {type: string}
+        - name: agent
+          in: query
+          required: false
+          schema: {type: string}
+        - name: toolset
+          in: query
+          required: false
+          schema: {type: string}
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        "200":
+          description: Reservations list
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReservationListResponse'}
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/reservations/{reservation_id}:
+    get:
+      tags: [Reservations]
+      operationId: getReservation
+      summary: Get reservation details (optional, for debugging)
+      description: >-
+        Retrieve current status and details of a reservation by ID. Useful for debugging and monitoring long-running operations.
+
+        TENANCY (NORMATIVE): 
+        - If the reservation exists but is owned by a different effective tenant, the server MUST return 403 FORBIDDEN.
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+      responses:
+        "200":
+          description: Reservation details
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReservationDetail'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "404": {$ref: '#/components/responses/ErrorResponse'}
+        "410": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/reservations/{reservation_id}/commit:
+    post:
+      tags: [Reservations]
+      operationId: commitReservation
+      summary: Commit actual spend for a reservation (auto-releases delta)
+      description: >-
+        Commits actual spend. If actual < reserved, delta is released automatically. If actual > reserved, behavior is controlled
+        by the reservation's overage_policy.
+
+        IDEMPOTENCY (NORMATIVE): 
+        - On replay with the same idempotency_key, the server MUST return the original successful response payload.
+
+        TENANCY (NORMATIVE): 
+        - If the reservation exists but is owned by a different effective tenant, the server MUST return 403 FORBIDDEN.
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CommitRequest'}
+      responses:
+        "200":
+          description: Commit succeeded
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CommitResponse'}
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "404": {$ref: '#/components/responses/ErrorResponse'}
+        "409": {$ref: '#/components/responses/ErrorResponse'}
+        "410": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/reservations/{reservation_id}/release:
+    post:
+      tags: [Reservations]
+      operationId: releaseReservation
+      summary: Release an unused reservation
+      description: >-
+        Releases reserved amount back to remaining budget.
+
+        IDEMPOTENCY (NORMATIVE): 
+        - On replay with the same idempotency_key, the server MUST return the original successful response payload.
+
+        TENANCY (NORMATIVE): 
+        - If the reservation exists but is owned by a different effective tenant, the server MUST return 403 FORBIDDEN.
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReleaseRequest'}
+      responses:
+        "200":
+          description: Release succeeded
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "404": {$ref: '#/components/responses/ErrorResponse'}
+        "409": {$ref: '#/components/responses/ErrorResponse'}
+        "410": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/reservations/{reservation_id}/extend:
+    post:
+      tags: [Reservations]
+      operationId: extendReservation
+      summary: Extend reservation TTL (lease refresh / heartbeat)
+      description: >-
+        Extends the expiry of an ACTIVE reservation to support long-running agent workflows.
+
+        SEMANTICS (NORMATIVE):
+        - Extension updates expires_at_ms only; it MUST NOT change reserved amount, unit, subject, action, scope_path, or affected_scopes.
+        - Extensions MUST be applied in a concurrency-safe way.
+        - Server MUST accept extend only when status is ACTIVE and the reservation has not yet expired
+          (i.e., server time ≤ expires_at_ms). If the reservation is expired, server MUST return 410 with error=RESERVATION_EXPIRED.
+
+        IDEMPOTENCY (NORMATIVE):
+        - On replay with the same idempotency_key, the server MUST return the original successful response payload.
+
+        TENANCY (NORMATIVE):
+        - If the reservation exists but is owned by a different effective tenant, the server MUST return 403 FORBIDDEN.
+
+        ERROR SEMANTICS (NORMATIVE):
+        - If the reservation is COMMITTED or RELEASED, server MUST return 409 with error=RESERVATION_FINALIZED.
+        - If the reservation is expired (server time > expires_at_ms), server MUST return 410 with error=RESERVATION_EXPIRED.
+        - If the reservation never existed, server MUST return 404 with error=NOT_FOUND.
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationExtendRequest'
+      responses:
+        "200":
+          description: Reservation expiry extended
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationExtendResponse'
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "404": {$ref: '#/components/responses/ErrorResponse'}
+        "409": {$ref: '#/components/responses/ErrorResponse'}
+        "410": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/balances:
+    get:
+      tags: [Balances]
+      operationId: getBalances
+      summary: Query current budget balances across scopes (nice-to-have)
+      description: >
+        Returns balances for scopes matching the provided subject filter.
+        include_children MAY be ignored by v0 implementations.
+
+        SUBJECT FILTER REQUIREMENT (NORMATIVE):
+        - At least one of tenant/workspace/app/workflow/agent/toolset MUST be provided.
+        - If all of these filters are omitted, server MUST return 400 with error=INVALID_REQUEST.
+
+        TENANCY (NORMATIVE):
+        - The server MUST scope results to the effective tenant derived from auth.
+        - If the tenant query parameter is provided, it is validation-only and MUST match the effective tenant; otherwise the server MUST return 403 FORBIDDEN.
+        - If tenant is omitted, the effective tenant is used. 
+
+      parameters:
+        - name: tenant
+          in: query
+          schema: {type: string}
+        - name: workspace
+          in: query
+          schema: {type: string}
+        - name: app
+          in: query
+          schema: {type: string}
+        - name: workflow
+          in: query
+          schema: {type: string}
+        - name: agent
+          in: query
+          schema: {type: string}
+        - name: toolset
+          in: query
+          schema: {type: string}
+        - name: include_children
+          in: query
+          schema: {type: boolean, default: false}
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        "200":
+          description: Balance response
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BalanceResponse'}
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
+
+  /v1/events:
+    post:
+      tags: [Events]
+      operationId: createEvent
+      summary: Optional post-only accounting when pre-estimation is not available
+      description: >-
+        Records an accounting event without a reservation. This endpoint is optional in v0 deployments. 
+        The event MUST be applied atomically across all derived scopes before the server returns 201.
+
+        IDEMPOTENCY (NORMATIVE): 
+        - On replay with the same idempotency_key, the server MUST return the original successful response payload.
+
+        TENANCY (NORMATIVE): 
+        - subject.tenant MUST match the effective tenant derived from auth; otherwise the server MUST return 403 FORBIDDEN.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EventCreateRequest'}
+      responses:
+        "201":
+          description: Event created and atomically applied to balances
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/X-Request-Id'}
+            X-Cycles-Tenant: {$ref: '#/components/headers/X-Cycles-Tenant'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventCreateResponse'}
+        "400": {$ref: '#/components/responses/ErrorResponse'}
+        "401": {$ref: '#/components/responses/ErrorResponse'}
+        "403": {$ref: '#/components/responses/ErrorResponse'}
+        "409": {$ref: '#/components/responses/ErrorResponse'}
+        "500": {$ref: '#/components/responses/ErrorResponse'}
