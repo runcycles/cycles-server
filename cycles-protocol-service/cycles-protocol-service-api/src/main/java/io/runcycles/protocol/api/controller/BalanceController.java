@@ -3,7 +3,7 @@ package io.runcycles.protocol.api.controller;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.model.*;
-import io.runcycles.protocol.model.BalanceQueryResponse;
+import io.runcycles.protocol.model.BalanceResponse;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Max;
@@ -27,7 +27,7 @@ public class BalanceController extends BaseController{
 
     @GetMapping
     @Operation(operationId = "getBalances", summary = "Query budget balances")
-    public ResponseEntity<BalanceQueryResponse> query(
+    public ResponseEntity<BalanceResponse> query(
             @RequestParam(required = false) String tenant,
             @RequestParam(required = false) String workspace,
             @RequestParam(required = false) String app,
@@ -46,7 +46,7 @@ public class BalanceController extends BaseController{
         String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
         LOG.info("GET /v1/balances - tenant: {}", effectiveTenant);
         authorizeTenant(effectiveTenant);
-        BalanceQueryResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, includeChildren, limit, cursor);
+        BalanceResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, includeChildren, limit, cursor);
         return ResponseEntity.ok(response);
     }
 }

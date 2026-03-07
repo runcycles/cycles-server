@@ -400,7 +400,7 @@ public class RedisReservationRepository {
         }
     }
 
-    public BalanceQueryResponse getBalances(String tenant, String workspace, String app,
+    public BalanceResponse getBalances(String tenant, String workspace, String app,
                                             String workflow, String agent, String toolset,
                                             boolean includeChildren, int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
@@ -461,7 +461,7 @@ public class RedisReservationRepository {
                             if ("0".equals(nextCursor)) nextCursor = null;
                             // hasMore is always true here: we stopped early due to limit,
                             // so there may be unprocessed keys in this or future scan pages.
-                            return BalanceQueryResponse.builder()
+                            return BalanceResponse.builder()
                                 .balances(balances)
                                 .hasMore(true)
                                 .nextCursor(nextCursor)
@@ -477,7 +477,7 @@ public class RedisReservationRepository {
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor));
 
-            return BalanceQueryResponse.builder()
+            return BalanceResponse.builder()
                 .balances(balances)
                 .hasMore(false)
                 .nextCursor(null)
