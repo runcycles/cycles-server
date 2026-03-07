@@ -1,6 +1,6 @@
 # Cycles Protocol Server v0.1.23
 
-Reference implementation of the Cycles Budget Authority API — a reservation-based budget control service for AI agents and workflows. All atomic budget operations are executed via Redis Lua scripts; no external database is required.
+Reference implementation of the Cycles Budget Authority API — a reservation-based budget control service for AI agents and workflows. All atomic budget operations are executed via Redis Lua scripts; no external database is required. Link to [Cycles Protocl Spec](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml).
 
 ## Contents
 
