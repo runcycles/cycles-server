@@ -269,9 +269,27 @@ Reserve budget before executing an action. Returns `200 OK`.
 }
 ```
 
-`decision` and `affected_scopes` are always present. Optional fields: `caps` (when `ALLOW_WITH_CAPS`), `reason_code`, `retry_after_ms`, `balances`.
+`decision` and `affected_scopes` are always present. Optional fields: `caps` (only when `ALLOW_WITH_CAPS`), `reason_code`, `retry_after_ms`, `balances`.
 
-When `dry_run=true`, `reservation_id` and `expires_at_ms` are absent. `balances` MAY be included. `decision` may be `DENY` with a `reason_code`.
+On `ALLOW_WITH_CAPS` (budget exists but soft constraints apply):
+```json
+{
+  "decision": "ALLOW_WITH_CAPS",
+  "reservation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "affected_scopes": ["tenant:acme", "tenant:acme/.../agent:summarizer-v2"],
+  "expires_at_ms": 1700000060000,
+  "scope_path": "tenant:acme/.../agent:summarizer-v2",
+  "reserved": { "unit": "TOKENS", "amount": 5000 },
+  "caps": { "max_tokens": 8192 }
+}
+```
+
+**`dry_run=true` response rules:**
+- `reservation_id` and `expires_at_ms` MUST be absent (no reservation is created)
+- `affected_scopes` MUST be populated regardless of decision
+- `caps` MUST be present only when `decision=ALLOW_WITH_CAPS`
+- `reason_code` SHOULD be populated when `decision=DENY`
+- `balances` MAY be included
 
 On budget denial (insufficient budget, over-limit, outstanding debt), the server returns `409` — `decision=DENY` never appears in a non-dry-run successful response.
 
@@ -343,6 +361,12 @@ Extend the reservation TTL. Only allowed while `server_time ≤ expires_at_ms` (
   "metadata": {}
 }
 ```
+
+| Field | Required | Constraints |
+|---|---|---|
+| `idempotency_key` | yes | 1-256 chars |
+| `extend_by_ms` | yes | 1-86400000 ms |
+| `metadata` | no | arbitrary key-value pairs |
 
 **Response** `200 OK`
 ```json
