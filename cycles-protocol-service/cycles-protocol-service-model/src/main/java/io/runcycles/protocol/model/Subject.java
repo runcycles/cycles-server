@@ -14,7 +14,7 @@ public class Subject {
     @Size(max = 128) @JsonProperty("workflow") private String workflow;
     @Size(max = 128) @JsonProperty("agent") private String agent;
     @Size(max = 128) @JsonProperty("toolset") private String toolset;
-    @JsonProperty("dimensions") private Map<String, String> dimensions;
+    @Size(max = 16) @JsonProperty("dimensions") private Map<String, @Size(max = 256) String> dimensions;
 
 
 }

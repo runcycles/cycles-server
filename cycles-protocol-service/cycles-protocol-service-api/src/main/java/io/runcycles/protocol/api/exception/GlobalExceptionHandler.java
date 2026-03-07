@@ -6,6 +6,7 @@ import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.Enums;
 import io.runcycles.protocol.model.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.*;
@@ -39,6 +40,22 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleValidationException(MethodArgumentNotValidException ex, HttpServletRequest request) {
         String message = ex.getBindingResult().getFieldErrors().stream()
             .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+            .collect(Collectors.joining(", "));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
+            .error(Enums.ErrorCode.INVALID_REQUEST)
+            .message("Validation failed: " + message)
+            .requestId(resolveRequestId(request))
+            .build());
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolation(ConstraintViolationException ex, HttpServletRequest request) {
+        String message = ex.getConstraintViolations().stream()
+            .map(v -> {
+                String path = v.getPropertyPath().toString();
+                String param = path.contains(".") ? path.substring(path.lastIndexOf('.') + 1) : path;
+                return param + ": " + v.getMessage();
+            })
             .collect(Collectors.joining(", "));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
             .error(Enums.ErrorCode.INVALID_REQUEST)

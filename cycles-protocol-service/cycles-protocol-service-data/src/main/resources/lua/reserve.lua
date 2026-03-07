@@ -14,6 +14,7 @@ local idempotency_key = ARGV[8]
 local scope_path = ARGV[9]
 local tenant = ARGV[10]
 local overage_policy = ARGV[11] or "REJECT"
+local metadata_json   = ARGV[12] or ""
 
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
@@ -28,9 +29,9 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         })
     end
 end
--- Parse affected scopes
+-- Parse affected scopes (fixed args end at ARGV[12]; scopes start at ARGV[13])
 local affected_scopes = {}
-for i = 12, #ARGV do
+for i = 13, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -92,7 +93,8 @@ redis.call('HMSET', reservation_key,
     'expires_at', expires_at,
     'grace_ms', grace_ms,
     'idempotency_key', idempotency_key,
-    'overage_policy', overage_policy
+    'overage_policy', overage_policy,
+    'metadata_json', metadata_json
 )
 
 -- Add to reservation index

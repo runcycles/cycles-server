@@ -6,15 +6,19 @@ import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.BalanceQueryResponse;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 /** Cycles Protocol v0.1.23 - Balance Controller */
 @RestController
 @RequestMapping("/v1/balances")
 @Tag(name = "Balances")
+@Validated
 public class BalanceController extends BaseController{
     private static final Logger LOG = LoggerFactory.getLogger(BalanceController.class);
 
@@ -31,7 +35,7 @@ public class BalanceController extends BaseController{
             @RequestParam(required = false) String agent,
             @RequestParam(required = false) String toolset,
             @RequestParam(required = false, defaultValue = "false") boolean includeChildren,
-            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
             @RequestParam(required = false) String cursor) {
         // Spec NORMATIVE: at least one subject filter must be provided
         if (tenant == null && workspace == null && app == null && workflow == null && agent == null && toolset == null) {
