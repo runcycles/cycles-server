@@ -35,3 +35,11 @@ replay_pid*
 /**/*_dev.*
 /**/temp
 /**/.vscode
+*.prefs
+cycles-protocol-service/.project
+cycles-protocol-service/cycles-protocol-service-api/.classpath
+cycles-protocol-service/cycles-protocol-service-api/.project
+cycles-protocol-service/cycles-protocol-service-data/.classpath
+cycles-protocol-service/cycles-protocol-service-data/.project
+cycles-protocol-service/cycles-protocol-service-model/.classpath
+cycles-protocol-service/cycles-protocol-service-model/.project
