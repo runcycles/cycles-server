@@ -640,6 +640,8 @@ public class RedisReservationRepository {
             }
 
             return response;
+        } catch (CyclesProtocolException e) {
+            throw e;
         } catch (Exception e) {
             LOG.error("Failed to evaluate decision", e);
             throw new RuntimeException(e);
@@ -666,12 +668,14 @@ public class RedisReservationRepository {
             args.add(scopePath);
             args.add(tenant);
             args.add(eventOveragePolicy);
-            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms, ARGV[12] = payload_hash; scopes start at ARGV[13]
+            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms, ARGV[12] = payload_hash, ARGV[13] = metadata_json; scopes start at ARGV[14]
             args.add(request.getMetrics() != null
                 ? objectMapper.writeValueAsString(request.getMetrics()) : "");
             args.add(request.getClientTimeMs() != null
                 ? String.valueOf(request.getClientTimeMs()) : "");
             args.add(computePayloadHash(request));
+            args.add(request.getMetadata() != null
+                ? objectMapper.writeValueAsString(request.getMetadata()) : "");
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(eventScript, 0, args.toArray(new String[0]));

@@ -32,8 +32,9 @@ public class ReservationController extends BaseController{
         LOG.info("POST /v1/reservations - tenant: {}", request.getSubject().getTenant());
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
-        String tenant = request.getSubject().getTenant();
-        authorizeTenant(tenant);
+        // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
+        authorizeTenant(request.getSubject().getTenant());
+        String tenant = extractAuthTenantId();
         ReservationCreateResponse response = repository.createReservation(request, tenant);
         return ResponseEntity.ok(response);
     }

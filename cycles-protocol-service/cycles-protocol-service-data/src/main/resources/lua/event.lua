@@ -13,6 +13,7 @@ local overage_policy  = ARGV[9] or "REJECT"
 local metrics_json    = ARGV[10] or ""
 local client_time_ms  = ARGV[11] or ""
 local payload_hash    = ARGV[12] or ""
+local metadata_json   = ARGV[13] or ""
 
 -- Check idempotency
 if idempotency_key ~= "" and idempotency_key ~= nil then
@@ -35,10 +36,10 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
 end
 
 -- Parse affected scopes.
--- Fixed args: ARGV[1]=event_id .. [12]=payload_hash.
--- Affected scopes are the variadic tail starting at ARGV[13].
+-- Fixed args: ARGV[1]=event_id .. [13]=metadata_json.
+-- Affected scopes are the variadic tail starting at ARGV[14].
 local affected_scopes = {}
-for i = 13, #ARGV do
+for i = 14, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -113,7 +114,8 @@ redis.call('HMSET', event_key,
     'created_at', now,
     'idempotency_key', idempotency_key,
     'metrics_json', metrics_json,
-    'client_time_ms', client_time_ms
+    'client_time_ms', client_time_ms,
+    'metadata_json', metadata_json
 )
 
 -- Store idempotency mapping (expire after 7 days)

@@ -28,8 +28,9 @@ public class DecisionController extends BaseController {
         LOG.info("POST /v1/decide - tenant: {}", request.getSubject().getTenant());
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
-        String tenant = request.getSubject().getTenant();
-        authorizeTenant(tenant);
+        // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
+        authorizeTenant(request.getSubject().getTenant());
+        String tenant = extractAuthTenantId();
         DecisionResponse response = repository.decide(request, tenant);
         // Spec: /decide 200 response includes X-RateLimit-Remaining and X-RateLimit-Reset (optional in v0)
         return ResponseEntity.ok()
