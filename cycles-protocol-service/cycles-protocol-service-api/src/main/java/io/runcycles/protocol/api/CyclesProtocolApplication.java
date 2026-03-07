@@ -4,10 +4,12 @@ import org.slf4j.*;
 import org.springframework.boot.*;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.ComponentScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /** Cycles Protocol v0.1.23 - Main Application */
 @SpringBootApplication
 @ComponentScan(basePackages = "io.runcycles.protocol")
+@EnableScheduling
 public class CyclesProtocolApplication {
     private static final Logger LOG = LoggerFactory.getLogger(CyclesProtocolApplication.class);
     

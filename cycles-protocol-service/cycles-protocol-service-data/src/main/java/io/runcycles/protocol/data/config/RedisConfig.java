@@ -61,6 +61,11 @@ public class RedisConfig {
         return loadLuaScript("lua/event.lua");
     }
 
+    @Bean(name = "expireLuaScript")
+    public String expireLuaScript() throws IOException {
+        return loadLuaScript("lua/expire.lua");
+    }
+
     private String loadLuaScript(String path) throws IOException {
         try (InputStream is = getClass().getClassLoader().getResourceAsStream(path);
              BufferedReader reader = new BufferedReader(new InputStreamReader(is))) {

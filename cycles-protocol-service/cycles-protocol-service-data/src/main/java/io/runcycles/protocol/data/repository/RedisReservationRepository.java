@@ -38,7 +38,7 @@ public class RedisReservationRepository {
 
             // dry_run: evaluate budget without persisting a reservation
             if (Boolean.TRUE.equals(request.getDryRun())) {
-                return evaluateDryRun(jedis, request, affectedScopes, scopePath);
+                return evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
             }
 
             String reservationId = UUID.randomUUID().toString();
@@ -55,6 +55,9 @@ public class RedisReservationRepository {
             args.add(scopePath);
             args.add(tenant);
             args.add(overagePolicy);
+            // ARGV[12] = metadata_json (empty string if absent); scopes start at ARGV[13]
+            args.add(request.getMetadata() != null
+                ? objectMapper.writeValueAsString(request.getMetadata()) : "");
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(reserveScript, 0, args.toArray(new String[0]));
@@ -67,9 +70,14 @@ public class RedisReservationRepository {
 
             // Idempotency hit: Lua returns existing reservation_id without expires_at.
             // Fetch the stored reservation to build a complete, accurate response.
+            // Use hgetAll directly to avoid the 410 check in getReservationById.
             if (!response.containsKey("expires_at")) {
                 String existingId = (String) response.get("reservation_id");
-                ReservationSummary existing = getReservationById(existingId);
+                Map<String, String> existingFields = jedis.hgetAll("reservation:res_" + existingId);
+                if (existingFields == null || existingFields.isEmpty()) {
+                    throw CyclesProtocolException.notFound(existingId);
+                }
+                ReservationSummary existing = buildReservationSummary(existingFields);
                 return ReservationCreateResponse.builder()
                     .decision("ALLOW")
                     .reservationId(existingId)
@@ -97,9 +105,20 @@ public class RedisReservationRepository {
     }
 
     private ReservationCreateResponse evaluateDryRun(Jedis jedis, ReservationCreateRequest request,
-                                                      List<String> affectedScopes, String scopePath) {
+                                                      List<String> affectedScopes, String scopePath,
+                                                      String tenant) throws Exception {
         long estimateAmount = request.getEstimate().getAmount();
         String unit = request.getEstimate().getUnit().name();
+
+        // Idempotency: replay cached result for same (tenant, key) within 24 h
+        String idempotencyKey = request.getIdempotencyKey();
+        if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
+            String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
+            String cached = jedis.get(idemKey);
+            if (cached != null) {
+                return objectMapper.readValue(cached, ReservationCreateResponse.class);
+            }
+        }
 
         for (String scope : affectedScopes) {
             String budgetKey = "budget:" + scope + ":" + unit;
@@ -141,12 +160,40 @@ public class RedisReservationRepository {
             }
         }
 
-        return ReservationCreateResponse.builder()
+        // Collect current balances for all affected scopes
+        List<Balance> balances = new ArrayList<>();
+        for (String scope : affectedScopes) {
+            String budgetKey = "budget:" + scope + ":" + unit;
+            Map<String, String> budget = jedis.hgetAll(budgetKey);
+            if (budget != null && !budget.isEmpty()) {
+                Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
+                balances.add(Balance.builder()
+                    .scope(scope)
+                    .scopePath(scope)
+                    .remaining(new SignedAmount(unitEnum, Long.parseLong(budget.getOrDefault("remaining", "0"))))
+                    .reserved(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("reserved", "0"))))
+                    .spent(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("spent", "0"))))
+                    .allocated(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("allocated", "0"))))
+                    .build());
+            }
+        }
+
+        ReservationCreateResponse dryRunResponse = ReservationCreateResponse.builder()
             .decision("ALLOW")
             .affectedScopes(affectedScopes)
             .scopePath(scopePath)
             .reserved(request.getEstimate())
+            .balances(balances)
             .build();
+
+        // Cache dry_run result (24 h TTL)
+        if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
+            String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
+            jedis.set(idemKey, objectMapper.writeValueAsString(dryRunResponse));
+            jedis.pexpire(idemKey, 86400000L);
+        }
+
+        return dryRunResponse;
     }
 
     public CommitResponse commitReservation(String reservationId, CommitRequest request) {
@@ -275,7 +322,11 @@ public class RedisReservationRepository {
             if (fields == null || fields.isEmpty()) {
                 throw CyclesProtocolException.notFound(reservationId);
             }
-            return buildReservationSummary(fields);
+            ReservationDetail detail = buildReservationSummary(fields);
+            if (detail.getStatus() == Enums.ReservationState.EXPIRED) {
+                throw CyclesProtocolException.reservationExpired();
+            }
+            return detail;
         } catch (CyclesProtocolException e) {
             throw e;
         } catch (Exception e) {
@@ -449,6 +500,7 @@ public class RedisReservationRepository {
             String unit = request.getEstimate().getUnit().name();
 
             DecisionResponse response = null;
+            String deepestScope = affectedScopes.get(affectedScopes.size() - 1);
             for (String scope : affectedScopes) {
                 String budgetKey = "budget:" + scope + ":" + unit;
                 Map<String, String> budget = jedis.hgetAll(budgetKey);
@@ -457,6 +509,7 @@ public class RedisReservationRepository {
                     response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("BUDGET_NOT_FOUND")
+                        .affectedScopes(affectedScopes)
                         .build();
                     break;
                 }
@@ -464,6 +517,7 @@ public class RedisReservationRepository {
                     response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
+                        .affectedScopes(affectedScopes)
                         .build();
                     break;
                 }
@@ -472,6 +526,7 @@ public class RedisReservationRepository {
                     response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("DEBT_OUTSTANDING")
+                        .affectedScopes(affectedScopes)
                         .build();
                     break;
                 }
@@ -480,16 +535,29 @@ public class RedisReservationRepository {
                     response = DecisionResponse.builder()
                         .decision("DENY")
                         .reasonCode("BUDGET_EXCEEDED")
+                        .affectedScopes(affectedScopes)
                         .build();
                     break;
                 }
             }
 
             if (response == null) {
-                response = DecisionResponse.builder()
-                    .decision("ALLOW")
-                    .affectedScopes(affectedScopes)
-                    .build();
+                // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+                String deepestBudgetKey = "budget:" + deepestScope + ":" + unit;
+                String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+                if (capsJson != null && !capsJson.isEmpty()) {
+                    Caps caps = objectMapper.readValue(capsJson, Caps.class);
+                    response = DecisionResponse.builder()
+                        .decision("ALLOW_WITH_CAPS")
+                        .affectedScopes(affectedScopes)
+                        .caps(caps)
+                        .build();
+                } else {
+                    response = DecisionResponse.builder()
+                        .decision("ALLOW")
+                        .affectedScopes(affectedScopes)
+                        .build();
+                }
             }
 
             // Store idempotency result (24 h TTL)
@@ -522,10 +590,15 @@ public class RedisReservationRepository {
             args.add(objectMapper.writeValueAsString(request.getAction()));
             args.add(String.valueOf(request.getActual().getAmount()));
             args.add(request.getActual().getUnit().name());
-            args.add(request.getIdempotencyKey());
+            args.add(request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "");
             args.add(scopePath);
             args.add(tenant);
             args.add(eventOveragePolicy);
+            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms; scopes start at ARGV[12]
+            args.add(request.getMetrics() != null
+                ? objectMapper.writeValueAsString(request.getMetrics()) : "");
+            args.add(request.getClientTimeMs() != null
+                ? String.valueOf(request.getClientTimeMs()) : "");
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(eventScript, 0, args.toArray(new String[0]));
@@ -616,7 +689,14 @@ public class RedisReservationRepository {
             finalizedAtMs = Long.parseLong(releasedAtStr);
         }
 
-        ReservationDetail detail = new ReservationDetail(committed, finalizedAtMs);
+        // Parse metadata if present
+        Map<String, Object> metadata = null;
+        String metadataJson = fields.get("metadata_json");
+        if (metadataJson != null && !metadataJson.isEmpty()) {
+            metadata = objectMapper.readValue(metadataJson, Map.class);
+        }
+
+        ReservationDetail detail = new ReservationDetail(committed, finalizedAtMs, metadata);
         detail.setReservationId(fields.get("reservation_id"));
         detail.setStatus(Enums.ReservationState.valueOf(stateStr));
         detail.setIdempotencyKey(fields.get("idempotency_key"));
