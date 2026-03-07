@@ -375,9 +375,11 @@ public class RedisReservationRepository {
                             if (result.size() >= limit) {
                                 String nextCursor = scan.getCursor();
                                 if ("0".equals(nextCursor)) nextCursor = null;
+                                // hasMore is always true here: we stopped early due to limit,
+                                // so there may be unprocessed keys in this or future scan pages.
                                 return ReservationListResponse.builder()
                                     .reservations(result)
-                                    .hasMore(nextCursor != null)
+                                    .hasMore(true)
                                     .nextCursor(nextCursor)
                                     .build();
                             }
@@ -457,9 +459,11 @@ public class RedisReservationRepository {
                         if (balances.size() >= limit) {
                             String nextCursor = scan.getCursor();
                             if ("0".equals(nextCursor)) nextCursor = null;
+                            // hasMore is always true here: we stopped early due to limit,
+                            // so there may be unprocessed keys in this or future scan pages.
                             return BalanceQueryResponse.builder()
                                 .balances(balances)
-                                .hasMore(nextCursor != null)
+                                .hasMore(true)
                                 .nextCursor(nextCursor)
                                 .build();
                         }

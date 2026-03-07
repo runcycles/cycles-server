@@ -41,7 +41,7 @@ public class CyclesProtocolException extends RuntimeException {
         return new CyclesProtocolException(Enums.ErrorCode.RESERVATION_FINALIZED, "Reservation finalized: " + scope, 422);
     }
     public static CyclesProtocolException budgetNotFound(String scope) {
-        return new CyclesProtocolException(Enums.ErrorCode.NOT_FOUND, "Budget not found for provided scope: " + scope, 404);
+        return new CyclesProtocolException(Enums.ErrorCode.BUDGET_NOT_FOUND, "Budget not found for provided scope: " + scope, 404);
     }
     public static CyclesProtocolException idempotencyMismatch() {
         return new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH, "Provided idempotency does not match the stored one", 409);
