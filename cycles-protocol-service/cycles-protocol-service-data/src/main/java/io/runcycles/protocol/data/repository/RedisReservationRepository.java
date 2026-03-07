@@ -341,7 +341,7 @@ public class RedisReservationRepository {
                                                     int limit, String startCursor) {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
-            List<ReservationDetail> result = new ArrayList<>();
+            List<ReservationSummary> result = new ArrayList<>();
             String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
 
             do {
