@@ -23,7 +23,10 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     end
 end
 
--- Parse affected scopes
+-- Parse affected scopes.
+-- Fixed args: ARGV[1]=event_id, [2]=subject_json, [3]=action_json,
+--             [4]=amount, [5]=unit, [6]=idempotency_key, [7]=scope_path, [8]=tenant.
+-- Affected scopes are the variadic tail starting at ARGV[9].
 local affected_scopes = {}
 for i = 9, #ARGV do
     table.insert(affected_scopes, ARGV[i])

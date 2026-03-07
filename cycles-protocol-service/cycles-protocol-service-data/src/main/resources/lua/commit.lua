@@ -129,16 +129,38 @@ if delta > 0 then
     end
 end
 
--- Release reservation from all scopes
+-- Release reservation from all scopes and record base spend.
+--
+-- Spent accounting uses a two-part accumulation so that the total always equals actual_amount:
+--
+--   delta < 0  (actual < estimate):
+--     overage block is skipped entirely.
+--     This loop: remaining += |delta|, spent += actual_amount.
+--     Net spent = actual_amount. ✓
+--
+--   delta == 0 (exact match):
+--     overage block is skipped (condition is delta > 0).
+--     This loop: spent += estimate_amount == actual_amount.
+--     Net spent = actual_amount. ✓
+--
+--   delta > 0  (actual > estimate):
+--     Overage block already ran: spent += delta (the extra portion beyond estimate).
+--     This loop: spent += estimate_amount (the base portion).
+--     Net spent = delta + estimate_amount = (actual - estimate) + estimate = actual_amount. ✓
+--
+-- Do NOT consolidate this into a single "spent += actual_amount" here — the overage
+-- block has already modified `spent` for the delta > 0 cases.
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. actual_unit
     redis.call('HINCRBY', budget_key, 'reserved', -estimate_amount)
 
-    -- If actual < estimate, return unused portion to remaining; record only actual as spent
     if delta < 0 then
+        -- Return unused portion of the reservation to remaining
         redis.call('HINCRBY', budget_key, 'remaining', -delta)
         redis.call('HINCRBY', budget_key, 'spent', actual_amount)
     else
+        -- Overage block (if any) already charged `delta` to spent above;
+        -- charge the base estimate_amount here. Total = delta + estimate = actual.
         redis.call('HINCRBY', budget_key, 'spent', estimate_amount)
     end
 end
