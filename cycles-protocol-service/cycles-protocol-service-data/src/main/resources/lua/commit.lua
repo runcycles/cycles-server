@@ -38,8 +38,10 @@ if state == "COMMITTED" then
     end
 end
 
--- Check if expired or released
-if state ~= "ACTIVE" then
+-- Check if expired, committed, or released
+if state == "EXPIRED" then
+    return cjson.encode({error = "RESERVATION_EXPIRED", state = state})
+elseif state ~= "ACTIVE" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = state})
 end
 

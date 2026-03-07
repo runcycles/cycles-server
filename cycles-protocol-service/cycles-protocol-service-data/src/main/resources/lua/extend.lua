@@ -22,7 +22,9 @@ if redis.call('EXISTS', reservation_key) == 0 then
 end
 
 local state = redis.call('HGET', reservation_key, 'state')
-if state ~= "ACTIVE" then
+if state == "EXPIRED" then
+    return cjson.encode({error = "RESERVATION_EXPIRED", state = state})
+elseif state ~= "ACTIVE" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = state})
 end
 
