@@ -92,33 +92,39 @@ if delta > 0 then
             redis.call('HINCRBY', budget_key, 'spent', delta)
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-        -- v0.1.22: Overdraft logic
+        -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption
+        for _, scope in ipairs(affected_scopes) do
+            local budget_key = "budget:" .. scope .. ":" .. actual_unit
+            local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+            if remaining < delta then
+                local deficit = delta - remaining
+                local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
+                local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
+                if current_debt + deficit > overdraft_limit then
+                    return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
+                        current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
+                end
+            end
+        end
+        -- All checks passed - apply mutations
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
             local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
             local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-            
+
             if remaining >= delta then
                 -- Sufficient remaining - charge normally
                 redis.call('HINCRBY', budget_key, 'remaining', -delta)
                 redis.call('HINCRBY', budget_key, 'spent', delta)
             else
-                -- Need overdraft
+                -- Create debt for the shortfall
                 local deficit = delta - remaining
-                
-                -- Check if overdraft allowed
-                if current_debt + deficit > overdraft_limit then
-                    return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope, 
-                        current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
-                end
-                
-                -- Create debt
                 redis.call('HSET', budget_key, 'remaining', 0)
                 redis.call('HINCRBY', budget_key, 'spent', delta)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
-                
+
                 -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
                 local new_debt = current_debt + deficit
                 if overdraft_limit > 0 and new_debt >= overdraft_limit then
@@ -166,7 +172,8 @@ for _, scope in ipairs(affected_scopes) do
 end
 
 -- Update reservation
-local nowCommit = tonumber(redis.call('TIME')[1]) * 1000
+local tCommit = redis.call('TIME')
+local nowCommit = tonumber(tCommit[1]) * 1000 + math.floor(tonumber(tCommit[2]) / 1000)
 redis.call('HMSET', reservation_key,
     'state', 'COMMITTED',
     'charged_amount', charged_amount,

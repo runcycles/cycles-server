@@ -357,13 +357,16 @@ public class RedisReservationRepository {
                         String trueScope = budget.get("scope");
                         if (trueScope == null) continue;
 
-                        // Filter by tenant and optional subject fields
-                        if (!trueScope.contains("tenant:" + tenant)) continue;
-                        if (workspace != null && !trueScope.contains("workspace:" + workspace)) continue;
-                        if (app != null && !trueScope.contains("app:" + app)) continue;
-                        if (workflow != null && !trueScope.contains("workflow:" + workflow)) continue;
-                        if (agent != null && !trueScope.contains("agent:" + agent)) continue;
-                        if (toolset != null && !trueScope.contains("toolset:" + toolset)) continue;
+                        // Filter by tenant and optional subject fields.
+                        // Use exact segment boundary checks to avoid prefix false-positives
+                        // (e.g. tenant "acme" must not match "tenant:acme-corp").
+                        // Scope paths are lowercased; filter values are lowercased for comparison.
+                        if (!scopeHasSegment(trueScope, "tenant:" + tenant.toLowerCase())) continue;
+                        if (workspace != null && !scopeHasSegment(trueScope, "workspace:" + workspace.toLowerCase())) continue;
+                        if (app != null && !scopeHasSegment(trueScope, "app:" + app.toLowerCase())) continue;
+                        if (workflow != null && !scopeHasSegment(trueScope, "workflow:" + workflow.toLowerCase())) continue;
+                        if (agent != null && !scopeHasSegment(trueScope, "agent:" + agent.toLowerCase())) continue;
+                        if (toolset != null && !scopeHasSegment(trueScope, "toolset:" + toolset.toLowerCase())) continue;
 
                         String trueUnitsStr = budget.get("unit");
                         Enums.UnitEnum unit = Enums.UnitEnum.valueOf(trueUnitsStr);
@@ -500,6 +503,8 @@ public class RedisReservationRepository {
             List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
             String scopePath = affectedScopes.get(affectedScopes.size() - 1);
 
+            String eventOveragePolicy = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "REJECT";
+
             List<String> args = new ArrayList<>();
             args.add(eventId);
             args.add(objectMapper.writeValueAsString(request.getSubject()));
@@ -509,6 +514,7 @@ public class RedisReservationRepository {
             args.add(request.getIdempotencyKey());
             args.add(scopePath);
             args.add(tenant);
+            args.add(eventOveragePolicy);
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(eventScript, 0, args.toArray(new String[0]));
@@ -545,6 +551,20 @@ public class RedisReservationRepository {
             LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
             return null;
         }
+    }
+
+    /**
+     * Returns true when the scope path contains the given segment at an exact boundary.
+     * Segment boundaries are "/" or start/end of string, preventing prefix false-positives
+     * (e.g. "tenant:acme" must not match "tenant:acme-corp").
+     */
+    private boolean scopeHasSegment(String scopePath, String segment) {
+        int idx = scopePath.indexOf(segment);
+        if (idx < 0) return false;
+        int end = idx + segment.length();
+        boolean startOk = idx == 0 || scopePath.charAt(idx - 1) == '/';
+        boolean endOk = end == scopePath.length() || scopePath.charAt(end) == '/';
+        return startOk && endOk;
     }
 
     private ReservationSummary buildReservationSummary(Map<String, String> fields) throws Exception {

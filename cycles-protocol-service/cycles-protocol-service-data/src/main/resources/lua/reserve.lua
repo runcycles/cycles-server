@@ -95,10 +95,6 @@ redis.call('HMSET', reservation_key,
     'overage_policy', overage_policy
 )
 
--- Set TTL on reservation, PEXPIRE means that after ttl REDIS will remove the record itself
--- redis.call('PEXPIRE', reservation_key, ttl_ms + grace_ms)
-redis.call('HSET', reservation_key, 'expires_at', expires_at)
-
 -- Add to reservation index
 redis.call('ZADD', 'reservation:ttl', expires_at, reservation_id)
 

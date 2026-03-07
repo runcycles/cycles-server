@@ -51,7 +51,8 @@ for _, scope in ipairs(affected_scopes) do
 end
 
 -- Update reservation
-local now = tonumber(redis.call('TIME')[1]) * 1000
+local tRelease = redis.call('TIME')
+local now = tonumber(tRelease[1]) * 1000 + math.floor(tonumber(tRelease[2]) / 1000)
 redis.call('HMSET', reservation_key,
     'state', 'RELEASED',
     'released_at', now,
