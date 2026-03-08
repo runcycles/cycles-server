@@ -722,17 +722,9 @@ public class RedisReservationRepository {
             // Populate balances snapshot for operator visibility
             List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getActual().getUnit());
 
-            // Build charged amount from Lua response (supports partial debit for ALLOW_IF_AVAILABLE)
-            Amount charged = null;
-            if (response.containsKey("amount_charged")) {
-                long amountCharged = ((Number) response.get("amount_charged")).longValue();
-                charged = new Amount(request.getActual().getUnit(), amountCharged);
-            }
-
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
-                .charged(charged)
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
@@ -748,7 +740,12 @@ public class RedisReservationRepository {
             String key = "reservation:res_" + reservationId;
             String tenant = jedis.hget(key, "tenant");
             LOG.info("Resolved reservation tenant for: key={}, tenant={}",key,tenant);
+            if (tenant == null) {
+                throw CyclesProtocolException.notFound(reservationId);
+            }
             return tenant;
+        } catch (CyclesProtocolException e) {
+            throw e;
         } catch (Exception e) {
             LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
             throw new RuntimeException("Failed to resolve reservation tenant", e);
