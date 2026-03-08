@@ -62,8 +62,11 @@ for _, scope in ipairs(affected_scopes) do
 
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
     if remaining < amount then
-        if overage_policy == "REJECT" or overage_policy == "ALLOW_IF_AVAILABLE" then
+        if overage_policy == "REJECT" then
             return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
+        elseif overage_policy == "ALLOW_IF_AVAILABLE" then
+            -- Partial debit: will charge min(amount, remaining) in the mutation phase.
+            -- No error here; the effective_amount variable below handles capping.
         elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
             local deficit = amount - remaining
             local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
@@ -76,6 +79,20 @@ for _, scope in ipairs(affected_scopes) do
     end
 end
 
+-- Determine effective charge amount.
+-- ALLOW_IF_AVAILABLE caps the charge at the minimum remaining across all scopes.
+local effective_amount = amount
+if overage_policy == "ALLOW_IF_AVAILABLE" then
+    for _, scope in ipairs(affected_scopes) do
+        local budget_key = "budget:" .. scope .. ":" .. unit
+        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+        if remaining < effective_amount then
+            effective_amount = remaining
+        end
+    end
+    if effective_amount < 0 then effective_amount = 0 end
+end
+
 -- All checks passed - debit across all scopes
 local t_now = redis.call('TIME')
 local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
@@ -83,20 +100,20 @@ for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
 
-    if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < amount then
-        local deficit = amount - remaining
+    if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < effective_amount then
+        local deficit = effective_amount - remaining
         local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
         local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
         redis.call('HSET', budget_key, 'remaining', 0)
-        redis.call('HINCRBY', budget_key, 'spent', amount)
+        redis.call('HINCRBY', budget_key, 'spent', effective_amount)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         local new_debt = current_debt + deficit
         if overdraft_limit > 0 and new_debt > overdraft_limit then
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
         end
     else
-        redis.call('HINCRBY', budget_key, 'remaining', -amount)
-        redis.call('HINCRBY', budget_key, 'spent', amount)
+        redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
+        redis.call('HINCRBY', budget_key, 'spent', effective_amount)
     end
 end
 
@@ -107,7 +124,8 @@ redis.call('HMSET', event_key,
     'tenant', tenant,
     'subject_json', subject_json,
     'action_json', action_json,
-    'amount', amount,
+    'amount', effective_amount,
+    'requested_amount', amount,
     'unit', unit,
     'scope_path', scope_path,
     'affected_scopes', cjson.encode(affected_scopes),
@@ -132,5 +150,6 @@ end
 
 return cjson.encode({
     event_id = event_id,
-    status = "APPLIED"
+    status = "APPLIED",
+    amount_charged = effective_amount
 })

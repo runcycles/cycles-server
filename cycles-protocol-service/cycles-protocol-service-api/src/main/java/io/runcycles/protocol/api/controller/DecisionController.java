@@ -32,10 +32,6 @@ public class DecisionController extends BaseController {
         authorizeTenant(request.getSubject().getTenant());
         String tenant = extractAuthTenantId();
         DecisionResponse response = repository.decide(request, tenant);
-        // Spec: /decide 200 response includes X-RateLimit-Remaining and X-RateLimit-Reset (optional in v0)
-        return ResponseEntity.ok()
-            .header("X-RateLimit-Remaining", "-1")
-            .header("X-RateLimit-Reset", "0")
-            .body(response);
+        return ResponseEntity.ok(response);
     }
 }

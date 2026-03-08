@@ -96,13 +96,24 @@ public class RedisReservationRepository {
             // Populate balances snapshot for operator visibility
             List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getEstimate().getUnit());
 
+            // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+            Enums.DecisionEnum decision = Enums.DecisionEnum.ALLOW;
+            Caps caps = null;
+            String deepestBudgetKey = "budget:" + scopePath + ":" + request.getEstimate().getUnit().name();
+            String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+            if (capsJson != null && !capsJson.isEmpty()) {
+                caps = objectMapper.readValue(capsJson, Caps.class);
+                decision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
+            }
+
             return ReservationCreateResponse.builder()
-                .decision(Enums.DecisionEnum.ALLOW)
+                .decision(decision)
                 .reservationId(reservationId)
                 .affectedScopes(affectedScopes)
                 .scopePath(scopePath)
                 .reserved(request.getEstimate())
                 .expiresAtMs(((Number) response.get("expires_at")).longValue())
+                .caps(caps)
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
@@ -195,11 +206,22 @@ public class RedisReservationRepository {
             }
         }
 
+        // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+        Enums.DecisionEnum dryRunDecision = Enums.DecisionEnum.ALLOW;
+        Caps dryRunCaps = null;
+        String deepestBudgetKey = "budget:" + scopePath + ":" + unit;
+        String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+        if (capsJson != null && !capsJson.isEmpty()) {
+            dryRunCaps = objectMapper.readValue(capsJson, Caps.class);
+            dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
+        }
+
         ReservationCreateResponse dryRunResponse = ReservationCreateResponse.builder()
-            .decision(Enums.DecisionEnum.ALLOW)
+            .decision(dryRunDecision)
             .affectedScopes(affectedScopes)
             .scopePath(scopePath)
             .reserved(request.getEstimate())
+            .caps(dryRunCaps)
             .balances(balances)
             .build();
 
@@ -700,9 +722,17 @@ public class RedisReservationRepository {
             // Populate balances snapshot for operator visibility
             List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getActual().getUnit());
 
+            // Build charged amount from Lua response (supports partial debit for ALLOW_IF_AVAILABLE)
+            Amount charged = null;
+            if (response.containsKey("amount_charged")) {
+                long amountCharged = ((Number) response.get("amount_charged")).longValue();
+                charged = new Amount(request.getActual().getUnit(), amountCharged);
+            }
+
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
+                .charged(charged)
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
