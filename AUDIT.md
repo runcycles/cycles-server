@@ -12,16 +12,39 @@
 |----------|------|--------|
 | Endpoints & Routes | 9/9 | 0 |
 | Request Schemas | 6/6 | 0 |
-| Response Schemas | 8/8 | 1 |
-| HTTP Status Codes | — | 1 |
+| Response Schemas | 8/8 | 0 |
+| HTTP Status Codes | — | 0 |
 | Response Headers | — | 0 |
 | Error Handling | — | 0 |
 | Auth & Tenancy | — | 0 |
 | Idempotency | — | 0 |
 | Scope Derivation | — | 0 |
-| Normative Requirements | — | 2 |
+| Normative Requirements | — | 0 |
+| Lua Atomicity | — | 0 |
+| Dry-Run Semantics | — | 0 |
+| Overdraft/Debt Model | — | 0 |
+| Grace Period Handling | — | 0 |
 
-**Total real issues: 4** (1 medium, 2 low, 1 informational)
+**All previously identified issues have been fixed. No remaining spec violations found.**
+
+---
+
+## Audit Scope
+
+Two-pass audit covering:
+- All 9 spec endpoints vs server routes
+- All 6 request schemas and 8 response schemas (fields, types, constraints, defaults, required markers)
+- All 12 error codes, HTTP status mappings, and error semantics
+- Auth/tenancy enforcement across all endpoints
+- Idempotency per-endpoint namespacing, replay, and payload mismatch detection
+- Scope derivation canonical ordering and gap-filling
+- Response headers (X-Request-Id, X-Cycles-Tenant, X-RateLimit-*)
+- Lua script atomicity for reserve, commit, release, extend, event, expire
+- Dry-run response rules (reservation_id/expires_at_ms absent, affected_scopes populated)
+- Overdraft/debt model (ALLOW_WITH_OVERDRAFT, is_over_limit, DEBT_OUTSTANDING)
+- Grace period semantics (commits accepted through expires_at_ms + grace_period_ms)
+- Subject.dimensions round-tripping
+- Unit mismatch detection on commit and event
 
 ---
 
@@ -36,7 +59,7 @@
 - `POST /v1/reservations/{reservation_id}/release` — ReservationController
 - `POST /v1/reservations/{reservation_id}/extend` — ReservationController
 - `GET /v1/balances` — BalanceController
-- `POST /v1/events` — EventController
+- `POST /v1/events` — EventController (returns 201 per spec)
 
 ### Request/Response Schemas (all match)
 - All 6 request schemas match spec (fields, types, constraints, defaults)
@@ -46,18 +69,23 @@
 - `Subject` anyOf validation correctly enforced via `hasAtLeastOneStandardField()`
 - `additionalProperties: false` correctly enforced via `@JsonIgnoreProperties(ignoreUnknown = false)`
 - `Balance` schema includes all debt/overdraft fields (debt, overdraft_limit, is_over_limit)
+- `Balance.remaining` correctly typed as `SignedAmount` (allows negative values in overdraft)
+- `ReleaseResponse.released` guaranteed non-null (falls back to zero Amount on data corruption)
 
 ### Auth & Tenancy (fully correct)
 - X-Cycles-API-Key authentication via `ApiKeyAuthenticationFilter`
 - Tenant validation via `BaseController.authorizeTenant()` — returns 403 on mismatch
-- Reservation ownership enforced on all mutation/read endpoints
+- Reservation ownership enforced on all mutation/read endpoints (commit, release, extend, get)
 - Balance visibility correctly scoped to effective tenant
 - List reservations correctly scoped to effective tenant
+- Subject.tenant validated against effective tenant on reserve, decide, and event endpoints
+- Subject.tenant can be null/omitted (spec allows via anyOf constraint)
 
 ### Scope Derivation (fully correct)
 - Canonical ordering: tenant → workspace → app → workflow → agent → toolset
 - Gap-filling with "default" for intermediate levels
 - Scope paths lowercased for stable canonicalization
+- Subject.dimensions round-tripped through JSON serialization in ReservationDetail
 
 ### Idempotency (fully correct)
 - Per-endpoint namespacing in all Lua scripts:
@@ -68,11 +96,11 @@
   - `idem:{tenant}:extend:{reservation_id}:{key}` (extend.lua)
   - Commit/release: stored on reservation hash itself (per-reservation)
 - Header vs body key mismatch detection: `BaseController.validateIdempotencyHeader()`
-- Payload hash-based mismatch detection via SHA-256
+- Payload hash-based mismatch detection via SHA-256 (all mutation endpoints)
 - Idempotency replay returns original response for all endpoints
 
-### Response Headers (correct)
-- `X-Request-Id` set on every response via `RequestIdFilter`
+### Response Headers (fully correct)
+- `X-Request-Id` set on every response (including errors) via `RequestIdFilter` — header set before `filterChain.doFilter()`, guaranteed present on all responses
 - `X-Cycles-Tenant` set on every authenticated response via `RequestIdFilter`
 - `X-RateLimit-Remaining` / `X-RateLimit-Reset` set on `/v1/decide` (optional in v0)
 
@@ -83,91 +111,72 @@
 - RESERVATION_FINALIZED → 409
 - RESERVATION_EXPIRED → 410
 - NOT_FOUND → 404
-- UNIT_MISMATCH → 400
+- UNIT_MISMATCH → 400 (enforced in commit.lua and event.lua)
 - IDEMPOTENCY_MISMATCH → 409
 - INVALID_REQUEST → 400
 - INTERNAL_ERROR → 500
 - `/decide` correctly returns `decision=DENY` (not 409) for debt/overdraft conditions
-- Commit accepts until `expires_at_ms + grace_period_ms`
-- Extend only accepts while `status=ACTIVE` and not expired
+- Commit accepts until `expires_at_ms + grace_period_ms` (commit.lua line 76)
+- Release accepts until `expires_at_ms + grace_period_ms` (release.lua line 47)
+- Extend only accepts while `status=ACTIVE` and `server_time <= expires_at_ms` (extend.lua)
+- List reservations `status` query param validated against `ReservationStatus` enum
 
-### Normative Spec Rules (correctly implemented)
+### Normative Spec Rules (all correctly implemented)
 - Reserve is atomic across all derived scopes (Lua script)
 - Commit and release are idempotent (Lua scripts)
 - No double-charge on retries (idempotency key enforced)
 - `dry_run=true` does not mutate balances or persist reservations
 - `dry_run=true` omits `reservation_id` and `expires_at_ms`
+- `dry_run=true` populates `affected_scopes` regardless of decision outcome
+- `dry_run=true` populates `balances` (recommended by spec)
 - Events applied atomically across derived scopes (Lua script)
 - Event endpoint returns 201 (not 200) per spec
 - `include_children` parameter accepted but ignored (spec allows in v0)
 - Over-limit blocking: reservations rejected with OVERDRAFT_LIMIT_EXCEEDED when `is_over_limit=true`
 - `is_over_limit` set to true when `debt > overdraft_limit` after commit
+- `GET /v1/reservations/{id}` returns `ReservationDetail` with `status: EXPIRED` for expired reservations
+- All mutation responses (reserve, commit, release, extend, event) populate optional `balances` field
+
+### Lua Atomicity (correct)
+- `ALLOW_IF_AVAILABLE` in commit.lua uses fail-fast pattern (all checks before mutations)
+- `ALLOW_WITH_OVERDRAFT` in commit.lua uses fail-fast pattern across all scopes
+- Event.lua uses same fail-fast atomicity patterns
+- Reserve.lua atomically checks and deducts across all derived scopes
+- All Lua scripts leverage Redis single-threaded execution for atomicity
+
+### Overdraft/Debt Model (correct)
+- `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event
+- Debt tracked per-scope, `is_over_limit` flag set when `debt > overdraft_limit`
+- Over-limit scopes block new reservations with OVERDRAFT_LIMIT_EXCEEDED
+- Concurrent commit/event behavior matches spec (per-operation check, not cross-operation atomic)
+- Event overage_policy defaults to REJECT, supports all three policies
 
 ---
 
-## ISSUES FOUND
+## Previously Found Issues (all fixed)
 
-### Issue 1 [MEDIUM]: `GET /v1/reservations/{reservation_id}` always returns 410 for EXPIRED reservations
+### Issue 1 [FIXED]: `GET /v1/reservations/{id}` returned 410 for EXPIRED reservations
+- **Was:** `getReservationById()` threw 410 for any EXPIRED reservation
+- **Fix:** Removed the EXPIRED status check; now returns `ReservationDetail` with `status: EXPIRED`
+- **Location:** `RedisReservationRepository.java:384-392`
 
-**Spec says:** `ReservationDetail` includes `status` with enum `[ACTIVE, COMMITTED, RELEASED, EXPIRED]`, implying expired reservations should be retrievable with `status: EXPIRED`. The spec also lists 410 as a valid error response.
+### Issue 2 [FIXED]: `ReleaseResponse.released` could be null
+- **Was:** `releasedAmount` was null when reservation data was corrupted
+- **Fix:** Falls back to `Amount(USD_MICROCENTS, 0)` with a warning log
+- **Location:** `RedisReservationRepository.java:304-314`
 
-**Server does:** `RedisReservationRepository.getReservationById()` (line 382-384) throws `CyclesProtocolException.reservationExpired()` (HTTP 410) for ANY reservation with status EXPIRED, making it impossible to retrieve expired reservation details.
+### Issue 3 [FIXED]: `GET /v1/reservations` status param not validated against enum
+- **Was:** Invalid status values silently returned empty results
+- **Fix:** Added `Enums.ReservationStatus.valueOf()` validation returning 400 INVALID_REQUEST
+- **Location:** `ReservationController.java:109-116`
 
-**Impact:** Operators cannot inspect expired reservations for debugging. The 410 is technically valid per the spec's error response list, but returning the `ReservationDetail` with `status: EXPIRED` would better serve the spec's stated purpose ("useful for debugging and monitoring").
-
-**Location:** `RedisReservationRepository.java:382-384`
-
----
-
-### Issue 2 [LOW]: `ReleaseResponse.released` can be null despite spec marking it required
-
-**Spec says:** `ReleaseResponse` has `required: [status, released]`.
-
-**Server does:** In `RedisReservationRepository.releaseReservation()` (lines 298-304), `releasedAmount` is null if `estimateAmountStr` or `estimateUnitStr` is null (data corruption). Since `@JsonInclude(NON_NULL)` is used, null values are silently omitted rather than failing validation — violating the spec's `required` constraint.
-
-**Impact:** Only occurs under data corruption. The `@JsonInclude(NON_NULL)` + `@NotNull` combination creates a silent violation rather than a hard error.
-
-**Location:** `ReleaseResponse.java:15`, `RedisReservationRepository.java:298-304`
-
----
-
-### Issue 3 [LOW]: `GET /v1/reservations` status query parameter not validated against enum
-
-**Spec says:** The `status` parameter should be a `ReservationStatus` enum value.
-
-**Server does:** `ReservationController.list()` accepts `status` as a raw `String` and passes it directly to the repository for string comparison against the Redis `state` field (line 420). Invalid values like `status=INVALID` don't produce an error — they simply return zero results.
-
-**Impact:** Minor UX issue. Clients passing invalid status values get an empty list instead of a 400 error.
-
-**Location:** `ReservationController.java:100`, `RedisReservationRepository.java:420`
-
----
-
-### Issue 4 [INFO]: Non-dry_run reservation create does not populate optional `balances` field
-
-**Spec says:** `ReservationCreateResponse` includes optional `balances` (array of Balance).
-
-**Server does:** `dry_run=true` populates balances; `dry_run=false` does not. All other mutation endpoints (commit, release, extend, events) populate balances.
-
-**Impact:** Not a spec violation (balances is optional), but inconsistent with other endpoints. Clients expecting operator visibility on reserve responses won't get balance snapshots.
-
-**Location:** `RedisReservationRepository.java:94-101`
-
----
-
-## Consolidated Issue Summary
-
-| # | Severity | Issue | Spec Violation? |
-|---|----------|-------|-----------------|
-| 1 | Medium | GET reservation returns 410 for EXPIRED instead of data with status=EXPIRED | Ambiguous — spec lists both 200 and 410 |
-| 2 | Low | ReleaseResponse.released can be null despite being spec-required | Yes (edge case only) |
-| 3 | Low | Status query param on list reservations not validated against enum | Minor |
-| 4 | Info | Non-dry_run create reservation omits optional balances | No (optional field) |
+### Issue 4 [FIXED]: Non-dry_run reservation create did not populate `balances`
+- **Was:** Only dry_run responses included balances; non-dry_run omitted them
+- **Fix:** Added `fetchBalancesForScopes()` calls for both normal and idempotency-hit paths
+- **Location:** `RedisReservationRepository.java:84,96-106`
 
 ---
 
 ## Verdict
 
-The server implementation is **well-aligned** with the YAML spec. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics) are properly implemented.
-
-The 4 issues found are minor: 1 ambiguous behavior, 1 edge-case data corruption path, 1 missing input validation, and 1 optional field inconsistency. None represent critical spec violations or security concerns.
+The server implementation is **fully compliant** with the YAML spec (v0.1.23). All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. No remaining spec violations found.
