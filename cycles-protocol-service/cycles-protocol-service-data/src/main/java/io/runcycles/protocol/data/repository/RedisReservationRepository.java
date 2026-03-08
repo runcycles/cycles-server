@@ -96,13 +96,24 @@ public class RedisReservationRepository {
             // Populate balances snapshot for operator visibility
             List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getEstimate().getUnit());
 
+            // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+            Enums.DecisionEnum decision = Enums.DecisionEnum.ALLOW;
+            Caps caps = null;
+            String deepestBudgetKey = "budget:" + scopePath + ":" + request.getEstimate().getUnit().name();
+            String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+            if (capsJson != null && !capsJson.isEmpty()) {
+                caps = objectMapper.readValue(capsJson, Caps.class);
+                decision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
+            }
+
             return ReservationCreateResponse.builder()
-                .decision(Enums.DecisionEnum.ALLOW)
+                .decision(decision)
                 .reservationId(reservationId)
                 .affectedScopes(affectedScopes)
                 .scopePath(scopePath)
                 .reserved(request.getEstimate())
                 .expiresAtMs(((Number) response.get("expires_at")).longValue())
+                .caps(caps)
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
@@ -195,11 +206,22 @@ public class RedisReservationRepository {
             }
         }
 
+        // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+        Enums.DecisionEnum dryRunDecision = Enums.DecisionEnum.ALLOW;
+        Caps dryRunCaps = null;
+        String deepestBudgetKey = "budget:" + scopePath + ":" + unit;
+        String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+        if (capsJson != null && !capsJson.isEmpty()) {
+            dryRunCaps = objectMapper.readValue(capsJson, Caps.class);
+            dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
+        }
+
         ReservationCreateResponse dryRunResponse = ReservationCreateResponse.builder()
-            .decision(Enums.DecisionEnum.ALLOW)
+            .decision(dryRunDecision)
             .affectedScopes(affectedScopes)
             .scopePath(scopePath)
             .reserved(request.getEstimate())
+            .caps(dryRunCaps)
             .balances(balances)
             .build();
 
@@ -718,7 +740,12 @@ public class RedisReservationRepository {
             String key = "reservation:res_" + reservationId;
             String tenant = jedis.hget(key, "tenant");
             LOG.info("Resolved reservation tenant for: key={}, tenant={}",key,tenant);
+            if (tenant == null) {
+                throw CyclesProtocolException.notFound(reservationId);
+            }
             return tenant;
+        } catch (CyclesProtocolException e) {
+            throw e;
         } catch (Exception e) {
             LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
             throw new RuntimeException("Failed to resolve reservation tenant", e);

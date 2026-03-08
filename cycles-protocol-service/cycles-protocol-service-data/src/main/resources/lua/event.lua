@@ -63,6 +63,8 @@ for _, scope in ipairs(affected_scopes) do
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
     if remaining < amount then
         if overage_policy == "REJECT" or overage_policy == "ALLOW_IF_AVAILABLE" then
+            -- Spec: ALLOW_IF_AVAILABLE MUST atomically apply the full actual amount
+            -- only if sufficient remaining exists; otherwise MUST return 409 BUDGET_EXCEEDED.
             return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
         elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
             local deficit = amount - remaining
@@ -76,27 +78,28 @@ for _, scope in ipairs(affected_scopes) do
     end
 end
 
--- All checks passed - debit across all scopes
+-- All checks passed - debit full amount across all scopes
+local effective_amount = amount
 local t_now = redis.call('TIME')
 local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
 
-    if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < amount then
-        local deficit = amount - remaining
+    if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < effective_amount then
+        local deficit = effective_amount - remaining
         local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
         local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
         redis.call('HSET', budget_key, 'remaining', 0)
-        redis.call('HINCRBY', budget_key, 'spent', amount)
+        redis.call('HINCRBY', budget_key, 'spent', effective_amount)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         local new_debt = current_debt + deficit
         if overdraft_limit > 0 and new_debt > overdraft_limit then
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
         end
     else
-        redis.call('HINCRBY', budget_key, 'remaining', -amount)
-        redis.call('HINCRBY', budget_key, 'spent', amount)
+        redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
+        redis.call('HINCRBY', budget_key, 'spent', effective_amount)
     end
 end
 
