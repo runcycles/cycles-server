@@ -33,6 +33,10 @@ public class Subject {
             || isNonBlank(workflow) || isNonBlank(agent) || isNonBlank(toolset);
     }
 
+    public boolean hasAtLeastOneStandardField() {
+        return isHasAtLeastOneStandardField();
+    }
+
     private static boolean isNonBlank(String s) {
         return s != null && !s.isBlank();
     }
