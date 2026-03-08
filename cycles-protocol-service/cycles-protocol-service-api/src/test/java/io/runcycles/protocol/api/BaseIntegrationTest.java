@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.protocol.model.auth.ApiKey;
 import io.runcycles.protocol.model.auth.ApiKeyStatus;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.mindrot.jbcrypt.BCrypt;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -34,6 +36,13 @@ import java.util.UUID;
 @ActiveProfiles("test")
 @Testcontainers
 public abstract class BaseIntegrationTest {
+
+    @BeforeAll
+    static void checkDocker() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                DockerClientFactory.instance().isDockerAvailable(),
+                "Docker is not available — skipping integration tests");
+    }
 
     protected static final String TENANT_A = "tenant-a";
     protected static final String TENANT_B = "tenant-b";
