@@ -24,6 +24,26 @@ public class Enums {
         ACTIVE, COMMITTED, RELEASED, EXPIRED
     }
 
+    /** CommitResponse.status: spec constrains to enum [COMMITTED] */
+    public enum CommitStatus {
+        COMMITTED
+    }
+
+    /** ReleaseResponse.status: spec constrains to enum [RELEASED] */
+    public enum ReleaseStatus {
+        RELEASED
+    }
+
+    /** EventCreateResponse.status: spec constrains to enum [APPLIED] */
+    public enum EventStatus {
+        APPLIED
+    }
+
+    /** ReservationExtendResponse.status: spec constrains to enum [ACTIVE] */
+    public enum ExtendStatus {
+        ACTIVE
+    }
+
     public enum ErrorCode {
         INVALID_REQUEST, UNAUTHORIZED, FORBIDDEN, NOT_FOUND,
         BUDGET_EXCEEDED, RESERVATION_EXPIRED, RESERVATION_FINALIZED,
