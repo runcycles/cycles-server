@@ -6,7 +6,9 @@ import lombok.*;
 import java.util.List;
 
 /** Cycles Protocol v0.1.23 */
-@Data @Builder @NoArgsConstructor @AllArgsConstructor @JsonInclude(JsonInclude.Include.NON_NULL)
+@Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class Caps {
     @Min(0) @JsonProperty("max_tokens") private Integer maxTokens;
     @Min(0) @JsonProperty("max_steps_remaining") private Integer maxStepsRemaining;

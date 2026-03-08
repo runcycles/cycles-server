@@ -257,7 +257,7 @@ public class RedisReservationRepository {
             }
 
             return CommitResponse.builder()
-                .status("COMMITTED")
+                .status(Enums.CommitStatus.COMMITTED)
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
                 .balances(balances)
@@ -311,7 +311,7 @@ public class RedisReservationRepository {
             }
 
             return ReleaseResponse.builder()
-                .status("RELEASED")
+                .status(Enums.ReleaseStatus.RELEASED)
                 .released(releasedAmount)
                 .balances(balances)
                 .build();
@@ -358,7 +358,7 @@ public class RedisReservationRepository {
             }
 
             return ReservationExtendResponse.builder()
-                .status("ACTIVE")
+                .status(Enums.ExtendStatus.ACTIVE)
                 .expiresAtMs(((Number) response.get("expires_at_ms")).longValue())
                 .balances(balances)
                 .build();
@@ -694,7 +694,7 @@ public class RedisReservationRepository {
             List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getActual().getUnit());
 
             return EventCreateResponse.builder()
-                .status("APPLIED")
+                .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
                 .balances(balances)
                 .build();

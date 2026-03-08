@@ -1,12 +1,13 @@
 package io.runcycles.protocol.model;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.*;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import java.util.List;
 
 /** Cycles Protocol v0.1.23 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = false)
 public class ReservationListResponse {
     @NotNull @JsonProperty("reservations") private List<ReservationSummary> reservations;
     @JsonProperty("has_more") private Boolean hasMore;
