@@ -102,6 +102,8 @@ public abstract class BaseIntegrationTest {
     protected void seedBudget(Jedis jedis, String tenant, String unit, long allocated) {
         String key = "budget:tenant:" + tenant + ":" + unit;
         jedis.hset(key, Map.of(
+                "scope", "tenant:" + tenant,
+                "unit", unit,
                 "allocated", String.valueOf(allocated),
                 "remaining", String.valueOf(allocated),
                 "reserved", "0",

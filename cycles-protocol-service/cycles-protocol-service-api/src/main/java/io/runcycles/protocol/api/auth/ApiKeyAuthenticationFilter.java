@@ -64,6 +64,9 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
+        // Set tenant header before the response is committed
+        response.setHeader("X-Cycles-Tenant", result.getTenantId());
+
         filterChain.doFilter(request, response);
     }
     @Override
