@@ -1,5 +1,6 @@
 package io.runcycles.protocol.api.controller;
 
+import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.model.*;
 import io.swagger.v3.oas.annotations.*;
@@ -105,6 +106,15 @@ public class ReservationController extends BaseController{
             @RequestParam(required = false) String toolset,
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
             @RequestParam(required = false) String cursor) {
+        // Validate status against ReservationStatus enum if provided
+        if (status != null) {
+            try {
+                Enums.ReservationStatus.valueOf(status);
+            } catch (IllegalArgumentException e) {
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                    "Invalid status filter: " + status + ". Must be one of: ACTIVE, COMMITTED, RELEASED, EXPIRED", 400);
+            }
+        }
         // Spec: if tenant provided it must match auth; if omitted, use auth tenant
         String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
         LOG.info("GET /v1/reservations - tenant: {}", effectiveTenant);

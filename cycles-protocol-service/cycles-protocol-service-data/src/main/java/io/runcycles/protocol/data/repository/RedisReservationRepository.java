@@ -81,6 +81,7 @@ public class RedisReservationRepository {
                     throw CyclesProtocolException.notFound(existingId);
                 }
                 ReservationSummary existing = buildReservationSummary(existingFields);
+                List<Balance> idempotencyBalances = fetchBalancesForScopes(jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.ALLOW)
                     .reservationId(existingId)
@@ -88,8 +89,12 @@ public class RedisReservationRepository {
                     .scopePath(existing.getScopePath())
                     .reserved(existing.getReserved())
                     .expiresAtMs(existing.getExpiresAtMs())
+                    .balances(idempotencyBalances)
                     .build();
             }
+
+            // Populate balances snapshot for operator visibility
+            List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getEstimate().getUnit());
 
             return ReservationCreateResponse.builder()
                 .decision(Enums.DecisionEnum.ALLOW)
@@ -98,6 +103,7 @@ public class RedisReservationRepository {
                 .scopePath(scopePath)
                 .reserved(request.getEstimate())
                 .expiresAtMs(((Number) response.get("expires_at")).longValue())
+                .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
@@ -295,12 +301,16 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
-            Amount releasedAmount = null;
+            Amount releasedAmount;
             if (estimateAmountStr != null && estimateUnitStr != null) {
                 releasedAmount = new Amount(
                     Enums.UnitEnum.valueOf(estimateUnitStr),
                     Long.parseLong(estimateAmountStr)
                 );
+            } else {
+                // Spec requires released to be present; fall back to zero with the request unit context
+                LOG.warn("Reservation {} missing estimate data, defaulting released to zero", reservationId);
+                releasedAmount = new Amount(Enums.UnitEnum.USD_MICROCENTS, 0L);
             }
 
             // Populate balances snapshot for operator visibility
@@ -379,9 +389,6 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.notFound(reservationId);
             }
             ReservationDetail detail = buildReservationSummary(fields);
-            if (detail.getStatus() == Enums.ReservationStatus.EXPIRED) {
-                throw CyclesProtocolException.reservationExpired();
-            }
             return detail;
         } catch (CyclesProtocolException e) {
             throw e;
