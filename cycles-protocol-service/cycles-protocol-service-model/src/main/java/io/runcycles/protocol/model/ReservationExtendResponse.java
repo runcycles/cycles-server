@@ -1,6 +1,7 @@
 package io.runcycles.protocol.model;
 
 import com.fasterxml.jackson.annotation.*;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import java.util.List;
@@ -12,5 +13,5 @@ import java.util.List;
 public class ReservationExtendResponse {
     @NotNull @JsonProperty("status") private Enums.ExtendStatus status;
     @NotNull @Min(0) @JsonProperty("expires_at_ms") private Long expiresAtMs;
-    @JsonProperty("balances") private List<Balance> balances;
+    @Valid @JsonProperty("balances") private List<Balance> balances;
 }

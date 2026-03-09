@@ -1,6 +1,7 @@
 package io.runcycles.protocol.model;
 
 import com.fasterxml.jackson.annotation.*;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import java.util.List;
@@ -9,7 +10,7 @@ import java.util.List;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class ReservationListResponse {
-    @NotNull @JsonProperty("reservations") private List<ReservationSummary> reservations;
+    @NotNull @Valid @JsonProperty("reservations") private List<ReservationSummary> reservations;
     @JsonProperty("has_more") private Boolean hasMore;
     @JsonProperty("next_cursor") private String nextCursor;
 }

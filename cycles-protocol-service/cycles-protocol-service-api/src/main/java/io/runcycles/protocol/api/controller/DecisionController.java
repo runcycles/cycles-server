@@ -8,12 +8,14 @@ import jakarta.validation.Valid;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 /** Cycles Protocol v0.1.23 - Decision Controller */
 @RestController
 @RequestMapping("/v1/decide")
 @Tag(name = "Decisions")
+@Validated
 public class DecisionController extends BaseController {
     private static final Logger LOG = LoggerFactory.getLogger(DecisionController.class);
 
