@@ -14,6 +14,7 @@ import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Map;
 
 @Repository
 public class ApiKeyRepository {
@@ -29,28 +30,38 @@ public class ApiKeyRepository {
             String prefix = extractPrefix(keySecret);
             String keyId = jedis.get("apikey:lookup:" + prefix);
             if (keyId == null) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
             }
             String data = jedis.get("apikey:" + keyId);
             if (data == null) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_FOUND").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
             }
             ApiKey key = objectMapper.readValue(data, ApiKey.class);
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_" + key.getStatus()).build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId() != null ? key.getTenantId() : "").reason("KEY_" + key.getStatus()).build();
             }
             if (key.getExpiresAt() != null && Instant.now().isAfter(key.getExpiresAt())) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_EXPIRED").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId() != null ? key.getTenantId() : "").reason("KEY_EXPIRED").build();
             }
             if (!verifyKey(keySecret, key.getKeyHash())) {
-                return ApiKeyValidationResponse.builder().valid(false).reason("INVALID_KEY").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId() != null ? key.getTenantId() : "").reason("INVALID_KEY").build();
             }
             if (key.getTenantId() == null || key.getTenantId().isBlank()){
-                return ApiKeyValidationResponse.builder().valid(false).reason("KEY_NOT_OWNED_BY_TENANT").build();
+                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_OWNED_BY_TENANT").build();
             }
-            //Not sure do we need such update on access
-            //key.setLastUsedAt(Instant.now());
-            //jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(key));
+            // Check tenant status: reject if SUSPENDED or CLOSED
+            String tenantData = jedis.get("tenant:" + key.getTenantId());
+            if (tenantData != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
+                String tenantStatus = (String) tenantMap.get("status");
+                if ("SUSPENDED".equals(tenantStatus)) {
+                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_SUSPENDED").build();
+                }
+                if ("CLOSED".equals(tenantStatus)) {
+                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_CLOSED").build();
+                }
+            }
             return ApiKeyValidationResponse.builder()
                     .valid(true)
                     .tenantId(key.getTenantId())
@@ -60,7 +71,7 @@ public class ApiKeyRepository {
                     .expiresAt(key.getExpiresAt())
                     .build();
         } catch (Exception e) {
-            return ApiKeyValidationResponse.builder().valid(false).reason("INTERNAL_ERROR").build();
+            return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
         }
     }
     public boolean verifyKey(String keySecret, String hash) {
