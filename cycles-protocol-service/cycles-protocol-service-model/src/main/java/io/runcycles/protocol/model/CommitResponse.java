@@ -14,5 +14,5 @@ public class CommitResponse {
     @NotNull @JsonProperty("status") private Enums.CommitStatus status;
     @NotNull @Valid @JsonProperty("charged") private Amount charged;
     @Valid @JsonProperty("released") private Amount released;
-    @JsonProperty("balances") private List<Balance> balances;
+    @Valid @JsonProperty("balances") private List<Balance> balances;
 }

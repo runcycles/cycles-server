@@ -9,12 +9,14 @@ import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 /** Cycles Protocol v0.1.23 - Event Controller */
 @RestController
 @RequestMapping("/v1/events")
 @Tag(name = "Events")
+@Validated
 public class EventController extends BaseController {
     private static final Logger LOG = LoggerFactory.getLogger(EventController.class);
 
