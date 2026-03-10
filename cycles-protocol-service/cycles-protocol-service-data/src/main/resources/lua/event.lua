@@ -67,13 +67,7 @@ for _, scope in ipairs(affected_scopes) do
             -- only if sufficient remaining exists; otherwise MUST return 409 BUDGET_EXCEEDED.
             return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
         elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-            local deficit = amount - remaining
-            local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-            local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-            if current_debt + deficit > overdraft_limit then
-                return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
-                    current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
-            end
+            -- Spec: ALLOW_WITH_OVERDRAFT always proceeds; debt/is_over_limit are tracked, not blocked.
         end
     end
 end
