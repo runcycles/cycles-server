@@ -1401,4 +1401,464 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(body).containsKey("message");
         }
     }
+
+    // ========================================================================
+    // Spec Compliance: Overdraft Ledger Invariant (F1)
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Overdraft Ledger Invariant")
+    class OverdraftLedgerInvariant {
+
+        @Test
+        void shouldTrackDebtInCommitOverdraft() {
+            // Budget: allocated=1_000_000, overdraft_limit=100_000
+            // Reserve 1000 with ALLOW_WITH_OVERDRAFT, commit 2000 (overage=1000)
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            assertThat(reserveResp.getStatusCode().value()).isEqualTo(200);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(2000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map commitBody = commitResp.getBody();
+            assertThat(commitBody.get("status")).isEqualTo("COMMITTED");
+
+            // Verify charged amount equals actual
+            Map<String, Object> charged = (Map<String, Object>) commitBody.get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(2000);
+        }
+
+        @Test
+        void shouldTrackDebtInBalanceAfterOverdraftCommit() {
+            // Reserve small amount, commit larger (within overdraft limit)
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            // Commit with overage that exceeds remaining budget to force debt
+            // Budget: 1_000_000 allocated, 999_000 remaining after reserve
+            // Commit 1_100_000 → overage delta = 1_099_000, needs budget for that
+            // Actually let's use a more targeted approach:
+            // Reserve 900_000 first to reduce remaining, then use another reservation for overdraft
+            String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 900_000);
+            post("/v1/reservations/" + res1 + "/commit", API_KEY_SECRET_A, commitBody(900_000));
+
+            // Now remaining ≈ 100_000 (1_000_000 - 900_000 - 1_000 reserved)
+            // Commit the overdraft reservation with actual=200_000 (overage delta=199_000)
+            // remaining(99_000) < delta(199_000), so debt = 199_000 - 99_000 = 100_000
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(200_000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+
+            // Check balance shows debt > 0
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+            Map<String, Object> debt = (Map<String, Object>) bal.get("debt");
+            long debtAmount = ((Number) debt.get("amount")).longValue();
+            assertThat(debtAmount).isGreaterThan(0);
+        }
+
+        @Test
+        void shouldAllowNegativeRemainingInOverdraft() {
+            // Drain budget then overdraft to force negative remaining
+            String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 900_000);
+            post("/v1/reservations/" + res1 + "/commit", API_KEY_SECRET_A, commitBody(900_000));
+
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            // Commit more than remaining, forcing remaining negative
+            post("/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(200_000));
+
+            // Remaining should be negative (SignedAmount allows it)
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+            Map<String, Object> remaining = (Map<String, Object>) bal.get("remaining");
+            long remainingAmount = ((Number) remaining.get("amount")).longValue();
+            assertThat(remainingAmount).isLessThan(0);
+        }
+
+        @Test
+        void shouldRejectWhenOverdraftLimitExceeded() {
+            // Drain budget close to limit
+            String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 900_000);
+            post("/v1/reservations/" + res1 + "/commit", API_KEY_SECRET_A, commitBody(900_000));
+
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            // Overdraft limit is allocated/10 = 100_000
+            // Try to commit way beyond overdraft limit
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(500_000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(commitResp.getBody().get("error")).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
+        }
+
+        @Test
+        void shouldTrackDebtInEventOverdraft() {
+            // Drain budget
+            post("/v1/events", API_KEY_SECRET_A, eventBody(TENANT_A, 900_000));
+
+            // Event with overdraft
+            Map<String, Object> body = eventBody(TENANT_A, 200_000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(201);
+
+            // Check debt in balance
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+            Map<String, Object> debt = (Map<String, Object>) bal.get("debt");
+            long debtAmount = ((Number) debt.get("amount")).longValue();
+            assertThat(debtAmount).isGreaterThan(0);
+        }
+
+        @Test
+        void shouldMaintainLedgerInvariantAfterCommit() {
+            // allocated = remaining + spent + reserved + debt (spec invariant)
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 5000);
+            post("/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(3000));
+
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+
+            long allocated = ((Number) ((Map) bal.get("allocated")).get("amount")).longValue();
+            long remaining = ((Number) ((Map) bal.get("remaining")).get("amount")).longValue();
+            long reserved = ((Number) ((Map) bal.get("reserved")).get("amount")).longValue();
+            long spent = ((Number) ((Map) bal.get("spent")).get("amount")).longValue();
+            long debt = ((Number) ((Map) bal.get("debt")).get("amount")).longValue();
+
+            // Spec: remaining = allocated - spent - reserved - debt
+            assertThat(remaining).isEqualTo(allocated - spent - reserved - debt);
+        }
+    }
+
+    // ========================================================================
+    // Spec Compliance: Commit Ledger Math
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Commit Ledger Math")
+    class CommitLedgerMath {
+
+        @Test
+        void shouldCorrectlyAccountUnderspend() {
+            // Reserve 5000, commit 3000 → released=2000, spent=3000
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 5000);
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(3000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map commitBody = commitResp.getBody();
+
+            Map<String, Object> charged = (Map<String, Object>) commitBody.get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(3000);
+
+            Map<String, Object> released = (Map<String, Object>) commitBody.get("released");
+            assertThat(released).isNotNull();
+            assertThat(((Number) released.get("amount")).longValue()).isEqualTo(2000);
+        }
+
+        @Test
+        void shouldCorrectlyAccountExactSpend() {
+            // Reserve 5000, commit 5000 → released=null, spent=5000
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 5000);
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(5000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map commitBody = commitResp.getBody();
+
+            Map<String, Object> charged = (Map<String, Object>) commitBody.get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(5000);
+
+            // No released amount when exact match
+            assertThat(commitBody.get("released")).isNull();
+        }
+
+        @Test
+        void shouldCorrectlyAccountOverspendWithAllowIfAvailable() {
+            // Reserve 5000 with ALLOW_IF_AVAILABLE, commit 8000
+            Map<String, Object> body = reservationBody(TENANT_A, 5000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(8000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map commitBody = commitResp.getBody();
+            Map<String, Object> charged = (Map<String, Object>) commitBody.get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(8000);
+        }
+
+        @Test
+        void shouldRejectAllowIfAvailableWhenInsufficient() {
+            // Drain most of the budget
+            String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 990_000);
+            post("/v1/reservations/" + res1 + "/commit", API_KEY_SECRET_A, commitBody(990_000));
+
+            // Reserve 1000 with ALLOW_IF_AVAILABLE
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            // Commit 50_000 → delta=49_000, but remaining ≈ 9_000 → BUDGET_EXCEEDED
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(50_000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(commitResp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
+        }
+
+        @Test
+        void shouldMaintainInvariantAfterRelease() {
+            // Reserve then release — remaining should return to previous value
+            ResponseEntity<Map> beforeResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var beforeBalances = (java.util.List<Map<String, Object>>) beforeResp.getBody().get("balances");
+            long remainingBefore = ((Number) ((Map) beforeBalances.get(0).get("remaining")).get("amount")).longValue();
+
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 5000);
+            post("/v1/reservations/" + reservationId + "/release",
+                    API_KEY_SECRET_A, releaseBody());
+
+            ResponseEntity<Map> afterResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var afterBalances = (java.util.List<Map<String, Object>>) afterResp.getBody().get("balances");
+            long remainingAfter = ((Number) ((Map) afterBalances.get(0).get("remaining")).get("amount")).longValue();
+
+            assertThat(remainingAfter).isEqualTo(remainingBefore);
+        }
+    }
+
+    // ========================================================================
+    // Spec Compliance: Input Validation (F2, F4, F5)
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Input Validation")
+    class InputValidation {
+
+        @Test
+        void shouldRejectUnknownJsonProperties() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("unknown_extra_field", "should-be-rejected");
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectUnknownFieldsInCommitBody() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            Map<String, Object> body = commitBody(800);
+            body.put("unexpected_field", 42);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectUnknownFieldsInEventBody() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            body.put("phantom_field", "nope");
+
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectOversizedReservationIdOnGet() {
+            // 129-char ID exceeds @Size(max=128)
+            String longId = "x".repeat(129);
+
+            ResponseEntity<Map> resp = get(
+                    "/v1/reservations/" + longId, API_KEY_SECRET_A);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectOversizedReservationIdOnCommit() {
+            String longId = "x".repeat(129);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + longId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectOversizedReservationIdOnRelease() {
+            String longId = "x".repeat(129);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + longId + "/release",
+                    API_KEY_SECRET_A, releaseBody());
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectOversizedReservationIdOnExtend() {
+            String longId = "x".repeat(129);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + longId + "/extend",
+                    API_KEY_SECRET_A, extendBody(30000));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldAcceptMaxLengthReservationId() {
+            // 128-char ID is valid (will return 404 since it doesn't exist, not 400)
+            String maxId = "a".repeat(128);
+
+            ResponseEntity<Map> resp = get(
+                    "/v1/reservations/" + maxId, API_KEY_SECRET_A);
+
+            // Should be 404 (not found), not 400 (validation error)
+            assertThat(resp.getStatusCode().value()).isEqualTo(404);
+        }
+
+        @Test
+        void shouldRejectMalformedJsonBody() {
+            HttpHeaders headers = headersForTenant(API_KEY_SECRET_A);
+
+            ResponseEntity<Map> resp = restTemplate.exchange(
+                    baseUrl() + "/v1/reservations",
+                    HttpMethod.POST,
+                    new HttpEntity<>("{invalid json!!!}", headers),
+                    Map.class
+            );
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("INVALID_REQUEST");
+        }
+
+        @Test
+        void shouldRejectMalformedJsonOnEvent() {
+            HttpHeaders headers = headersForTenant(API_KEY_SECRET_A);
+
+            ResponseEntity<Map> resp = restTemplate.exchange(
+                    baseUrl() + "/v1/events",
+                    HttpMethod.POST,
+                    new HttpEntity<>("{not: valid, json", headers),
+                    Map.class
+            );
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("INVALID_REQUEST");
+        }
+    }
+
+    // ========================================================================
+    // Spec Compliance: Balance Response Format (F3)
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Balance Response Format")
+    class BalanceResponseFormat {
+
+        @Test
+        void shouldReturnLeafScopeInBalanceField() {
+            ResponseEntity<Map> resp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            var balances = (java.util.List<Map<String, Object>>) resp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+
+            Map<String, Object> balance = balances.get(0);
+            String scope = (String) balance.get("scope");
+            String scopePath = (String) balance.get("scope_path");
+
+            // scope should be leaf segment (e.g. "tenant:tenant-a"), not the full path
+            assertThat(scope).doesNotContain("/");
+            // scope_path can contain hierarchy separators
+            assertThat(scopePath).isNotNull();
+            // scope should be the last segment of scope_path
+            String expectedLeaf = scopePath.contains("/")
+                    ? scopePath.substring(scopePath.lastIndexOf('/') + 1)
+                    : scopePath;
+            assertThat(scope).isEqualTo(expectedLeaf);
+        }
+
+        @Test
+        void shouldReturnDebtAndOverdraftFieldsInBalance() {
+            ResponseEntity<Map> resp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            var balances = (java.util.List<Map<String, Object>>) resp.getBody().get("balances");
+            Map<String, Object> balance = balances.get(0);
+
+            assertThat(balance).containsKey("debt");
+            assertThat(balance).containsKey("overdraft_limit");
+            assertThat(balance).containsKey("is_over_limit");
+        }
+
+        @Test
+        void shouldReturnSignedAmountForRemaining() {
+            // remaining uses SignedAmount (allows negative in overdraft)
+            ResponseEntity<Map> resp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+
+            var balances = (java.util.List<Map<String, Object>>) resp.getBody().get("balances");
+            Map<String, Object> remaining = (Map<String, Object>) balances.get(0).get("remaining");
+
+            // Verify it has unit and amount fields
+            assertThat(remaining).containsKey("unit");
+            assertThat(remaining).containsKey("amount");
+            assertThat(remaining.get("unit")).isEqualTo("TOKENS");
+        }
+    }
 }
