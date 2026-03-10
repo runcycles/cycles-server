@@ -5,4 +5,4 @@ echo "======================================"
 mvn clean install
 echo ""
 echo "✅ Build complete!"
-echo "Run: java -jar cycles-protocol-api/target/cycles-protocol-api-0.1.23.jar"
+echo "Run: java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.23.jar"

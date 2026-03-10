@@ -61,6 +61,36 @@ All endpoints require `X-Cycles-API-Key` header authentication.
 | `/v1/events` | POST | Direct debit without prior reservation (returns 201) |
 | `/v1/balances` | GET | Query budget balances for scopes |
 
+## Build
+
+All commands run from the `cycles-protocol-service/` directory.
+
+```bash
+cd cycles-protocol-service
+
+# Full build (compile + unit tests + package)
+mvn clean install
+
+# Or use the wrapper script
+./build-all.sh
+```
+
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.23.jar`.
+
+## Testing
+
+```bash
+cd cycles-protocol-service
+
+# Unit tests only (no Docker required)
+mvn test
+
+# Unit + integration tests (requires Docker for Testcontainers Redis)
+mvn clean install -Pintegration-tests
+```
+
+Integration tests (`*IntegrationTest.java`) use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically. They are excluded from the default build and enabled via the `-Pintegration-tests` Maven profile.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -68,6 +98,7 @@ All endpoints require `X-Cycles-API-Key` header authentication.
 | `REDIS_HOST` | `localhost` | Redis hostname |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | *(empty)* | Redis password |
+| `cycles.expiry.interval-ms` | `5000` | Background expiry sweep interval (ms) |
 
 ## Documentation
 
