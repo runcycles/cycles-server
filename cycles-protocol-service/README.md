@@ -589,15 +589,20 @@ All errors use this envelope:
 
 ### Running Tests
 
-Tests use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically — Docker must be running.
+Integration tests use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically — Docker must be running. Run from the `cycles-protocol-service/` directory:
 
 ```bash
-mvn test                          # all tests
-mvn test -pl cycles-protocol-service-api   # integration tests only
-mvn test -pl cycles-protocol-service-data  # unit tests only
+# All tests (builds all modules first)
+mvn test
+
+# Integration tests only (needs -am to build model + data dependencies)
+mvn test -pl cycles-protocol-service-api -am
+
+# Unit tests only (ScopeDerivationService — no Docker required)
+mvn test -pl cycles-protocol-service-data -am
 ```
 
-The test profile (`application-test.properties`) injects Redis connection details via `@DynamicPropertySource`.
+The test profile (`application-test.properties`) injects Redis connection details via `@DynamicPropertySource` from the Testcontainers Redis instance.
 
 ### Project Structure
 
