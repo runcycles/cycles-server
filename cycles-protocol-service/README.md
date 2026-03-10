@@ -8,9 +8,10 @@ Reference implementation of the [Cycles Budget Authority API](../cycles-protocol
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Core Concepts](#core-concepts)
-- [Authentication](#authentication)
+- [Authentication & Authorization](#authentication--authorization)
 - [API Reference](#api-reference)
 - [Error Codes](#error-codes)
+- [Development](#development)
 - [Redis Data Model](#redis-data-model)
 
 ---
@@ -80,7 +81,7 @@ A subject identifies who is spending budget. Fields form a **scope hierarchy**:
 tenant → workspace → app → workflow → agent → toolset
 ```
 
-At least one standard field is required (`tenant` is typical). Intermediate gaps are filled with `default`. A reservation against `{tenant, agent}` is enforced at **every ancestor scope** — the tenant-level budget, any workspace-level budget, and the agent-level budget must all have sufficient remaining balance.
+At least one standard field is required (`tenant` is typical); a subject containing only `dimensions` is invalid (`400 INVALID_REQUEST`). Intermediate gaps are filled with `default`. A reservation against `{tenant, agent}` is enforced at **every ancestor scope** — the tenant-level budget, any workspace-level budget, and the agent-level budget must all have sufficient remaining balance.
 
 ```json
 {
@@ -139,11 +140,13 @@ The same three policies apply to `/v1/events` for direct debits.
 
 ### Debt and Overdraft
 
+- If `overdraft_limit` is absent or `0`, no overdraft is permitted (`ALLOW_WITH_OVERDRAFT` behaves as `ALLOW_IF_AVAILABLE`).
 - **`debt`** is created when `overage_policy=ALLOW_WITH_OVERDRAFT` and the commit delta exceeds remaining budget.
 - When `debt > 0`, **new reservations** against that scope are blocked with `409 DEBT_OUTSTANDING`.
 - When `debt > overdraft_limit`, the scope enters **over-limit** state (`is_over_limit=true`). New reservations are then blocked with `409 OVERDRAFT_LIMIT_EXCEEDED` (takes precedence over `DEBT_OUTSTANDING`).
 - Debt does **not** block direct events (`/v1/events`); events always apply their own `overage_policy`.
 - Existing active reservations MAY be committed or released normally while a scope is over-limit.
+- Overdraft limit checks are per-commit and are **not** atomic across concurrent commits — concurrent commits may independently pass the check, causing total debt to temporarily exceed `overdraft_limit`. This is by design; the `is_over_limit` flag prevents further damage.
 - Debt is repaid via external budget funding operations (out of scope for this API).
 
 ### Idempotency
@@ -163,7 +166,7 @@ On replay of a successful request with the same key, the server returns the orig
 
 ---
 
-## Authentication
+## Authentication & Authorization
 
 Every request requires an API key in the header:
 
@@ -171,7 +174,40 @@ Every request requires an API key in the header:
 X-Cycles-API-Key: <key>
 ```
 
-Keys are stored in Redis (`apikey:{keyId}`) and validated by bcrypt hash comparison. A valid key resolves a `tenant_id` used for all authorization checks — the `subject.tenant` in the request must match the tenant from the API key; otherwise the server returns `403 FORBIDDEN`.
+### API Key Validation
+
+The `ApiKeyAuthenticationFilter` runs on every non-public request and performs a multi-step validation:
+
+1. **Header check** — `X-Cycles-API-Key` must be present; `401 UNAUTHORIZED` if missing.
+2. **Prefix lookup** — the key prefix is extracted and looked up in `apikey:lookup:{prefix}` for O(1) resolution to a `keyId`.
+3. **Key load** — the full key object is read from `apikey:{keyId}`.
+4. **Status check** — key must be `ACTIVE`; `REVOKED` or `EXPIRED` keys return `401`.
+5. **Expiration check** — if `expires_at` is set and in the past, returns `401 KEY_EXPIRED`.
+6. **Hash verification** — the submitted secret is verified against the stored bcrypt hash; `401 INVALID_KEY` on mismatch.
+7. **Tenant association** — the key must have a non-blank `tenant_id`; `401 KEY_NOT_OWNED_BY_TENANT` otherwise.
+8. **Tenant status** — the tenant record (`tenant:{tenantId}`) is checked; `SUSPENDED` or `CLOSED` tenants return `401`.
+
+On success the filter stores an `ApiKeyAuthentication` in the Spring `SecurityContext` containing the resolved `tenant_id` and any `permissions`.
+
+### Tenant Authorization
+
+Controllers enforce tenant isolation via `BaseController.authorizeTenant()`:
+
+- If the request includes a `tenant` (in the body, query, or resolved from a resource ID), it **must match** the tenant from the API key.
+- A mismatch returns `403 FORBIDDEN`.
+- The effective tenant always comes from the API key — the client cannot escalate by supplying a different tenant in the request.
+
+For operations by resource ID (e.g. `GET /v1/reservations/{id}`), the server first looks up the owning tenant from the reservation hash, then runs the same authorization check. This prevents cross-tenant access even when a reservation UUID is known.
+
+### Filter Chain Order
+
+| Order | Filter | Responsibility |
+|---|---|---|
+| 1 | `RequestIdFilter` | Generates `X-Request-Id` UUID, stored as request attribute and response header |
+| 2 | `RateLimitHeaderFilter` | Adds `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers (sentinel values in v0) |
+| 3 | `ApiKeyAuthenticationFilter` | Validates key, populates `SecurityContext`, sets `X-Cycles-Tenant` header |
+
+Public paths (Swagger UI, actuator health, etc.) bypass authentication.
 
 All responses include an `X-Request-Id` header. All timestamps are Unix milliseconds (int64).
 
@@ -204,7 +240,7 @@ Evaluate whether a budget operation would be allowed **without** reserving. Retu
 
 Only `decision` is required. `affected_scopes`, `reason_code`, `retry_after_ms`, and `caps` are optional.
 
-On `DENY` (insufficient budget, debt, or over-limit):
+On `DENY` (insufficient budget, debt, or over-limit). Possible `reason_code` values: `BUDGET_NOT_FOUND`, `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`:
 ```json
 {
   "decision": "DENY",
@@ -378,6 +414,8 @@ Extend the reservation TTL. Only allowed while `server_time ≤ expires_at_ms` (
 
 `extend_by_ms` is added to the current `expires_at_ms` (not to request time). Does not change reserved amount, unit, subject, action, or scope.
 
+**Error conditions:** `409 RESERVATION_FINALIZED` if the reservation is already COMMITTED or RELEASED; `410 RESERVATION_EXPIRED` if `server_time > expires_at_ms`; `404 NOT_FOUND` if the reservation does not exist.
+
 ---
 
 ### GET /v1/reservations
@@ -421,7 +459,7 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 
 ### GET /v1/reservations/{reservation_id}
 
-Fetch a single reservation by ID. Returns `200 OK` for all statuses including `COMMITTED` and `RELEASED`. Returns `410 RESERVATION_EXPIRED` for expired reservations.
+Fetch a single reservation by ID. Returns `200 OK` for all statuses including `COMMITTED`, `RELEASED`, and `EXPIRED`.
 
 **Response** `200 OK`
 
@@ -532,7 +570,7 @@ All errors use this envelope:
 | `UNIT_MISMATCH` | 400 | Commit unit differs from reservation unit, or event unit not supported for target scope |
 | `UNAUTHORIZED` | 401 | Missing or invalid API key |
 | `FORBIDDEN` | 403 | Tenant in request does not match API key |
-| `NOT_FOUND` | 404 | Reservation or resource not found |
+| `NOT_FOUND` | 404 | Reservation, budget, or resource not found |
 | `BUDGET_EXCEEDED` | 409 | Insufficient remaining budget |
 | `RESERVATION_FINALIZED` | 409 | Reservation already committed or released |
 | `IDEMPOTENCY_MISMATCH` | 409 | Idempotency key reused with different parameters |
@@ -544,6 +582,99 @@ All errors use this envelope:
 **Precedence:** when `is_over_limit=true`, `OVERDRAFT_LIMIT_EXCEEDED` takes precedence over `DEBT_OUTSTANDING`.
 
 `/v1/decide` MUST NOT return `409` for budget conditions — it returns `decision=DENY` with a `reason_code` instead.
+
+---
+
+## Development
+
+### Running Tests
+
+Integration tests are excluded from the default build and require the `integration-tests` Maven profile. They use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically — Docker must be running. Run from the `cycles-protocol-service/` directory:
+
+```bash
+# Unit tests only (ScopeDerivationService — no Docker required)
+mvn test
+
+# Integration tests (requires Docker for Testcontainers Redis)
+mvn clean install -Pintegration-tests
+
+# Full build without integration tests
+mvn clean install
+```
+
+Integration tests (`*IntegrationTest.java`) are excluded by default via surefire in `cycles-protocol-service-api/pom.xml`. The `-Pintegration-tests` profile overrides this exclusion.
+
+The test profile (`application-test.properties`) injects Redis connection details via `@DynamicPropertySource` from the Testcontainers Redis instance.
+
+### Project Structure
+
+```
+cycles-protocol-service/
+├── build-all.sh                          # mvn clean install wrapper
+├── init-budgets.sh                       # seeds sample budget via redis-cli
+├── cycles-protocol-service-model/        # shared POJOs (no Spring dependency)
+│   └── src/main/java/.../model/
+│       ├── Subject.java, Action.java, Amount.java, SignedAmount.java
+│       ├── Reservation*.java, Commit*.java, Release*.java
+│       ├── Decision*.java, Event*.java, Balance*.java
+│       ├── Enums.java                    # ErrorCode, UnitEnum, OveragePolicy, etc.
+│       ├── Caps.java, ErrorResponse.java
+│       └── auth/                         # ApiKey, ApiKeyStatus, ApiKeyValidationResponse
+├── cycles-protocol-service-data/         # Redis repository + Lua + services
+│   └── src/main/
+│       ├── java/.../data/
+│       │   ├── repository/
+│       │   │   ├── RedisReservationRepository.java  # core budget logic
+│       │   │   └── ApiKeyRepository.java            # API key validation
+│       │   ├── service/
+│       │   │   ├── ScopeDerivationService.java      # scope hierarchy builder
+│       │   │   ├── ApiKeyValidationService.java
+│       │   │   └── ReservationExpiryService.java    # scheduled expiry sweep
+│       │   ├── config/RedisConfig.java              # JedisPool setup
+│       │   └── exception/CyclesProtocolException.java
+│       └── resources/lua/
+│           ├── reserve.lua    # atomic budget reservation
+│           ├── commit.lua     # record actual spend with overdraft support
+│           ├── release.lua    # return reserved budget
+│           ├── extend.lua     # extend reservation TTL
+│           ├── expire.lua     # background expiry (called by ExpiryService)
+│           └── event.lua      # direct debit without reservation
+└── cycles-protocol-service-api/          # Spring Boot app + controllers
+    └── src/main/java/.../api/
+        ├── CyclesProtocolApplication.java
+        ├── controller/
+        │   ├── BaseController.java              # tenant auth helpers
+        │   ├── ReservationController.java       # /v1/reservations/*
+        │   ├── BalanceController.java           # /v1/balances
+        │   ├── DecisionController.java          # /v1/decide
+        │   └── EventController.java             # /v1/events
+        ├── auth/
+        │   ├── ApiKeyAuthenticationFilter.java  # X-Cycles-API-Key validation
+        │   ├── ApiKeyAuthentication.java        # SecurityContext token
+        │   └── SecurityConfig.java              # Spring Security config
+        ├── filter/
+        │   ├── RequestIdFilter.java             # X-Request-Id generation
+        │   └── RateLimitHeaderFilter.java       # rate limit headers (stub)
+        └── exception/GlobalExceptionHandler.java
+```
+
+### Lua Scripts
+
+All budget mutations run as Redis Lua scripts for atomicity (no multi-key race conditions). Scripts are loaded from `resources/lua/` by `RedisReservationRepository` at startup and executed via `EVALSHA`.
+
+Each script follows a common pattern:
+1. **Idempotency check** — replay cached result if the same `(tenant, idempotency_key)` is seen; detect payload mismatch via SHA-256 hash
+2. **Fail-fast validation** — check all affected scopes before any mutations (budget exists, sufficient balance, no debt/over-limit)
+3. **Atomic mutation** — `HINCRBY` budget fields across all scopes in a single script execution
+4. **State persistence** — write reservation/event hash and idempotency cache
+
+### Additional Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `cycles.expiry.interval-ms` | `5000` | How often the background expiry sweep runs (ms) |
+| `spring.jackson.deserialization.fail-on-unknown-properties` | `true` | Reject unknown JSON fields |
+| `spring.jackson.default-property-inclusion` | `non_null` | Omit null fields from responses |
 
 ---
 
@@ -562,32 +693,97 @@ All errors use this envelope:
 | `is_over_limit` | `"true"/"false"` | True when `debt > overdraft_limit`; blocks new reservations |
 | `scope` | string | Full canonical scope path |
 | `unit` | string | Unit enum value |
+| `caps_json` | JSON string | Optional operator-configured caps (`max_tokens`, `max_steps_remaining`, `tool_allowlist`, `tool_denylist`, `cooldown_ms`); `tool_allowlist` takes precedence over `tool_denylist` when both are present |
 
 Budgets must be seeded externally (see `init-budgets.sh` for an example).
 
 ### Reservation hash  `reservation:res_{uuid}`
 
-Stores full reservation state. Indexed by expiry in `reservation:ttl` (sorted set).
+Stores full reservation state. Indexed by expiry in the `reservation:ttl` sorted set (score = `expires_at`).
+
+| Field | Type | Description |
+|---|---|---|
+| `reservation_id` | string | UUID (without `res_` prefix) |
+| `tenant` | string | Owning tenant ID |
+| `state` | string | `ACTIVE`, `COMMITTED`, `RELEASED`, or `EXPIRED` |
+| `subject_json` | JSON string | Full subject object |
+| `action_json` | JSON string | Action object (`kind`, `name`, `tags`) |
+| `estimate_amount` | integer | Amount reserved |
+| `estimate_unit` | string | Unit enum value |
+| `scope_path` | string | Full canonical scope path to deepest level |
+| `affected_scopes` | JSON string | Array of all ancestor scope paths |
+| `created_at` | integer | Creation timestamp (ms) |
+| `expires_at` | integer | Expiry timestamp (ms) |
+| `grace_ms` | integer | Grace period after expiry for commit/release |
+| `idempotency_key` | string | Client-provided idempotency key |
+| `overage_policy` | string | `REJECT`, `ALLOW_IF_AVAILABLE`, or `ALLOW_WITH_OVERDRAFT` |
+| `metadata_json` | JSON string | Optional client metadata |
+
+**Fields added on finalization:**
+
+| Field | State | Description |
+|---|---|---|
+| `charged_amount` | COMMITTED | Final amount charged |
+| `debt_incurred` | COMMITTED | Debt created across scopes |
+| `committed_at` | COMMITTED | Commit timestamp (ms) |
+| `committed_idempotency_key` | COMMITTED | Idempotency key for the commit call |
+| `committed_payload_hash` | COMMITTED | SHA-256 hash for idempotency mismatch detection |
+| `committed_metrics_json` | COMMITTED | Optional metrics from commit request |
+| `committed_metadata_json` | COMMITTED | Optional metadata from commit request |
+| `released_at` | RELEASED | Release timestamp (ms) |
+| `released_idempotency_key` | RELEASED | Idempotency key for the release call |
+| `released_payload_hash` | RELEASED | SHA-256 hash for idempotency mismatch detection |
+| `expired_at` | EXPIRED | Expiration timestamp (ms) |
+| `extend_metadata_json` | ACTIVE | Optional metadata from extend request |
+
+### TTL sorted set  `reservation:ttl`
+
+Tracks active reservation expiry for the background sweep (`ReservationExpiryService`).
+
+| Property | Value |
+|---|---|
+| Type | Sorted set |
+| Score | `expires_at` timestamp (ms) |
+| Member | Reservation UUID |
+
+Updated on create/extend (`ZADD`), removed on commit/release/expire (`ZREM`).
 
 ### Event hash  `event:evt_{uuid}`
 
 Immutable record of a direct debit event.
 
+| Field | Type | Description |
+|---|---|---|
+| `event_id` | string | UUID (without `evt_` prefix) |
+| `tenant` | string | Owning tenant ID |
+| `subject_json` | JSON string | Full subject object |
+| `action_json` | JSON string | Action object |
+| `amount` | integer | Debit amount |
+| `unit` | string | Unit enum value |
+| `scope_path` | string | Full canonical scope path |
+| `affected_scopes` | JSON string | Array of all ancestor scope paths |
+| `created_at` | integer | Creation timestamp (ms) |
+| `idempotency_key` | string | Client-provided idempotency key |
+| `metrics_json` | JSON string | Optional metrics |
+| `client_time_ms` | string | Client-reported timestamp (advisory) |
+| `metadata_json` | JSON string | Optional client metadata |
+
 ### Idempotency keys
 
 | Pattern | TTL |
 |---|---|
-| `idem:{tenant}:reserve:{key}` | reservation TTL + grace period |
-| `idem:{tenant}:commit:{key}` | stored on reservation hash indefinitely |
-| `idem:{tenant}:release:{key}` | stored on reservation hash indefinitely |
+| `idem:{tenant}:reserve:{key}` | reservation TTL + grace period (min 24h) |
 | `idem:{tenant}:extend:{reservationId}:{key}` | remaining reservation lifetime after extension |
 | `idem:{tenant}:decide:{key}` | 24 hours |
 | `idem:{tenant}:dry_run:{key}` | 24 hours |
 | `idem:{tenant}:event:{key}` | 7 days |
 
-### API key storage
+Commit and release idempotency is stored inline on the reservation hash (fields `committed_idempotency_key`/`committed_payload_hash` and `released_idempotency_key`/`released_payload_hash`) rather than as separate Redis keys. Each idempotency key also has a companion `…:hash` key storing the SHA-256 payload hash for mismatch detection.
+
+### API key and tenant storage
 
 | Key | Description |
 |---|---|
-| `apikey:{keyId}` | JSON-serialised `ApiKey` object |
+| `apikey:{keyId}` | JSON-serialised `ApiKey` object (key hash, tenant, status, permissions, expiry) |
 | `apikey:lookup:{prefix}` | Maps key prefix → `keyId` for O(1) lookup |
+| `tenant:{tenantId}` | Tenant metadata hash; includes `status` (`ACTIVE`, `SUSPENDED`, `CLOSED`) checked during API key validation |
