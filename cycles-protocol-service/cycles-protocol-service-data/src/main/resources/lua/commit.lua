@@ -132,9 +132,11 @@ if delta > 0 then
                 redis.call('HINCRBY', budget_key, 'spent', delta)
             else
                 -- Create debt for the shortfall
+                -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
+                -- spent tracks only the funded portion; debt tracks the unfunded portion
                 local deficit = delta - remaining
-                redis.call('HSET', budget_key, 'remaining', 0)
-                redis.call('HINCRBY', budget_key, 'spent', delta)
+                redis.call('HINCRBY', budget_key, 'remaining', -delta)
+                redis.call('HINCRBY', budget_key, 'spent', remaining)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
 

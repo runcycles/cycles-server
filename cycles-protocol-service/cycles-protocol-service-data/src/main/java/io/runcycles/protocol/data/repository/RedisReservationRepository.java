@@ -196,7 +196,7 @@ public class RedisReservationRepository {
             if (budget != null && !budget.isEmpty()) {
                 Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
                 balances.add(Balance.builder()
-                    .scope(scope)
+                    .scope(leafScope(scope))
                     .scopePath(scope)
                     .remaining(new SignedAmount(unitEnum, Long.parseLong(budget.getOrDefault("remaining", "0"))))
                     .reserved(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("reserved", "0"))))
@@ -528,9 +528,9 @@ public class RedisReservationRepository {
                         long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
                         boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
 
-                        // spec requires both scope and scope_path; trueScope is the full canonical path
+                        // spec: scope is the leaf identifier, scope_path is the full canonical path
                         balances.add(Balance.builder()
-                            .scope(trueScope)
+                            .scope(leafScope(trueScope))
                             .scopePath(trueScope)
                             .remaining(new SignedAmount(unit, remainingVal))
                             .reserved(new Amount(unit, reservedVal))
@@ -753,6 +753,15 @@ public class RedisReservationRepository {
     }
 
     /**
+     * Extracts the leaf (deepest) segment from a canonical scope path.
+     * e.g. "tenant:acme/workspace:dev/app:myapp" → "app:myapp"
+     */
+    private String leafScope(String scopePath) {
+        int lastSlash = scopePath.lastIndexOf('/');
+        return lastSlash >= 0 ? scopePath.substring(lastSlash + 1) : scopePath;
+    }
+
+    /**
      * Returns true when the scope path contains the given segment at an exact boundary.
      * Segment boundaries are "/" or start/end of string, preventing prefix false-positives
      * (e.g. "tenant:acme" must not match "tenant:acme-corp").
@@ -870,7 +879,7 @@ public class RedisReservationRepository {
                 long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
                 boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
                 balances.add(Balance.builder()
-                    .scope(scope)
+                    .scope(leafScope(scope))
                     .scopePath(scope)
                     .remaining(new SignedAmount(unit, Long.parseLong(budget.getOrDefault("remaining", "0"))))
                     .reserved(new Amount(unit, Long.parseLong(budget.getOrDefault("reserved", "0"))))

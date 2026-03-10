@@ -90,8 +90,10 @@ for _, scope in ipairs(affected_scopes) do
         local deficit = effective_amount - remaining
         local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
         local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-        redis.call('HSET', budget_key, 'remaining', 0)
-        redis.call('HINCRBY', budget_key, 'spent', effective_amount)
+        -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
+        -- spent tracks only the funded portion; debt tracks the unfunded portion
+        redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
+        redis.call('HINCRBY', budget_key, 'spent', remaining)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         local new_debt = current_debt + deficit
         if overdraft_limit > 0 and new_debt > overdraft_limit then
