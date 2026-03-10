@@ -589,18 +589,20 @@ All errors use this envelope:
 
 ### Running Tests
 
-Integration tests use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically — Docker must be running. Run from the `cycles-protocol-service/` directory:
+Integration tests are excluded from the default build and require the `integration-tests` Maven profile. They use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically — Docker must be running. Run from the `cycles-protocol-service/` directory:
 
 ```bash
-# All tests (builds all modules first)
+# Unit tests only (ScopeDerivationService — no Docker required)
 mvn test
 
-# Integration tests only (needs -am to build model + data dependencies)
-mvn test -pl cycles-protocol-service-api -am
+# Integration tests (requires Docker for Testcontainers Redis)
+mvn clean install -Pintegration-tests
 
-# Unit tests only (ScopeDerivationService — no Docker required)
-mvn test -pl cycles-protocol-service-data -am
+# Full build without integration tests
+mvn clean install
 ```
+
+Integration tests (`*IntegrationTest.java`) are excluded by default via surefire in `cycles-protocol-service-api/pom.xml`. The `-Pintegration-tests` profile overrides this exclusion.
 
 The test profile (`application-test.properties`) injects Redis connection details via `@DynamicPropertySource` from the Testcontainers Redis instance.
 
