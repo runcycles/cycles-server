@@ -11,6 +11,7 @@ Reference implementation of the [Cycles Budget Authority API](../cycles-protocol
 - [Authentication & Authorization](#authentication--authorization)
 - [API Reference](#api-reference)
 - [Error Codes](#error-codes)
+- [Development](#development)
 - [Redis Data Model](#redis-data-model)
 
 ---
@@ -577,6 +578,92 @@ All errors use this envelope:
 **Precedence:** when `is_over_limit=true`, `OVERDRAFT_LIMIT_EXCEEDED` takes precedence over `DEBT_OUTSTANDING`.
 
 `/v1/decide` MUST NOT return `409` for budget conditions — it returns `decision=DENY` with a `reason_code` instead.
+
+---
+
+## Development
+
+### Running Tests
+
+Tests use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically — Docker must be running.
+
+```bash
+mvn test                          # all tests
+mvn test -pl cycles-protocol-service-api   # integration tests only
+mvn test -pl cycles-protocol-service-data  # unit tests only
+```
+
+The test profile (`application-test.properties`) injects Redis connection details via `@DynamicPropertySource`.
+
+### Project Structure
+
+```
+cycles-protocol-service/
+├── build-all.sh                          # mvn clean install wrapper
+├── init-budgets.sh                       # seeds sample budget via redis-cli
+├── cycles-protocol-service-model/        # shared POJOs (no Spring dependency)
+│   └── src/main/java/.../model/
+│       ├── Subject.java, Action.java, Amount.java, SignedAmount.java
+│       ├── Reservation*.java, Commit*.java, Release*.java
+│       ├── Decision*.java, Event*.java, Balance*.java
+│       ├── Enums.java                    # ErrorCode, UnitEnum, OveragePolicy, etc.
+│       ├── Caps.java, ErrorResponse.java
+│       └── auth/                         # ApiKey, ApiKeyStatus, ApiKeyValidationResponse
+├── cycles-protocol-service-data/         # Redis repository + Lua + services
+│   └── src/main/
+│       ├── java/.../data/
+│       │   ├── repository/
+│       │   │   ├── RedisReservationRepository.java  # core budget logic
+│       │   │   └── ApiKeyRepository.java            # API key validation
+│       │   ├── service/
+│       │   │   ├── ScopeDerivationService.java      # scope hierarchy builder
+│       │   │   ├── ApiKeyValidationService.java
+│       │   │   └── ReservationExpiryService.java    # scheduled expiry sweep
+│       │   ├── config/RedisConfig.java              # JedisPool setup
+│       │   └── exception/CyclesProtocolException.java
+│       └── resources/lua/
+│           ├── reserve.lua    # atomic budget reservation
+│           ├── commit.lua     # record actual spend with overdraft support
+│           ├── release.lua    # return reserved budget
+│           ├── extend.lua     # extend reservation TTL
+│           ├── expire.lua     # background expiry (called by ExpiryService)
+│           └── event.lua      # direct debit without reservation
+└── cycles-protocol-service-api/          # Spring Boot app + controllers
+    └── src/main/java/.../api/
+        ├── CyclesProtocolApplication.java
+        ├── controller/
+        │   ├── BaseController.java              # tenant auth helpers
+        │   ├── ReservationController.java       # /v1/reservations/*
+        │   ├── BalanceController.java           # /v1/balances
+        │   ├── DecisionController.java          # /v1/decide
+        │   └── EventController.java             # /v1/events
+        ├── auth/
+        │   ├── ApiKeyAuthenticationFilter.java  # X-Cycles-API-Key validation
+        │   ├── ApiKeyAuthentication.java        # SecurityContext token
+        │   └── SecurityConfig.java              # Spring Security config
+        ├── filter/
+        │   ├── RequestIdFilter.java             # X-Request-Id generation
+        │   └── RateLimitHeaderFilter.java       # rate limit headers (stub)
+        └── exception/GlobalExceptionHandler.java
+```
+
+### Lua Scripts
+
+All budget mutations run as Redis Lua scripts for atomicity (no multi-key race conditions). Scripts are loaded from `resources/lua/` by `RedisReservationRepository` at startup and executed via `EVALSHA`.
+
+Each script follows a common pattern:
+1. **Idempotency check** — replay cached result if the same `(tenant, idempotency_key)` is seen; detect payload mismatch via SHA-256 hash
+2. **Fail-fast validation** — check all affected scopes before any mutations (budget exists, sufficient balance, no debt/over-limit)
+3. **Atomic mutation** — `HINCRBY` budget fields across all scopes in a single script execution
+4. **State persistence** — write reservation/event hash and idempotency cache
+
+### Additional Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `cycles.expiry.interval-ms` | `5000` | How often the background expiry sweep runs (ms) |
+| `spring.jackson.deserialization.fail-on-unknown-properties` | `true` | Reject unknown JSON fields |
+| `spring.jackson.default-property-inclusion` | `non_null` | Omit null fields from responses |
 
 ---
 
