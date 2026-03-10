@@ -8,6 +8,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -43,7 +44,7 @@ public class ReservationController extends BaseController{
     @GetMapping("/{reservation_id}")
     @Operation(operationId = "getReservation", summary = "Get reservation by ID")
     public ResponseEntity<ReservationDetail> get(
-            @PathVariable("reservation_id") String reservationId) {
+            @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId) {
         LOG.info("GET /v1/reservations/{}", reservationId);
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
@@ -54,7 +55,7 @@ public class ReservationController extends BaseController{
     @PostMapping("/{reservation_id}/commit")
     @Operation(operationId = "commitReservation", summary = "Commit actual spend")
     public ResponseEntity<CommitResponse> commit(
-            @PathVariable("reservation_id") String reservationId,
+            @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody CommitRequest request) {
         LOG.info("POST /v1/reservations/{}/commit", reservationId);
@@ -68,7 +69,7 @@ public class ReservationController extends BaseController{
     @PostMapping("/{reservation_id}/release")
     @Operation(operationId = "releaseReservation", summary = "Release reservation")
     public ResponseEntity<ReleaseResponse> release(
-            @PathVariable("reservation_id") String reservationId,
+            @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody ReleaseRequest request) {
         LOG.info("POST /v1/reservations/{}/release", reservationId);
@@ -82,7 +83,7 @@ public class ReservationController extends BaseController{
     @PostMapping("/{reservation_id}/extend")
     @Operation(operationId = "extendReservation", summary = "Extend reservation TTL")
     public ResponseEntity<ReservationExtendResponse> extend(
-            @PathVariable("reservation_id") String reservationId,
+            @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody ReservationExtendRequest request) {
         LOG.info("POST /v1/reservations/{}/extend", reservationId);
