@@ -1555,7 +1555,9 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             long remaining = ((Number) ((Map) bal.get("remaining")).get("amount")).longValue();
             long reserved = ((Number) ((Map) bal.get("reserved")).get("amount")).longValue();
             long spent = ((Number) ((Map) bal.get("spent")).get("amount")).longValue();
-            long debt = ((Number) ((Map) bal.get("debt")).get("amount")).longValue();
+            // debt is omitted (null) when 0 due to @JsonInclude(NON_NULL)
+            long debt = bal.get("debt") != null
+                    ? ((Number) ((Map) bal.get("debt")).get("amount")).longValue() : 0;
 
             // Spec: remaining = allocated - spent - reserved - debt
             assertThat(remaining).isEqualTo(allocated - spent - reserved - debt);
@@ -1834,6 +1836,12 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
         @Test
         void shouldReturnDebtAndOverdraftFieldsInBalance() {
+            // Create debt so the field is included (debt is omitted when 0 via @JsonInclude(NON_NULL))
+            post("/v1/events", API_KEY_SECRET_A, eventBody(TENANT_A, 900_000));
+            Map<String, Object> overdraftEvent = eventBody(TENANT_A, 200_000);
+            overdraftEvent.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            post("/v1/events", API_KEY_SECRET_A, overdraftEvent);
+
             ResponseEntity<Map> resp = get(
                     "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
 
