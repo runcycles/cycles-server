@@ -8,7 +8,7 @@ Reference implementation of the [Cycles Budget Authority API](../cycles-protocol
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Core Concepts](#core-concepts)
-- [Authentication](#authentication)
+- [Authentication & Authorization](#authentication--authorization)
 - [API Reference](#api-reference)
 - [Error Codes](#error-codes)
 - [Redis Data Model](#redis-data-model)
@@ -163,7 +163,7 @@ On replay of a successful request with the same key, the server returns the orig
 
 ---
 
-## Authentication
+## Authentication & Authorization
 
 Every request requires an API key in the header:
 
@@ -171,7 +171,40 @@ Every request requires an API key in the header:
 X-Cycles-API-Key: <key>
 ```
 
-Keys are stored in Redis (`apikey:{keyId}`) and validated by bcrypt hash comparison. A valid key resolves a `tenant_id` used for all authorization checks — the `subject.tenant` in the request must match the tenant from the API key; otherwise the server returns `403 FORBIDDEN`.
+### API Key Validation
+
+The `ApiKeyAuthenticationFilter` runs on every non-public request and performs a multi-step validation:
+
+1. **Header check** — `X-Cycles-API-Key` must be present; `401 UNAUTHORIZED` if missing.
+2. **Prefix lookup** — the key prefix is extracted and looked up in `apikey:lookup:{prefix}` for O(1) resolution to a `keyId`.
+3. **Key load** — the full key object is read from `apikey:{keyId}`.
+4. **Status check** — key must be `ACTIVE`; `REVOKED` or `EXPIRED` keys return `401`.
+5. **Expiration check** — if `expires_at` is set and in the past, returns `401 KEY_EXPIRED`.
+6. **Hash verification** — the submitted secret is verified against the stored bcrypt hash; `401 INVALID_KEY` on mismatch.
+7. **Tenant association** — the key must have a non-blank `tenant_id`; `401 KEY_NOT_OWNED_BY_TENANT` otherwise.
+8. **Tenant status** — the tenant record (`tenant:{tenantId}`) is checked; `SUSPENDED` or `CLOSED` tenants return `401`.
+
+On success the filter stores an `ApiKeyAuthentication` in the Spring `SecurityContext` containing the resolved `tenant_id` and any `permissions`.
+
+### Tenant Authorization
+
+Controllers enforce tenant isolation via `BaseController.authorizeTenant()`:
+
+- If the request includes a `tenant` (in the body, query, or resolved from a resource ID), it **must match** the tenant from the API key.
+- A mismatch returns `403 FORBIDDEN`.
+- The effective tenant always comes from the API key — the client cannot escalate by supplying a different tenant in the request.
+
+For operations by resource ID (e.g. `GET /v1/reservations/{id}`), the server first looks up the owning tenant from the reservation hash, then runs the same authorization check. This prevents cross-tenant access even when a reservation UUID is known.
+
+### Filter Chain Order
+
+| Order | Filter | Responsibility |
+|---|---|---|
+| 1 | `RequestIdFilter` | Generates `X-Request-Id` UUID, stored as request attribute and response header |
+| 2 | `RateLimitHeaderFilter` | Adds `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers (sentinel values in v0) |
+| 3 | `ApiKeyAuthenticationFilter` | Validates key, populates `SecurityContext`, sets `X-Cycles-Tenant` header |
+
+Public paths (Swagger UI, actuator health, etc.) bypass authentication.
 
 All responses include an `X-Request-Id` header. All timestamps are Unix milliseconds (int64).
 
@@ -562,16 +595,80 @@ All errors use this envelope:
 | `is_over_limit` | `"true"/"false"` | True when `debt > overdraft_limit`; blocks new reservations |
 | `scope` | string | Full canonical scope path |
 | `unit` | string | Unit enum value |
+| `caps_json` | JSON string | Optional operator-configured caps (e.g. `maxTokens`, `toolAllowlist`) |
 
 Budgets must be seeded externally (see `init-budgets.sh` for an example).
 
 ### Reservation hash  `reservation:res_{uuid}`
 
-Stores full reservation state. Indexed by expiry in `reservation:ttl` (sorted set).
+Stores full reservation state. Indexed by expiry in the `reservation:ttl` sorted set (score = `expires_at`).
+
+| Field | Type | Description |
+|---|---|---|
+| `reservation_id` | string | UUID (without `res_` prefix) |
+| `tenant` | string | Owning tenant ID |
+| `state` | string | `ACTIVE`, `COMMITTED`, `RELEASED`, or `EXPIRED` |
+| `subject_json` | JSON string | Full subject object |
+| `action_json` | JSON string | Action object (`kind`, `name`, `tags`) |
+| `estimate_amount` | integer | Amount reserved |
+| `estimate_unit` | string | Unit enum value |
+| `scope_path` | string | Full canonical scope path to deepest level |
+| `affected_scopes` | JSON string | Array of all ancestor scope paths |
+| `created_at` | integer | Creation timestamp (ms) |
+| `expires_at` | integer | Expiry timestamp (ms) |
+| `grace_ms` | integer | Grace period after expiry for commit/release |
+| `idempotency_key` | string | Client-provided idempotency key |
+| `overage_policy` | string | `REJECT`, `ALLOW_IF_AVAILABLE`, or `ALLOW_WITH_OVERDRAFT` |
+| `metadata_json` | JSON string | Optional client metadata |
+
+**Fields added on finalization:**
+
+| Field | State | Description |
+|---|---|---|
+| `charged_amount` | COMMITTED | Final amount charged |
+| `debt_incurred` | COMMITTED | Debt created across scopes |
+| `committed_at` | COMMITTED | Commit timestamp (ms) |
+| `committed_idempotency_key` | COMMITTED | Idempotency key for the commit call |
+| `committed_payload_hash` | COMMITTED | SHA-256 hash for idempotency mismatch detection |
+| `committed_metrics_json` | COMMITTED | Optional metrics from commit request |
+| `committed_metadata_json` | COMMITTED | Optional metadata from commit request |
+| `released_at` | RELEASED | Release timestamp (ms) |
+| `released_idempotency_key` | RELEASED | Idempotency key for the release call |
+| `released_payload_hash` | RELEASED | SHA-256 hash for idempotency mismatch detection |
+| `expired_at` | EXPIRED | Expiration timestamp (ms) |
+| `extend_metadata_json` | ACTIVE | Optional metadata from extend request |
+
+### TTL sorted set  `reservation:ttl`
+
+Tracks active reservation expiry for the background sweep (`ReservationExpiryService`).
+
+| Property | Value |
+|---|---|
+| Type | Sorted set |
+| Score | `expires_at` timestamp (ms) |
+| Member | Reservation UUID |
+
+Updated on create/extend (`ZADD`), removed on commit/release/expire (`ZREM`).
 
 ### Event hash  `event:evt_{uuid}`
 
 Immutable record of a direct debit event.
+
+| Field | Type | Description |
+|---|---|---|
+| `event_id` | string | UUID (without `evt_` prefix) |
+| `tenant` | string | Owning tenant ID |
+| `subject_json` | JSON string | Full subject object |
+| `action_json` | JSON string | Action object |
+| `amount` | integer | Debit amount |
+| `unit` | string | Unit enum value |
+| `scope_path` | string | Full canonical scope path |
+| `affected_scopes` | JSON string | Array of all ancestor scope paths |
+| `created_at` | integer | Creation timestamp (ms) |
+| `idempotency_key` | string | Client-provided idempotency key |
+| `metrics_json` | JSON string | Optional metrics |
+| `client_time_ms` | string | Client-reported timestamp (advisory) |
+| `metadata_json` | JSON string | Optional client metadata |
 
 ### Idempotency keys
 
