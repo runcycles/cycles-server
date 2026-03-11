@@ -240,7 +240,7 @@ Evaluate whether a budget operation would be allowed **without** reserving. Retu
 
 Only `decision` is required. `affected_scopes`, `reason_code`, `retry_after_ms`, and `caps` are optional.
 
-On `DENY` (insufficient budget, debt, or over-limit). Possible `reason_code` values: `BUDGET_NOT_FOUND`, `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`:
+On `DENY` (insufficient budget, debt, or over-limit). Possible `reason_code` values: `NOT_FOUND`, `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`:
 ```json
 {
   "decision": "DENY",
