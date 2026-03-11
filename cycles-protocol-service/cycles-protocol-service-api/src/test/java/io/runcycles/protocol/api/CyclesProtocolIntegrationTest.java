@@ -847,8 +847,9 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
             assertThat(resp1.getStatusCode().value()).isEqualTo(200);
             assertThat(resp1.getBody().get("status")).isEqualTo("RELEASED");
-            // Second call should either succeed with same result or fail gracefully
-            assertThat(resp2.getStatusCode().value()).isIn(200, 409);
+            // Spec: idempotent replay with same key must return original successful response
+            assertThat(resp2.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp2.getBody().get("status")).isEqualTo("RELEASED");
         }
 
         @Test
@@ -1413,17 +1414,25 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         @Test
         void shouldTrackDebtInCommitOverdraft() {
             // Budget: allocated=1_000_000, overdraft_limit=100_000
-            // Reserve 1000 with ALLOW_WITH_OVERDRAFT, commit 2000 (overage=1000)
+            // Drain budget first so that overage forces debt creation.
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+            // remaining ≈ 50_000, spent = 950_000
+
+            // Reserve 1000 with ALLOW_WITH_OVERDRAFT
             Map<String, Object> body = reservationBody(TENANT_A, 1000);
             body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
 
             ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
             assertThat(reserveResp.getStatusCode().value()).isEqualTo(200);
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
+            // remaining ≈ 49_000, reserved = 1_000
 
+            // Commit 100_000 (overage delta = 99_000, exceeds remaining ≈ 49_000)
+            // funded = 49_000, deficit = 50_000 ≤ overdraft_limit(100_000) → allowed
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
-                    API_KEY_SECRET_A, commitBody(2000));
+                    API_KEY_SECRET_A, commitBody(100_000));
 
             assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
             Map commitBody = commitResp.getBody();
@@ -1431,7 +1440,16 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
             // Verify charged amount equals actual
             Map<String, Object> charged = (Map<String, Object>) commitBody.get("charged");
-            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(2000);
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(100_000);
+
+            // Verify debt was actually created in the balance
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+            Map<String, Object> debt = (Map<String, Object>) bal.get("debt");
+            assertThat(debt).isNotNull();
+            assertThat(((Number) debt.get("amount")).longValue()).isGreaterThan(0);
         }
 
         @Test
