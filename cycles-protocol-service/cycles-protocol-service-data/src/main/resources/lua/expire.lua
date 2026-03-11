@@ -4,7 +4,11 @@
 -- Called by the background expiry job per reservation_id.
 
 local reservation_id = ARGV[1]
-local now            = tonumber(ARGV[2])
+-- Use Redis TIME for consistency with reserve/commit/release/extend scripts,
+-- which all use Redis TIME for expires_at comparisons. Using Java-provided time
+-- (ARGV[2]) could cause clock-skew issues between the app server and Redis.
+local t_now = redis.call('TIME')
+local now   = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
 
 local key   = "reservation:res_" .. reservation_id
 local state = redis.call('HGET', key, 'state')

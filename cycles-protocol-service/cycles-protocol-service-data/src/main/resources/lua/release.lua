@@ -71,4 +71,7 @@ redis.call('HMSET', reservation_key,
     'released_payload_hash', payload_hash
 )
 
+-- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
+redis.call('ZREM', 'reservation:ttl', reservation_id)
+
 return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})

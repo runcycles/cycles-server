@@ -81,13 +81,16 @@ for _, scope in ipairs(affected_scopes) do
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
 
     if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < effective_amount then
-        local deficit = effective_amount - remaining
+        -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
+        -- spent tracks only the funded portion; debt tracks the unfunded portion.
+        -- When remaining is already negative (prior overdraft), the funded portion is 0,
+        -- not negative — otherwise spent would decrease and debt would over-count.
+        local funded = math.max(remaining, 0)
+        local deficit = effective_amount - funded
         local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
         local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-        -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
-        -- spent tracks only the funded portion; debt tracks the unfunded portion
         redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
-        redis.call('HINCRBY', budget_key, 'spent', remaining)
+        redis.call('HINCRBY', budget_key, 'spent', funded)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         local new_debt = current_debt + deficit
         if overdraft_limit > 0 and new_debt > overdraft_limit then
