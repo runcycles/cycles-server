@@ -67,7 +67,19 @@ for _, scope in ipairs(affected_scopes) do
             -- only if sufficient remaining exists; otherwise MUST return 409 BUDGET_EXCEEDED.
             return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
         elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-            -- Spec: ALLOW_WITH_OVERDRAFT always proceeds; debt/is_over_limit are tracked, not blocked.
+            -- Spec v0.1.23 NORMATIVE (EventCreateRequest.overage_policy):
+            -- "check if (current_debt + deficit) <= overdraft_limit across all derived scopes.
+            --  If no: server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED."
+            -- When overdraft_limit=0, no overdraft is permitted (behaves as ALLOW_IF_AVAILABLE).
+            -- Use math.max(remaining, 0) so deficit matches the mutation pass.
+            local funded = math.max(remaining, 0)
+            local deficit = amount - funded
+            local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
+            local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
+            if current_debt + deficit > overdraft_limit then
+                return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
+                    current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
+            end
         end
     end
 end
@@ -81,13 +93,16 @@ for _, scope in ipairs(affected_scopes) do
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
 
     if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < effective_amount then
-        local deficit = effective_amount - remaining
+        -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
+        -- spent tracks only the funded portion; debt tracks the unfunded portion.
+        -- When remaining is already negative (prior overdraft), the funded portion is 0,
+        -- not negative — otherwise spent would decrease and debt would over-count.
+        local funded = math.max(remaining, 0)
+        local deficit = effective_amount - funded
         local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
         local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-        -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
-        -- spent tracks only the funded portion; debt tracks the unfunded portion
         redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
-        redis.call('HINCRBY', budget_key, 'spent', remaining)
+        redis.call('HINCRBY', budget_key, 'spent', funded)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         local new_debt = current_debt + deficit
         if overdraft_limit > 0 and new_debt > overdraft_limit then

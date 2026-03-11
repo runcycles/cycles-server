@@ -41,8 +41,9 @@ public class ReservationExpiryService {
 
             for (String reservationId : candidates) {
                 try {
-                    Object result = jedis.eval(expireScript, 0,
-                            reservationId, String.valueOf(now));
+                    // expire.lua now uses Redis TIME internally for consistent time-source
+                    // with reserve/commit/release/extend scripts. We still pass reservation_id only.
+                    Object result = jedis.eval(expireScript, 0, reservationId);
                     LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
                 } catch (Exception e) {
                     LOG.warn("Failed to expire reservation: {}", reservationId, e);

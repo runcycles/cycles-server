@@ -55,7 +55,6 @@ for _, scope in ipairs(affected_scopes) do
     end
     
     -- Get budget state
-    local allocated = tonumber(redis.call('HGET', budget_key, 'allocated') or 0)
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
     local debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
     local is_over_limit = redis.call('HGET', budget_key, 'is_over_limit')

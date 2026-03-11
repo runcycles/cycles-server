@@ -27,7 +27,8 @@ local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or 
 
 -- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
-    if stored_idempotency_key == idempotency_key then
+    if idempotency_key ~= "" and idempotency_key ~= nil
+       and stored_idempotency_key == idempotency_key then
         -- Spec MUST: detect payload mismatch on idempotent replay
         if payload_hash ~= "" then
             local stored_hash = redis.call('HGET', reservation_key, 'committed_payload_hash')
@@ -105,12 +106,15 @@ if delta > 0 then
             redis.call('HINCRBY', budget_key, 'spent', delta)
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-        -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption
+        -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption.
+        -- Use math.max(remaining, 0) so deficit calculation matches the mutation pass —
+        -- when remaining is already negative the funded portion is 0, not negative.
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
             if remaining < delta then
-                local deficit = delta - remaining
+                local funded = math.max(remaining, 0)
+                local deficit = delta - funded
                 local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
                 local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
                 if current_debt + deficit > overdraft_limit then
@@ -133,10 +137,13 @@ if delta > 0 then
             else
                 -- Create debt for the shortfall
                 -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
-                -- spent tracks only the funded portion; debt tracks the unfunded portion
-                local deficit = delta - remaining
+                -- spent tracks only the funded portion; debt tracks the unfunded portion.
+                -- When remaining is already negative (prior overdraft), the funded portion is 0,
+                -- not negative — otherwise spent would decrease and debt would over-count.
+                local funded = math.max(remaining, 0)
+                local deficit = delta - funded
                 redis.call('HINCRBY', budget_key, 'remaining', -delta)
-                redis.call('HINCRBY', budget_key, 'spent', remaining)
+                redis.call('HINCRBY', budget_key, 'spent', funded)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
 
@@ -199,6 +206,9 @@ redis.call('HMSET', reservation_key,
     'committed_metrics_json', metrics_json,
     'committed_metadata_json', metadata_json
 )
+
+-- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
+redis.call('ZREM', 'reservation:ttl', reservation_id)
 
 return cjson.encode({
     reservation_id = reservation_id,

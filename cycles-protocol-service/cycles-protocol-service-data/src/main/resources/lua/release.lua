@@ -17,7 +17,8 @@ local stored_idempotency_key = redis.call('HGET', reservation_key, 'released_ide
 
 -- Check if already released (idempotent replay or finalized)
 if state == "RELEASED" then
-    if stored_idempotency_key == idempotency_key then
+    if idempotency_key ~= "" and idempotency_key ~= nil
+       and stored_idempotency_key == idempotency_key then
         -- Spec MUST: detect payload mismatch on idempotent replay
         if payload_hash ~= "" then
             local stored_hash = redis.call('HGET', reservation_key, 'released_payload_hash')
@@ -70,5 +71,8 @@ redis.call('HMSET', reservation_key,
     'released_idempotency_key', idempotency_key,
     'released_payload_hash', payload_hash
 )
+
+-- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
+redis.call('ZREM', 'reservation:ttl', reservation_id)
 
 return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})
