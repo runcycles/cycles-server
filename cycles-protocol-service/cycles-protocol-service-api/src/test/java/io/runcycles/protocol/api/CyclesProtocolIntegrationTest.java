@@ -1892,4 +1892,474 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(remaining.get("unit")).isEqualTo("TOKENS");
         }
     }
+
+    // ========================================================================
+    // Gap #1: DEBT_OUTSTANDING — new reservations blocked when debt > 0
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Debt Outstanding")
+    class DebtOutstanding {
+
+        @Test
+        void shouldRejectNewReservationWhenDebtOutstanding() {
+            // Drain budget so overdraft commit creates debt.
+            // Budget: allocated=1_000_000, overdraft_limit=100_000
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+            // remaining=50_000
+
+            // Create overdraft reservation and commit to create debt
+            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
+            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
+            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
+            // remaining=49_000
+
+            // Commit with overage that creates debt: delta=99_000, remaining=49_000
+            // funded=49_000, deficit=50_000 ≤ 100_000 → allowed
+            post("/v1/reservations/" + overdraftResId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+            // Now debt=50_000 > 0
+
+            // New reservation should be blocked with DEBT_OUTSTANDING
+            ResponseEntity<Map> newResp = post("/v1/reservations", API_KEY_SECRET_A,
+                    reservationBody(TENANT_A, 100));
+
+            assertThat(newResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(newResp.getBody().get("error")).isEqualTo("DEBT_OUTSTANDING");
+        }
+
+        @Test
+        void shouldAllowCommitAndReleaseOnExistingReservationsDespiteDebt() {
+            // Spec: existing reservations may commit/release normally even when debt > 0
+            // Create two reservations before debt exists
+            String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            String res2 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            // Drain and create debt
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 948_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(948_000));
+
+            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
+            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> overdraftResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
+            String overdraftResId = (String) overdraftResp.getBody().get("reservation_id");
+            post("/v1/reservations/" + overdraftResId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+            // debt > 0 now
+
+            // Existing reservation can still commit
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + res1 + "/commit",
+                    API_KEY_SECRET_A, commitBody(500));
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
+
+            // Existing reservation can still release
+            ResponseEntity<Map> releaseResp = post(
+                    "/v1/reservations/" + res2 + "/release",
+                    API_KEY_SECRET_A, releaseBody());
+            assertThat(releaseResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(releaseResp.getBody().get("status")).isEqualTo("RELEASED");
+        }
+    }
+
+    // ========================================================================
+    // Gap #2: Error Precedence — OVERDRAFT_LIMIT_EXCEEDED overrides DEBT_OUTSTANDING
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Error Precedence")
+    class ErrorPrecedence {
+
+        @Test
+        void shouldReturnOverdraftLimitExceededWhenOverLimit() {
+            // Spec: when is_over_limit=true, return OVERDRAFT_LIMIT_EXCEEDED even if debt > 0
+            // We need to set is_over_limit=true directly since the Lua pre-checks prevent
+            // sequential commits from exceeding the limit (only concurrent ops can).
+            // Budget: allocated=1_000_000, overdraft_limit=100_000
+
+            // Create debt that exactly matches overdraft_limit, then manually set is_over_limit
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+
+            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
+            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
+            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
+            post("/v1/reservations/" + overdraftResId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+            // debt=50_000 > 0, is_over_limit=false (50k ≤ 100k limit)
+
+            // Manually set is_over_limit=true to simulate concurrent race
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "is_over_limit", "true");
+            }
+
+            // New reservation should get OVERDRAFT_LIMIT_EXCEEDED (not DEBT_OUTSTANDING)
+            // because is_over_limit check comes first in reserve.lua
+            ResponseEntity<Map> newResp = post("/v1/reservations", API_KEY_SECRET_A,
+                    reservationBody(TENANT_A, 100));
+
+            assertThat(newResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(newResp.getBody().get("error")).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
+        }
+
+        @Test
+        void shouldReturnDebtOutstandingWhenNotOverLimit() {
+            // When debt > 0 but is_over_limit=false, should return DEBT_OUTSTANDING
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+
+            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
+            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
+            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
+            post("/v1/reservations/" + overdraftResId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+            // debt=50_000 > 0, is_over_limit=false
+
+            ResponseEntity<Map> newResp = post("/v1/reservations", API_KEY_SECRET_A,
+                    reservationBody(TENANT_A, 100));
+
+            assertThat(newResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(newResp.getBody().get("error")).isEqualTo("DEBT_OUTSTANDING");
+        }
+    }
+
+    // ========================================================================
+    // Gap #3: RESERVATION_EXPIRED — 410 on commit/release/extend after expiry
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Reservation Expiration (410)")
+    class ReservationExpiration {
+
+        @Test
+        void shouldReturn410OnCommitAfterExpiry() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            // Force expiration by setting expires_at in the past with grace=0
+            expireReservationInRedis(reservationId, System.currentTimeMillis() - 10_000);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(500));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(410);
+            assertThat(resp.getBody().get("error")).isEqualTo("RESERVATION_EXPIRED");
+        }
+
+        @Test
+        void shouldReturn410OnReleaseAfterExpiry() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            expireReservationInRedis(reservationId, System.currentTimeMillis() - 10_000);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/release",
+                    API_KEY_SECRET_A, releaseBody());
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(410);
+            assertThat(resp.getBody().get("error")).isEqualTo("RESERVATION_EXPIRED");
+        }
+
+        @Test
+        void shouldReturn410OnExtendAfterExpiry() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            expireReservationInRedis(reservationId, System.currentTimeMillis() - 10_000);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, extendBody(30000));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(410);
+            assertThat(resp.getBody().get("error")).isEqualTo("RESERVATION_EXPIRED");
+        }
+
+        @Test
+        void shouldAllowCommitWithinGracePeriod() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            // Set expires_at 5 seconds ago but with 60 second grace period
+            // commit.lua: allowed if now <= expires_at + grace_ms
+            try (Jedis jedis = jedisPool.getResource()) {
+                String key = "reservation:res_" + reservationId;
+                jedis.hset(key, "expires_at", String.valueOf(System.currentTimeMillis() - 5_000));
+                jedis.hset(key, "grace_ms", "60000");
+            }
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(500));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("status")).isEqualTo("COMMITTED");
+        }
+
+        @Test
+        void shouldRejectExtendEvenWithinGracePeriod() {
+            // Spec: extend only allowed when server time <= expires_at_ms (no grace)
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                String key = "reservation:res_" + reservationId;
+                jedis.hset(key, "expires_at", String.valueOf(System.currentTimeMillis() - 1_000));
+                jedis.hset(key, "grace_ms", "60000");
+            }
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, extendBody(30000));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(410);
+            assertThat(resp.getBody().get("error")).isEqualTo("RESERVATION_EXPIRED");
+        }
+    }
+
+    // ========================================================================
+    // Gap #4: Hierarchical Scope Derivation — multi-level budget tracking
+    // ========================================================================
+
+    @Nested
+    @DisplayName("Hierarchical Scope Derivation")
+    class HierarchicalScopes {
+
+        @Test
+        void shouldReserveAcrossMultipleHierarchyLevels() {
+            // Seed budgets at all derived scope levels for tenant-a with agent=my-agent.
+            // deriveScopes for {tenant: "tenant-a", agent: "my-agent"} produces:
+            //   tenant:tenant-a
+            //   tenant:tenant-a/workspace:default
+            //   tenant:tenant-a/workspace:default/app:default
+            //   tenant:tenant-a/workspace:default/app:default/workflow:default
+            //   tenant:tenant-a/workspace:default/app:default/workflow:default/agent:my-agent
+            try (Jedis jedis = jedisPool.getResource()) {
+                // Tenant-level already seeded by @BeforeEach; re-seed sub-levels
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:my-agent", "TOKENS", 200_000, 20_000);
+            }
+
+            Map<String, String> subject = Map.of("tenant", TENANT_A, "agent", "my-agent");
+            Map<String, Object> body = reservationBodyWithSubject(subject, 5000, "TOKENS");
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
+            assertThat(resp.getBody().get("reservation_id")).isNotNull();
+
+            // Verify affected_scopes contains all hierarchy levels
+            var affectedScopes = (java.util.List<String>) resp.getBody().get("affected_scopes");
+            assertThat(affectedScopes).hasSize(5);
+            assertThat(affectedScopes.get(0)).contains("tenant:tenant-a");
+        }
+
+        @Test
+        void shouldEnforceLowestLevelBudget() {
+            // Seed lower-level budget that is too small
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
+                // Agent budget is only 100 tokens — too small for 5000 estimate
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:small-budget", "TOKENS", 100, 10);
+            }
+
+            Map<String, String> subject = Map.of("tenant", TENANT_A, "agent", "small-budget");
+            Map<String, Object> body = reservationBodyWithSubject(subject, 5000, "TOKENS");
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
+        }
+
+        @Test
+        void shouldCommitAcrossHierarchyAndUpdateBalances() {
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:test-agent", "TOKENS", 200_000, 20_000);
+            }
+
+            Map<String, String> subject = Map.of("tenant", TENANT_A, "agent", "test-agent");
+            Map<String, Object> body = reservationBodyWithSubject(subject, 5000, "TOKENS");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(3000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
+
+            // Verify spent was updated at both tenant and agent levels
+            try (Jedis jedis = jedisPool.getResource()) {
+                String tenantSpent = jedis.hget("budget:tenant:tenant-a:TOKENS", "spent");
+                assertThat(Long.parseLong(tenantSpent)).isEqualTo(3000);
+
+                String agentSpent = jedis.hget(
+                        "budget:tenant:tenant-a/workspace:default/app:default/workflow:default/agent:test-agent:TOKENS",
+                        "spent");
+                assertThat(Long.parseLong(agentSpent)).isEqualTo(3000);
+            }
+        }
+
+        @Test
+        void shouldDeriveScopePathWithGapFilling() {
+            // Subject with tenant + toolset (skipping workspace/app/workflow/agent)
+            // Should fill gaps with "default"
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:default", "TOKENS", 200_000, 20_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:default/toolset:search", "TOKENS", 100_000, 10_000);
+            }
+
+            Map<String, String> subject = Map.of("tenant", TENANT_A, "toolset", "search");
+            Map<String, Object> body = reservationBodyWithSubject(subject, 1000, "TOKENS");
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            // Should derive all 6 scope levels with gaps filled
+            var affectedScopes = (java.util.List<String>) resp.getBody().get("affected_scopes");
+            assertThat(affectedScopes).hasSize(6);
+
+            String scopePath = (String) resp.getBody().get("scope_path");
+            assertThat(scopePath).contains("toolset:search");
+            assertThat(scopePath).contains("agent:default");
+        }
+    }
+
+    // ========================================================================
+    // Gap #5: TTL / Extend / Grace Period Boundary Validation
+    // ========================================================================
+
+    @Nested
+    @DisplayName("TTL & Extend Boundary Validation")
+    class TtlBoundaryValidation {
+
+        @Test
+        void shouldRejectTtlBelowMinimum() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("ttl_ms", 999); // min is 1000
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectTtlAboveMaximum() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("ttl_ms", 86_400_001); // max is 86400000
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldAcceptMinimumTtl() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("ttl_ms", 1000); // exactly min
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
+        }
+
+        @Test
+        void shouldAcceptMaximumTtl() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("ttl_ms", 86_400_000); // exactly max
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
+        }
+
+        @Test
+        void shouldRejectExtendBelowMinimum() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            Map<String, Object> body = extendBody(0); // min is 1
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectExtendAboveMaximum() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            Map<String, Object> body = extendBody(86_400_001); // max is 86400000
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldAcceptMinimumExtend() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            Map<String, Object> body = extendBody(1); // exactly min
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("status")).isEqualTo("ACTIVE");
+        }
+
+        @Test
+        void shouldRejectGracePeriodAboveMaximum() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("grace_period_ms", 60_001); // max is 60000
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldAcceptGracePeriodZero() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("grace_period_ms", 0); // exactly min
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
+        }
+
+        @Test
+        void shouldAcceptMaximumGracePeriod() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("grace_period_ms", 60_000); // exactly max
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
+        }
+    }
 }

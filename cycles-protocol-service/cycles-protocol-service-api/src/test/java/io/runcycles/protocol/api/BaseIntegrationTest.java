@@ -210,4 +210,49 @@ public abstract class BaseIntegrationTest {
         assert response.getStatusCode().is2xxSuccessful() : "Failed to create reservation: " + response.getBody();
         return (String) response.getBody().get("reservation_id");
     }
+
+    /**
+     * Seed a budget at an arbitrary scope path (e.g. "tenant:tenant-a/workspace:default/agent:my-agent").
+     */
+    protected void seedScopeBudget(Jedis jedis, String scopePath, String unit, long allocated, long overdraftLimit) {
+        String key = "budget:" + scopePath + ":" + unit;
+        jedis.hset(key, Map.of(
+                "scope", scopePath,
+                "unit", unit,
+                "allocated", String.valueOf(allocated),
+                "remaining", String.valueOf(allocated),
+                "reserved", "0",
+                "spent", "0",
+                "debt", "0",
+                "overdraft_limit", String.valueOf(overdraftLimit),
+                "is_over_limit", "false"
+        ));
+    }
+
+    /**
+     * Build a reservation request body with a multi-level subject.
+     */
+    protected Map<String, Object> reservationBodyWithSubject(Map<String, String> subject, long amount, String unit) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("idempotency_key", UUID.randomUUID().toString());
+        body.put("subject", subject);
+        body.put("action", Map.of("kind", "llm.completion", "name", "test-model"));
+        body.put("estimate", Map.of("unit", unit, "amount", amount));
+        body.put("ttl_ms", 60000);
+        body.put("overage_policy", "REJECT");
+        return body;
+    }
+
+    /**
+     * Force a reservation's expires_at to a past timestamp (for expiration testing).
+     */
+    protected void expireReservationInRedis(String reservationId, long pastExpiresAt) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            String key = "reservation:res_" + reservationId;
+            jedis.hset(key, "expires_at", String.valueOf(pastExpiresAt));
+            jedis.hset(key, "grace_ms", "0");
+            // Update TTL sorted set so the sweep can find it
+            jedis.zadd("reservation:ttl", pastExpiresAt, reservationId);
+        }
+    }
 }
