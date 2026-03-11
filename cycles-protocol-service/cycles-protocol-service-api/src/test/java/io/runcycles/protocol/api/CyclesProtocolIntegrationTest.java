@@ -1836,12 +1836,15 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
         @Test
         void shouldReturnDebtAndOverdraftFieldsInBalance() {
-            // Create debt exceeding overdraft_limit so all fields are populated.
+            // Create debt within overdraft_limit so debt/overdraft fields are populated.
             // Budget: allocated=1_000_000, overdraft_limit=100_000.
-            // debt/is_over_limit are omitted when 0/false via @JsonInclude(NON_NULL).
-            // Lua sets is_over_limit when new_debt > overdraft_limit (strict >).
+            // First event spends 850k leaving remaining=150k.
+            // Second event (200k with ALLOW_WITH_OVERDRAFT) creates deficit=50k (within limit).
+            // debt/overdraft_limit are omitted when 0 via @JsonInclude(NON_NULL).
+            // is_over_limit can only be true through concurrent operations (pre-check blocks
+            // sequential debt > overdraft_limit), so we don't assert its presence here.
             post("/v1/events", API_KEY_SECRET_A, eventBody(TENANT_A, 850_000));
-            Map<String, Object> overdraftEvent = eventBody(TENANT_A, 260_000);
+            Map<String, Object> overdraftEvent = eventBody(TENANT_A, 200_000);
             overdraftEvent.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
             post("/v1/events", API_KEY_SECRET_A, overdraftEvent);
 
@@ -1854,7 +1857,6 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
             assertThat(balance).containsKey("debt");
             assertThat(balance).containsKey("overdraft_limit");
-            assertThat(balance).containsKey("is_over_limit");
         }
 
         @Test
