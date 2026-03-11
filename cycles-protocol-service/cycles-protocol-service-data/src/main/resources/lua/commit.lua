@@ -27,7 +27,8 @@ local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or 
 
 -- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
-    if stored_idempotency_key == idempotency_key then
+    if idempotency_key ~= "" and idempotency_key ~= nil
+       and stored_idempotency_key == idempotency_key then
         -- Spec MUST: detect payload mismatch on idempotent replay
         if payload_hash ~= "" then
             local stored_hash = redis.call('HGET', reservation_key, 'committed_payload_hash')
@@ -105,12 +106,15 @@ if delta > 0 then
             redis.call('HINCRBY', budget_key, 'spent', delta)
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-        -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption
+        -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption.
+        -- Use math.max(remaining, 0) so deficit calculation matches the mutation pass —
+        -- when remaining is already negative the funded portion is 0, not negative.
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
             if remaining < delta then
-                local deficit = delta - remaining
+                local funded = math.max(remaining, 0)
+                local deficit = delta - funded
                 local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
                 local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
                 if current_debt + deficit > overdraft_limit then

@@ -17,7 +17,8 @@ local stored_idempotency_key = redis.call('HGET', reservation_key, 'released_ide
 
 -- Check if already released (idempotent replay or finalized)
 if state == "RELEASED" then
-    if stored_idempotency_key == idempotency_key then
+    if idempotency_key ~= "" and idempotency_key ~= nil
+       and stored_idempotency_key == idempotency_key then
         -- Spec MUST: detect payload mismatch on idempotent replay
         if payload_hash ~= "" then
             local stored_hash = redis.call('HGET', reservation_key, 'released_payload_hash')
