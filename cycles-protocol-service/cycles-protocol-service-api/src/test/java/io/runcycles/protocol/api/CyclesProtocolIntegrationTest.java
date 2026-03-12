@@ -44,6 +44,11 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(body.get("expires_at_ms")).isNotNull();
             assertThat(body.get("affected_scopes")).isNotNull();
             assertThat(body.get("scope_path")).isNotNull();
+            // Spec: reserved is a response field matching the estimate
+            Map<String, Object> reserved = (Map<String, Object>) body.get("reserved");
+            assertThat(reserved).isNotNull();
+            assertThat(((Number) reserved.get("amount")).longValue()).isEqualTo(1000);
+            assertThat(reserved.get("unit")).isEqualTo("TOKENS");
         }
 
         @Test
@@ -103,6 +108,30 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(resp.getStatusCode().value()).isEqualTo(200);
             assertThat(resp.getBody().get("decision")).isEqualTo("DENY");
             assertThat(resp.getBody().get("affected_scopes")).isNotNull();
+        }
+
+        @Test
+        void shouldNotModifyBalancesOnDryRun() {
+            // Spec: dry_run MUST NOT modify balances, persist a reservation, or require commit/release
+            ResponseEntity<Map> beforeResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var beforeBalances = (java.util.List<Map<String, Object>>) beforeResp.getBody().get("balances");
+            long remainingBefore = ((Number) ((Map) beforeBalances.get(0).get("remaining")).get("amount")).longValue();
+            long reservedBefore = ((Number) ((Map) beforeBalances.get(0).get("reserved")).get("amount")).longValue();
+
+            // Dry-run a large reservation
+            Map<String, Object> body = reservationBody(TENANT_A, 100_000);
+            body.put("dry_run", true);
+            post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            ResponseEntity<Map> afterResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var afterBalances = (java.util.List<Map<String, Object>>) afterResp.getBody().get("balances");
+            long remainingAfter = ((Number) ((Map) afterBalances.get(0).get("remaining")).get("amount")).longValue();
+            long reservedAfter = ((Number) ((Map) afterBalances.get(0).get("reserved")).get("amount")).longValue();
+
+            assertThat(remainingAfter).isEqualTo(remainingBefore);
+            assertThat(reservedAfter).isEqualTo(reservedBefore);
         }
 
         @Test
@@ -1024,6 +1053,71 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(resp2.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
         }
 
+        @Test
+        void shouldRejectExtendIdempotencyMismatch() {
+            // Spec: same key with different payload MUST return 409 IDEMPOTENCY_MISMATCH
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body1 = extendBody(30000);
+            String sharedKey = (String) body1.get("idempotency_key");
+
+            ResponseEntity<Map> resp1 = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, body1);
+            assertThat(resp1.getStatusCode().value()).isEqualTo(200);
+
+            // Same key, different extend_by_ms
+            Map<String, Object> body2 = extendBody(60000);
+            body2.put("idempotency_key", sharedKey);
+
+            ResponseEntity<Map> resp2 = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, body2);
+            assertThat(resp2.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp2.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
+        @Test
+        void shouldRejectReleaseIdempotencyMismatch() {
+            // Spec: same key with different payload MUST return 409 IDEMPOTENCY_MISMATCH
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body1 = releaseBody();
+            String sharedKey = (String) body1.get("idempotency_key");
+
+            ResponseEntity<Map> resp1 = post(
+                    "/v1/reservations/" + reservationId + "/release",
+                    API_KEY_SECRET_A, body1);
+            assertThat(resp1.getStatusCode().value()).isEqualTo(200);
+
+            // Same key, different reason
+            Map<String, Object> body2 = new HashMap<>();
+            body2.put("idempotency_key", sharedKey);
+            body2.put("reason", "completely-different-reason");
+
+            ResponseEntity<Map> resp2 = post(
+                    "/v1/reservations/" + reservationId + "/release",
+                    API_KEY_SECRET_A, body2);
+            assertThat(resp2.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp2.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
+        @Test
+        void shouldRejectDecideIdempotencyMismatch() {
+            // Spec: same key with different payload MUST return 409 IDEMPOTENCY_MISMATCH
+            Map<String, Object> body1 = decisionBody(TENANT_A, 1000);
+            String sharedKey = (String) body1.get("idempotency_key");
+
+            ResponseEntity<Map> resp1 = post("/v1/decide", API_KEY_SECRET_A, body1);
+            assertThat(resp1.getStatusCode().value()).isEqualTo(200);
+
+            // Same key, different amount
+            Map<String, Object> body2 = decisionBody(TENANT_A, 5000);
+            body2.put("idempotency_key", sharedKey);
+
+            ResponseEntity<Map> resp2 = post("/v1/decide", API_KEY_SECRET_A, body2);
+            assertThat(resp2.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp2.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
         private HttpHeaders headersWithIdempotencyKey(
                 String apiKey, String idempotencyKey) {
             var headers = headersForTenant(apiKey);
@@ -1685,6 +1779,25 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             Map<String, Object> debt = (Map<String, Object>) bal.get("debt");
             long debtAmount = ((Number) debt.get("amount")).longValue();
             assertThat(debtAmount).isGreaterThan(0);
+        }
+
+        @Test
+        void shouldRejectEventWhenOverdraftLimitExceeded() {
+            // Spec: event with ALLOW_WITH_OVERDRAFT where (debt + actual) > overdraft_limit
+            // MUST return 409 OVERDRAFT_LIMIT_EXCEEDED
+            // Budget: allocated=1_000_000, overdraft_limit=100_000
+            // Drain budget
+            post("/v1/events", API_KEY_SECRET_A, eventBody(TENANT_A, 950_000));
+
+            // Event with overdraft that exceeds limit: remaining=50_000, actual=500_000
+            // deficit=450_000 > overdraft_limit=100_000
+            Map<String, Object> body = eventBody(TENANT_A, 500_000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp.getBody().get("error")).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
         }
 
         @Test
