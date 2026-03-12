@@ -69,7 +69,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleMessageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
             .error(Enums.ErrorCode.INVALID_REQUEST)
-            .message("Malformed request body: " + ex.getMostSpecificCause().getMessage())
+            .message("Malformed request body")
             .requestId(resolveRequestId(request))
             .build());
     }
@@ -77,16 +77,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex, HttpServletRequest request) {
 
-        LOG.info("Landed in generic exception handler: clazz={}",ex.getClass());
+        LOG.error("Unhandled exception: clazz={}", ex.getClass(), ex);
         if (ex instanceof CyclesProtocolException){
             return handleCyclesException((CyclesProtocolException) ex, request);
         }
         else {
-            String msg = ex.getMessage() != null ? ":" + ex.getMessage() : "";
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(ErrorResponse.builder()
                             .error(Enums.ErrorCode.INTERNAL_ERROR)
-                            .message("Internal error" + msg)
+                            .message("Internal error")
                             .requestId(resolveRequestId(request))
                             .build());
         }

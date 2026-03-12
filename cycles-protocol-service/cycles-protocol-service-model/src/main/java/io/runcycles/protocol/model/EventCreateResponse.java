@@ -13,5 +13,6 @@ import java.util.List;
 public class EventCreateResponse {
     @NotNull @JsonProperty("status") private Enums.EventStatus status;
     @NotNull @JsonProperty("event_id") private String eventId;
+    @NotNull @Valid @JsonProperty("charged") private Amount charged;
     @Valid @JsonProperty("balances") private List<Balance> balances;
 }

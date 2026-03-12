@@ -725,6 +725,7 @@ public class RedisReservationRepository {
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
+                .charged(new Amount(request.getActual().getUnit(), request.getActual().getAmount()))
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
