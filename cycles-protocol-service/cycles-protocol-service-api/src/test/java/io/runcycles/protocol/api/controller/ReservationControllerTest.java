@@ -3,7 +3,6 @@ package io.runcycles.protocol.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.api.auth.ApiKeyAuthenticationFilter;
-import io.runcycles.protocol.api.auth.SecurityConfig;
 import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
@@ -13,6 +12,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.context.annotation.ComponentScan;
@@ -38,7 +38,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE,
                 classes = ApiKeyAuthenticationFilter.class)
 )
-@Import({SecurityConfig.class, GlobalExceptionHandler.class})
+@AutoConfigureMockMvc(addFilters = false)
+@Import(GlobalExceptionHandler.class)
 @DisplayName("ReservationController")
 class ReservationControllerTest {
 
