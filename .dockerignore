@@ -1,0 +1,12 @@
+.git
+.github
+.gitignore
+.idea
+*.iml
+**/target
+**/node_modules
+*.log
+LICENSE
+README.md
+AUDIT.md
+docker-compose*.yml
