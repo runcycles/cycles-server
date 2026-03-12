@@ -49,6 +49,7 @@ public abstract class BaseIntegrationTest {
         registry.add("redis.host", REDIS::getHost);
         registry.add("redis.port", () -> REDIS.getMappedPort(6379));
         registry.add("redis.password", () -> "");
+        registry.add("cycles.expiry.initial-delay-ms", () -> "999999999");
     }
 
     @LocalServerPort

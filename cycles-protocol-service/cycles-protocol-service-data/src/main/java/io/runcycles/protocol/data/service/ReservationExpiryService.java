@@ -27,7 +27,8 @@ public class ReservationExpiryService {
     @Autowired private JedisPool jedisPool;
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
 
-    @Scheduled(fixedDelayString = "${cycles.expiry.interval-ms:5000}")
+    @Scheduled(fixedDelayString = "${cycles.expiry.interval-ms:5000}",
+               initialDelayString = "${cycles.expiry.initial-delay-ms:5000}")
     public void expireReservations() {
         long now = System.currentTimeMillis();
 
