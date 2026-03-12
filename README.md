@@ -4,6 +4,28 @@ Reference implementation of the [Cycles Budget Authority API](cycles-protocol-v0
 
 ## Quick Start
 
+### Docker (recommended)
+
+**Prerequisites:** Docker
+
+```bash
+# Build from source and start (no local Java/Maven required)
+docker compose up --build
+```
+
+Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
+
+### Pre-built image (no source code needed)
+
+```bash
+# Download docker-compose.prod.yml, then:
+docker compose -f docker-compose.prod.yml up
+```
+
+This pulls the latest image from `ghcr.io/runcycles/cycles-server`.
+
+### Manual build
+
 **Prerequisites:** Java 21+, Maven, Docker (for Redis)
 
 ```bash
@@ -76,6 +98,26 @@ mvn clean install
 ```
 
 The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.23.jar`.
+
+## Docker Deployment
+
+Two Docker Compose files are provided for different use cases:
+
+| File | Use case | Command |
+|------|----------|---------|
+| `docker-compose.yml` | **Development** — builds from source inside Docker (multi-stage build, no local Java/Maven needed) | `docker compose up --build` |
+| `docker-compose.prod.yml` | **Production / end-user** — pulls pre-built image from GHCR | `docker compose -f docker-compose.prod.yml up` |
+
+Both start Redis 7 and the cycles-server on port 7878.
+
+### Container images
+
+Pre-built images are published to GitHub Container Registry on each release:
+
+```
+ghcr.io/runcycles/cycles-server:latest
+ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.23
+```
 
 ## Testing
 

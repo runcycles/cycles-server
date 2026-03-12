@@ -38,6 +38,24 @@ Redis 7+  (Lua scripts for atomicity)
 
 ## Quick Start
 
+### Docker (recommended)
+
+No local Java or Maven required. From the repository root:
+
+```bash
+docker compose up --build
+```
+
+Or pull the pre-built image (no source code needed):
+
+```bash
+docker compose -f docker-compose.prod.yml up
+```
+
+The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
+
+### Manual build
+
 **Prerequisites:** Java 21+, Maven, Docker (for Redis)
 
 ```bash
