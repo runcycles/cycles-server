@@ -45,3 +45,20 @@ jobs:
             APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Set package visibility to public
+        run: |
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /orgs/runcycles/packages/container/cycles-server/versions \
+            || true
+          # Set the container package to public so unauthenticated pulls work
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /orgs/runcycles/packages/container/cycles-server \
+            -f visibility=public \
+            || echo "Note: Could not set package visibility. Set it manually in GitHub package settings."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
