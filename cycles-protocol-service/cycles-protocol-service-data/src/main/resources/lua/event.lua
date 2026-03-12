@@ -135,12 +135,10 @@ redis.call('HMSET', event_key,
 -- Store idempotency mapping (expire after 7 days)
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
-    redis.call('SET', idem_key, event_id)
-    redis.call('PEXPIRE', idem_key, 604800000)
+    redis.call('PSETEX', idem_key, 604800000, event_id)
     -- Store payload hash for idempotency mismatch detection (spec MUST)
     if payload_hash ~= "" then
-        redis.call('SET', idem_key .. ':hash', payload_hash)
-        redis.call('PEXPIRE', idem_key .. ':hash', 604800000)
+        redis.call('PSETEX', idem_key .. ':hash', 604800000, payload_hash)
     end
 end
 
