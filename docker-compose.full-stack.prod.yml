@@ -13,15 +13,26 @@ services:
       retries: 5
 
   cycles-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/runcycles/cycles-server:latest
     ports:
       - "7878:7878"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ""
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  cycles-admin:
+    image: ghcr.io/runcycles/cycles-server-admin:latest
+    ports:
+      - "7979:7979"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-admin-bootstrap-key}
     depends_on:
       redis:
         condition: service_healthy

@@ -8,5 +8,5 @@
 *.log
 LICENSE
 README.md
-AUDIT.md
+AUDIT*.md
 docker-compose*.yml
