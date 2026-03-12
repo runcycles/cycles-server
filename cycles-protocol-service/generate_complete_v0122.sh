@@ -154,8 +154,8 @@ public class ScopeDerivationService {{
         if (subject.getAgent() != null) {{
             append(scopes, path, "agent", subject.getAgent());
         }}
-        if (subject.getToolGroup() != null) {{
-            append(scopes, path, "toolGroup", subject.getToolGroup());
+        if (subject.getToolset() != null) {{
+            append(scopes, path, "toolset", subject.getToolset());
         }}
         
         return scopes;
