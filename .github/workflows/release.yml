@@ -16,16 +16,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
       - name: Extract version from POM
         id: version
         run: |
-          VERSION=$(mvn -f cycles-protocol-service/pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+          VERSION=$(sed -n '/<parent>/,/<\/parent>/d; s/.*<version>\(.*\)<\/version>.*/\1/p' cycles-protocol-service/pom.xml | head -1 | tr -d ' ')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: $VERSION"
 

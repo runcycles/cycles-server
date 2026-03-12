@@ -9,7 +9,7 @@ COPY cycles-protocol-service/cycles-protocol-service-data/pom.xml cycles-protoco
 COPY cycles-protocol-service/cycles-protocol-service-api/pom.xml cycles-protocol-service/cycles-protocol-service-api/pom.xml
 
 # Download dependencies (cached unless POMs change)
-RUN mvn -f cycles-protocol-service/pom.xml dependency:go-offline -B
+RUN mvn -f cycles-protocol-service/pom.xml dependency:resolve-plugins dependency:resolve -B
 
 # Copy source and build
 COPY cycles-protocol-service/ cycles-protocol-service/
