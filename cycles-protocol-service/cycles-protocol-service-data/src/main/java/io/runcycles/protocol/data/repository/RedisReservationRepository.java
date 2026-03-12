@@ -228,11 +228,9 @@ public class RedisReservationRepository {
         // Cache dry_run result (24 h TTL)
         if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
             String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
-            jedis.set(idemKey, objectMapper.writeValueAsString(dryRunResponse));
-            jedis.pexpire(idemKey, 86400000L);
+            jedis.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(dryRunResponse));
             if (!payloadHash.isEmpty()) {
-                jedis.set(idemKey + ":hash", payloadHash);
-                jedis.pexpire(idemKey + ":hash", 86400000L);
+                jedis.psetex(idemKey + ":hash", 86400000L, payloadHash);
             }
         }
 
@@ -497,9 +495,6 @@ public class RedisReservationRepository {
                 ScanResult<String> scan = jedis.scan(cursor, params);
                 for (String key : scan.getResult()) {
                     try {
-                        String keyType = jedis.type(key);
-                        if (!"hash".equals(keyType)) continue;
-
                         Map<String, String> budget = jedis.hgetAll(key);
                         if (budget.isEmpty()) continue;
 
@@ -660,11 +655,9 @@ public class RedisReservationRepository {
             // Store idempotency result (24 h TTL)
             if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
                 String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
-                jedis.set(idemKey, objectMapper.writeValueAsString(response));
-                jedis.pexpire(idemKey, 86400000L);
+                jedis.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(response));
                 if (!payloadHash.isEmpty()) {
-                    jedis.set(idemKey + ":hash", payloadHash);
-                    jedis.pexpire(idemKey + ":hash", 86400000L);
+                    jedis.psetex(idemKey + ":hash", 86400000L, payloadHash);
                 }
             }
 
@@ -910,7 +903,8 @@ public class RedisReservationRepository {
             case "RESERVATION_FINALIZED":
                 throw CyclesProtocolException.reservationFinalized("Reservation already finalized");
             case "BUDGET_NOT_FOUND":
-                throw CyclesProtocolException.budgetNotFound("Incorrect budget owner scope");
+                String budgetScope = response.containsKey("scope") ? response.get("scope").toString() : "unknown";
+                throw CyclesProtocolException.budgetNotFound(budgetScope);
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
             case "UNIT_MISMATCH":
