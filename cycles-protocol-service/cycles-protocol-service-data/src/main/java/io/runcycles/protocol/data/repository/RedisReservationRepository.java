@@ -458,11 +458,10 @@ public class RedisReservationRepository {
                             if (result.size() >= limit) {
                                 String nextCursor = scan.getCursor();
                                 if ("0".equals(nextCursor)) nextCursor = null;
-                                // hasMore is always true here: we stopped early due to limit,
-                                // so there may be unprocessed keys in this or future scan pages.
+                                // Spec: has_more is true only when next_cursor is present
                                 return ReservationListResponse.builder()
                                     .reservations(result)
-                                    .hasMore(true)
+                                    .hasMore(nextCursor != null)
                                     .nextCursor(nextCursor)
                                     .build();
                             }
@@ -539,11 +538,10 @@ public class RedisReservationRepository {
                         if (balances.size() >= limit) {
                             String nextCursor = scan.getCursor();
                             if ("0".equals(nextCursor)) nextCursor = null;
-                            // hasMore is always true here: we stopped early due to limit,
-                            // so there may be unprocessed keys in this or future scan pages.
+                            // Spec: has_more is true only when next_cursor is present
                             return BalanceResponse.builder()
                                 .balances(balances)
-                                .hasMore(true)
+                                .hasMore(nextCursor != null)
                                 .nextCursor(nextCursor)
                                 .build();
                         }
@@ -718,7 +716,6 @@ public class RedisReservationRepository {
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
-                .charged(new Amount(request.getActual().getUnit(), request.getActual().getAmount()))
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
