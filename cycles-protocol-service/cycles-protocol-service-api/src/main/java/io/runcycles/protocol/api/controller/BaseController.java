@@ -33,8 +33,8 @@ abstract public class BaseController {
 
     public void validateIdempotencyHeader(String headerKey, String bodyKey) {
         if (headerKey != null && bodyKey != null && !headerKey.equals(bodyKey)) {
-            throw new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH,
-                "X-Idempotency-Key header does not match idempotency_key in request body", 409);
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "X-Idempotency-Key header does not match idempotency_key in request body", 400);
         }
     }
 
