@@ -6,6 +6,7 @@ import io.runcycles.protocol.api.auth.ApiKeyAuthenticationFilter;
 import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.service.ReservationExpiryService;
 import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,7 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(
         controllers = ReservationController.class,
         excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE,
-                classes = ApiKeyAuthenticationFilter.class)
+                classes = {ApiKeyAuthenticationFilter.class, ReservationExpiryService.class})
 )
 @AutoConfigureMockMvc(addFilters = false)
 @Import(GlobalExceptionHandler.class)
