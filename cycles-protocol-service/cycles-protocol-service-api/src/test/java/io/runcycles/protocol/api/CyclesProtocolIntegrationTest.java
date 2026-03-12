@@ -376,6 +376,13 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         void shouldExtendReservation() {
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
 
+            // Capture original expiry and reserved amount
+            ResponseEntity<Map> before = get(
+                    "/v1/reservations/" + reservationId, API_KEY_SECRET_A);
+            long originalExpiry = ((Number) before.getBody().get("expires_at_ms")).longValue();
+            Map<String, Object> originalReserved = (Map<String, Object>) before.getBody().get("reserved");
+            long originalAmount = ((Number) originalReserved.get("amount")).longValue();
+
             ResponseEntity<Map> resp = post(
                     "/v1/reservations/" + reservationId + "/extend",
                     API_KEY_SECRET_A, extendBody(30000));
@@ -383,7 +390,16 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(resp.getStatusCode().value()).isEqualTo(200);
             Map body = resp.getBody();
             assertThat(body.get("status")).isEqualTo("ACTIVE");
-            assertThat(body.get("expires_at_ms")).isNotNull();
+            long newExpiry = ((Number) body.get("expires_at_ms")).longValue();
+            assertThat(newExpiry).isGreaterThan(originalExpiry);
+
+            // Spec: extend MUST NOT change reserved amount, subject, action, scope_path, affected_scopes
+            ResponseEntity<Map> after = get(
+                    "/v1/reservations/" + reservationId, API_KEY_SECRET_A);
+            Map<String, Object> afterReserved = (Map<String, Object>) after.getBody().get("reserved");
+            assertThat(((Number) afterReserved.get("amount")).longValue()).isEqualTo(originalAmount);
+            assertThat(after.getBody().get("scope_path")).isEqualTo(before.getBody().get("scope_path"));
+            assertThat(after.getBody().get("affected_scopes")).isEqualTo(before.getBody().get("affected_scopes"));
         }
 
         @Test
