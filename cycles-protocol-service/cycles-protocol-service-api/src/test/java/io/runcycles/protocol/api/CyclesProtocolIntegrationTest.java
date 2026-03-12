@@ -831,8 +831,10 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
                     Map.class
             );
 
-            assertThat(resp.getStatusCode().value()).isEqualTo(409);
-            assertThat(resp.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            // Spec: header/body idempotency key mismatch is a request validation error (400),
+            // not a replay payload mismatch (409 IDEMPOTENCY_MISMATCH)
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("INVALID_REQUEST");
         }
 
         @Test
