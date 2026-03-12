@@ -110,12 +110,10 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
     -- Minimum 24h TTL to avoid premature idempotency key recycling on short-lived reservations
     local idem_ttl = math.max(ttl_ms + grace_ms, 86400000)
-    redis.call('SET', idem_key, reservation_id)
-    redis.call('PEXPIRE', idem_key, idem_ttl)
+    redis.call('PSETEX', idem_key, idem_ttl, reservation_id)
     -- Store payload hash for idempotency mismatch detection (spec MUST)
     if payload_hash ~= "" then
-        redis.call('SET', idem_key .. ':hash', payload_hash)
-        redis.call('PEXPIRE', idem_key .. ':hash', idem_ttl)
+        redis.call('PSETEX', idem_key .. ':hash', idem_ttl, payload_hash)
     end
 end
 
