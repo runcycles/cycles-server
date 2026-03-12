@@ -4,9 +4,17 @@ Reference implementation of the [Cycles Budget Authority API](cycles-protocol-v0
 
 ## Quick Start
 
-### Docker (recommended)
+### One-command quickstart (recommended)
 
-**Prerequisites:** Docker
+Starts the full stack (Redis + Cycles Server + Admin Server), creates a tenant, API key, and budget, and verifies the full reserve/commit lifecycle:
+
+```bash
+./quickstart.sh
+```
+
+**Prerequisites:** Docker and Docker Compose v2+. No Java or Maven required.
+
+### Docker (server only)
 
 ```bash
 # Build from source and start (no local Java/Maven required)
