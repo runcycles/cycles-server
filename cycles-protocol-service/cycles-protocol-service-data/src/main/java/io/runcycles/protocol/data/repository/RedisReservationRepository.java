@@ -195,6 +195,9 @@ public class RedisReservationRepository {
             Map<String, String> budget = jedis.hgetAll(budgetKey);
             if (budget != null && !budget.isEmpty()) {
                 Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
+                long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
+                long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+                boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
                 balances.add(Balance.builder()
                     .scope(leafScope(scope))
                     .scopePath(scope)
@@ -202,6 +205,9 @@ public class RedisReservationRepository {
                     .reserved(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("reserved", "0"))))
                     .spent(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("spent", "0"))))
                     .allocated(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("allocated", "0"))))
+                    .debt(debtVal > 0 ? new Amount(unitEnum, debtVal) : null)
+                    .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unitEnum, overdraftLimitVal) : null)
+                    .isOverLimit(isOverLimit ? true : null)
                     .build());
             }
         }
