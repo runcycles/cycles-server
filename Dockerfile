@@ -2,18 +2,12 @@
 FROM maven:3.9-eclipse-temurin-21-alpine AS build
 WORKDIR /app
 
-# Copy POM files first for dependency layer caching
-COPY cycles-protocol-service/pom.xml cycles-protocol-service/pom.xml
-COPY cycles-protocol-service/cycles-protocol-service-model/pom.xml cycles-protocol-service/cycles-protocol-service-model/pom.xml
-COPY cycles-protocol-service/cycles-protocol-service-data/pom.xml cycles-protocol-service/cycles-protocol-service-data/pom.xml
-COPY cycles-protocol-service/cycles-protocol-service-api/pom.xml cycles-protocol-service/cycles-protocol-service-api/pom.xml
-
-# Download dependencies (cached unless POMs change)
-RUN mvn -f cycles-protocol-service/pom.xml dependency:resolve-plugins dependency:resolve -B
-
-# Copy source and build
+# Copy source and build with Maven repository cache mount
+# BuildKit caches ~/.m2/repository across builds so dependencies
+# are only downloaded once, even when source files change
 COPY cycles-protocol-service/ cycles-protocol-service/
-RUN mvn -f cycles-protocol-service/pom.xml clean package -DskipTests -B
+RUN --mount=type=cache,target=/root/.m2/repository \
+    mvn -f cycles-protocol-service/pom.xml clean package -DskipTests -B
 
 # ---- Runtime stage ----
 FROM eclipse-temurin:21-jre-alpine
