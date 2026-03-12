@@ -39,17 +39,12 @@ API_KEY=$(curl -s -X POST http://localhost:7979/v1/admin/api-keys \
   }' | grep -o '"key_secret":"[^"]*"' | cut -d'"' -f4)
 echo "       Key: $API_KEY"
 
-# 5. Create and fund a budget ($1.00 = 100,000,000 microcents)
-echo "[5/6] Creating and funding budget (\$1.00)..."
+# 5. Create a budget ($1.00 = 100,000,000 microcents)
+echo "[5/6] Creating budget (\$1.00)..."
 curl -s -X POST http://localhost:7979/v1/admin/budgets \
   -H "Content-Type: application/json" \
   -H "X-Cycles-API-Key: $API_KEY" \
   -d '{"scope": "tenant:acme-corp", "unit": "USD_MICROCENTS", "allocated": {"amount": 100000000, "unit": "USD_MICROCENTS"}}' > /dev/null
-
-curl -s -X POST "http://localhost:7979/v1/admin/budgets/tenant:acme-corp/USD_MICROCENTS/fund" \
-  -H "Content-Type: application/json" \
-  -H "X-Cycles-API-Key: $API_KEY" \
-  -d '{"operation": "CREDIT", "amount": {"amount": 100000000, "unit": "USD_MICROCENTS"}, "idempotency_key": "qs-fund-001"}' > /dev/null
 
 # 6. Verify: reserve → commit → check balance
 echo "[6/6] Verifying reserve → commit → balance..."
