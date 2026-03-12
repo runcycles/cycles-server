@@ -584,6 +584,30 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void shouldReturnDenyWithReasonCodeWhenDebtOutstanding() {
+            // Spec: /decide SHOULD return decision=DENY with reason_code=DEBT_OUTSTANDING when debt > 0
+            // Create debt: drain budget then overdraft commit
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+
+            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
+            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
+            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
+            post("/v1/reservations/" + overdraftResId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+            // debt > 0 now
+
+            // /decide MUST NOT return 409, SHOULD return 200 with decision=DENY
+            ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A,
+                    decisionBody(TENANT_A, 100));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("DENY");
+            assertThat(resp.getBody().get("reason_code")).isEqualTo("DEBT_OUTSTANDING");
+        }
+
+        @Test
         void shouldReturnAffectedScopesInDecision() {
             ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A,
                     decisionBody(TENANT_A, 1000));
@@ -894,6 +918,43 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(resp1.getStatusCode().value()).isEqualTo(200);
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp1.getBody().get("decision")).isEqualTo(resp2.getBody().get("decision"));
+        }
+
+        @Test
+        void shouldRejectReservationIdempotencyMismatch() {
+            // Spec: same key with different payload MUST return 409 IDEMPOTENCY_MISMATCH
+            Map<String, Object> body1 = reservationBody(TENANT_A, 1000);
+            String sharedKey = (String) body1.get("idempotency_key");
+
+            // First request succeeds
+            ResponseEntity<Map> resp1 = post("/v1/reservations", API_KEY_SECRET_A, body1);
+            assertThat(resp1.getStatusCode().value()).isEqualTo(200);
+
+            // Second request with same key but different amount
+            Map<String, Object> body2 = reservationBody(TENANT_A, 2000);
+            body2.put("idempotency_key", sharedKey);
+
+            ResponseEntity<Map> resp2 = post("/v1/reservations", API_KEY_SECRET_A, body2);
+            assertThat(resp2.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp2.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
+        @Test
+        void shouldRejectEventIdempotencyMismatch() {
+            // Spec: same key with different payload MUST return 409 IDEMPOTENCY_MISMATCH
+            Map<String, Object> body1 = eventBody(TENANT_A, 500);
+            String sharedKey = (String) body1.get("idempotency_key");
+
+            ResponseEntity<Map> resp1 = post("/v1/events", API_KEY_SECRET_A, body1);
+            assertThat(resp1.getStatusCode().value()).isEqualTo(201);
+
+            // Same key, different amount
+            Map<String, Object> body2 = eventBody(TENANT_A, 999);
+            body2.put("idempotency_key", sharedKey);
+
+            ResponseEntity<Map> resp2 = post("/v1/events", API_KEY_SECRET_A, body2);
+            assertThat(resp2.getStatusCode().value()).isEqualTo(409);
+            assertThat(resp2.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
         }
 
         private HttpHeaders headersWithIdempotencyKey(
@@ -1731,6 +1792,44 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             body.put("phantom_field", "nope");
 
             ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectUnknownFieldsInReleaseBody() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            Map<String, Object> body = releaseBody();
+            body.put("extra_field", "not-in-spec");
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/release",
+                    API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectUnknownFieldsInExtendBody() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+
+            Map<String, Object> body = extendBody(30000);
+            body.put("bogus", true);
+
+            ResponseEntity<Map> resp = post(
+                    "/v1/reservations/" + reservationId + "/extend",
+                    API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+        }
+
+        @Test
+        void shouldRejectUnknownFieldsInDecideBody() {
+            Map<String, Object> body = decisionBody(TENANT_A, 1000);
+            body.put("unknown_decide_field", 42);
+
+            ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A, body);
 
             assertThat(resp.getStatusCode().value()).isEqualTo(400);
         }
