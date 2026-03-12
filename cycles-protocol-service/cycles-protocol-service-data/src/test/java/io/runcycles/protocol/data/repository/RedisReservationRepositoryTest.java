@@ -21,6 +21,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -264,6 +265,7 @@ class RedisReservationRepositoryTest {
         @Test
         void shouldReturnTenantForExistingReservation() {
             when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
             when(jedis.hget("reservation:res_abc123", "tenant")).thenReturn("acme-corp");
 
             String tenant = repository.findReservationTenantById("abc123");
@@ -274,6 +276,7 @@ class RedisReservationRepositoryTest {
         @Test
         void shouldThrowNotFoundWhenTenantNull() {
             when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
             when(jedis.hget("reservation:res_unknown", "tenant")).thenReturn(null);
 
             assertThatThrownBy(() -> repository.findReservationTenantById("unknown"))
@@ -300,6 +303,7 @@ class RedisReservationRepositoryTest {
         @Test
         void shouldThrowNotFoundWhenEmpty() {
             when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
             when(jedis.hgetAll("reservation:res_missing")).thenReturn(Map.of());
 
             assertThatThrownBy(() -> repository.getReservationById("missing"))
@@ -310,6 +314,7 @@ class RedisReservationRepositoryTest {
         @Test
         void shouldThrowNotFoundWhenNull() {
             when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
             when(jedis.hgetAll("reservation:res_gone")).thenReturn(null);
 
             assertThatThrownBy(() -> repository.getReservationById("gone"))

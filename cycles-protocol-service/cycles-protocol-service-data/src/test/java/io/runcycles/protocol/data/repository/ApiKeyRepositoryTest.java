@@ -22,6 +22,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -37,13 +38,13 @@ class ApiKeyRepositoryTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        // Inject real ObjectMapper via reflection (field injection)
         var field = ApiKeyRepository.class.getDeclaredField("objectMapper");
         field.setAccessible(true);
         field.set(repository, objectMapper);
     }
 
     // ---- extractPrefix ----
+    // Logic: indexOf('_') → substring(0, min(idx+6, len)); no underscore → substring(0, min(10, len))
 
     @Nested
     @DisplayName("extractPrefix")
@@ -51,24 +52,28 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldExtractPrefixWithUnderscore() {
+            // idx=3, idx+6=9 → "cyc_live_"
             assertThat(repository.extractPrefix("cyc_live_validkey12345678901234567890"))
-                    .isEqualTo("cyc_li");
+                    .isEqualTo("cyc_live_");
         }
 
         @Test
         void shouldExtractPrefixWithoutUnderscore() {
+            // no underscore → substring(0, min(10, 11)) = "shortkey12"
             assertThat(repository.extractPrefix("shortkey123"))
                     .isEqualTo("shortkey12");
         }
 
         @Test
         void shouldHandleShortKeyWithUnderscore() {
+            // idx=1, idx+6=7 → min(7, 5) = 5 → "k_abc"
             assertThat(repository.extractPrefix("k_abc"))
                     .isEqualTo("k_abc");
         }
 
         @Test
         void shouldHandleVeryShortKeyWithoutUnderscore() {
+            // no underscore → substring(0, min(10, 3)) = "abc"
             assertThat(repository.extractPrefix("abc"))
                     .isEqualTo("abc");
         }
@@ -111,13 +116,19 @@ class ApiKeyRepositoryTest {
     class Validate {
 
         private final String secret = "cyc_live_testkey1234567890";
-        private final String prefix = "cyc_li";
+        // extractPrefix: idx=3 (first '_'), idx+6=9 → "cyc_live_"
+        private final String prefix = "cyc_live_";
         private final String keyId = "key-001";
         private final String hash = BCrypt.hashpw(secret, BCrypt.gensalt());
 
+        private void stubJedis() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+        }
+
         @Test
         void shouldReturnValidForActiveKey() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             ApiKey apiKey = ApiKey.builder()
@@ -138,7 +149,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidWhenPrefixNotFound() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null);
 
             ApiKeyValidationResponse result = repository.validate(secret);
@@ -149,7 +160,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidWhenKeyDataNotFound() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
             when(jedis.get("apikey:" + keyId)).thenReturn(null);
 
@@ -161,7 +172,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidForRevokedKey() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             ApiKey apiKey = ApiKey.builder()
@@ -177,7 +188,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidForExpiredKey() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             ApiKey apiKey = ApiKey.builder()
@@ -194,7 +205,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidForWrongSecret() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             String differentHash = BCrypt.hashpw("different_secret", BCrypt.gensalt());
@@ -211,7 +222,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidWhenTenantBlank() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             ApiKey apiKey = ApiKey.builder()
@@ -227,7 +238,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidForSuspendedTenant() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             ApiKey apiKey = ApiKey.builder()
@@ -245,7 +256,7 @@ class ApiKeyRepositoryTest {
 
         @Test
         void shouldReturnInvalidForClosedTenant() throws Exception {
-            when(jedisPool.getResource()).thenReturn(jedis);
+            stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
             ApiKey apiKey = ApiKey.builder()
