@@ -65,14 +65,12 @@ end
 -- Store idempotency result (TTL = remaining reservation lifetime after extension)
 if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant ~= nil then
     local idem_key = "idem:" .. tenant .. ":extend:" .. reservation_id .. ":" .. idempotency_key
-    redis.call('SET', idem_key, result)
     local idem_ttl = new_expires_at - now
     if idem_ttl > 0 then
-        redis.call('PEXPIRE', idem_key, idem_ttl)
+        redis.call('PSETEX', idem_key, idem_ttl, result)
         -- Store payload hash for idempotency mismatch detection (spec MUST)
         if payload_hash ~= "" then
-            redis.call('SET', idem_key .. ':hash', payload_hash)
-            redis.call('PEXPIRE', idem_key .. ':hash', idem_ttl)
+            redis.call('PSETEX', idem_key .. ':hash', idem_ttl, payload_hash)
         end
     end
 end

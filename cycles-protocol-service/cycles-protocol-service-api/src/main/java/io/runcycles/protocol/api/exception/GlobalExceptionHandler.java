@@ -9,6 +9,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.*;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -18,6 +20,7 @@ import java.util.stream.Collectors;
 
 /** Cycles Protocol v0.1.23 - Exception Handler */
 @RestControllerAdvice
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class GlobalExceptionHandler {
     private static final Logger LOG = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
@@ -79,6 +82,7 @@ public class GlobalExceptionHandler {
 
         LOG.error("Unhandled exception: clazz={}", ex.getClass(), ex);
         if (ex instanceof CyclesProtocolException){
+            LOG.warn("CyclesProtocolException reached generic handler unexpectedly; check @ControllerAdvice ordering. class={}", ex.getClass().getName());
             return handleCyclesException((CyclesProtocolException) ex, request);
         }
         else {
