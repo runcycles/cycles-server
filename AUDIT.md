@@ -64,7 +64,7 @@ Two-pass audit covering:
 ### Request/Response Schemas (all match)
 - All 6 request schemas match spec (fields, types, constraints, defaults)
 - All 8 response schemas match spec (fields, required markers, types)
-- All 12 error codes match spec enum exactly
+- All 12 spec error codes present; server adds 2 extra (BUDGET_FROZEN, BUDGET_CLOSED) for admin-managed budget states
 - All 4 status enums match spec
 - `Subject` anyOf validation correctly enforced via `hasAtLeastOneStandardField()`
 - `additionalProperties: false` correctly enforced via `@JsonIgnoreProperties(ignoreUnknown = false)`
@@ -102,8 +102,8 @@ Two-pass audit covering:
 
 ### Response Headers (fully correct)
 - `X-Request-Id` set on every response (including errors) via `RequestIdFilter` — header set before `filterChain.doFilter()`, guaranteed present on all responses
-- `X-Cycles-Tenant` set on every authenticated response via `RequestIdFilter`
-- `X-RateLimit-Remaining` / `X-RateLimit-Reset` set on `/v1/decide` (optional in v0)
+- `X-Cycles-Tenant` set on every authenticated response via `ApiKeyAuthenticationFilter`
+- `X-RateLimit-Remaining` / `X-RateLimit-Reset` set on all `/v1/` paths via `RateLimitHeaderFilter` (optional in v0; sentinel values -1/0 signal unlimited)
 
 ### Error Semantics (all correct)
 - BUDGET_EXCEEDED → 409
