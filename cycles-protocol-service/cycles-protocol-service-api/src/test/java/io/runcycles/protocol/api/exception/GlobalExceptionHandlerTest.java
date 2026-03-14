@@ -11,6 +11,7 @@ import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.core.MethodParameter;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 
 import java.util.Map;
@@ -96,11 +97,13 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void shouldHandleValidationException() {
+    void shouldHandleValidationException() throws Exception {
         org.springframework.validation.BeanPropertyBindingResult bindingResult =
             new org.springframework.validation.BeanPropertyBindingResult(new Object(), "request");
         bindingResult.addError(new org.springframework.validation.FieldError("request", "amount", "must not be null"));
-        MethodArgumentNotValidException ex = new MethodArgumentNotValidException(bindingResult);
+        MethodParameter param = new MethodParameter(
+                Object.class.getDeclaredMethod("toString"), -1);
+        MethodArgumentNotValidException ex = new MethodArgumentNotValidException(param, bindingResult);
 
         ResponseEntity<ErrorResponse> response = handler.handleValidationException(ex, request);
 
