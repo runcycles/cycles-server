@@ -247,7 +247,6 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("COMMITTED"));
         }
-    }
 
         @Test
         void shouldRejectCommitIdempotencyKeyMismatch() throws Exception {
@@ -288,7 +287,6 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("RELEASED"));
         }
-    }
 
         @Test
         void shouldRejectReleaseIdempotencyKeyMismatch() throws Exception {
@@ -329,7 +327,6 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("ACTIVE"));
         }
-    }
 
         @Test
         void shouldRejectExtendIdempotencyKeyMismatch() throws Exception {
