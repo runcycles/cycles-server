@@ -99,7 +99,7 @@ A subject identifies who is spending budget. Fields form a **scope hierarchy**:
 tenant → workspace → app → workflow → agent → toolset
 ```
 
-At least one standard field is required (`tenant` is typical); a subject containing only `dimensions` is invalid (`400 INVALID_REQUEST`). Intermediate gaps are filled with `default`. A reservation against `{tenant, agent}` is enforced at **every ancestor scope** — the tenant-level budget, any workspace-level budget, and the agent-level budget must all have sufficient remaining balance.
+At least one standard field is required (`tenant` is typical); a subject containing only `dimensions` is invalid (`400 INVALID_REQUEST`). Only explicitly provided levels are included in the scope path — intermediate gaps are skipped, not filled with "default". A reservation is enforced at **every derived scope that has a budget** — at least one scope must have a budget defined.
 
 ```json
 {
@@ -109,13 +109,11 @@ At least one standard field is required (`tenant` is typical); a subject contain
 }
 ```
 
-Derived scopes (all checked on every operation):
+Derived scopes (checked on every operation; scopes without budgets are skipped):
 ```
 tenant:acme
 tenant:acme/workspace:prod
-tenant:acme/workspace:prod/app:default
-tenant:acme/workspace:prod/app:default/workflow:default
-tenant:acme/workspace:prod/app:default/workflow:default/agent:summarizer-v2
+tenant:acme/workspace:prod/agent:summarizer-v2
 ```
 
 An optional `dimensions` map is accepted for custom taxonomies (e.g. `cost_center`, `department`). v0 servers accept and round-trip `dimensions` but MAY ignore it for budgeting decisions.

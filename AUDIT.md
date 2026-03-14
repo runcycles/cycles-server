@@ -37,7 +37,7 @@ Two-pass audit covering:
 - All 12 error codes, HTTP status mappings, and error semantics
 - Auth/tenancy enforcement across all endpoints
 - Idempotency per-endpoint namespacing, replay, and payload mismatch detection
-- Scope derivation canonical ordering and gap-filling
+- Scope derivation canonical ordering (gaps skipped, not filled)
 - Response headers (X-Request-Id, X-Cycles-Tenant, X-RateLimit-*)
 - Lua script atomicity for reserve, commit, release, extend, event, expire
 - Dry-run response rules (reservation_id/expires_at_ms absent, affected_scopes populated)
@@ -83,7 +83,8 @@ Two-pass audit covering:
 
 ### Scope Derivation (fully correct)
 - Canonical ordering: tenant → workspace → app → workflow → agent → toolset
-- Gap-filling with "default" for intermediate levels
+- Gaps skipped — only explicitly provided subject levels are included (no "default" filling)
+- Scopes without budgets are skipped during enforcement; at least one scope must have a budget
 - Scope paths lowercased for stable canonicalization
 - Subject.dimensions round-tripped through JSON serialization in ReservationDetail
 
