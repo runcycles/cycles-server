@@ -1232,6 +1232,50 @@ class RedisReservationRepositoryTest {
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_EXCEEDED);
         }
+
+        @Test
+        void shouldThrowOnEventBudgetNotFound() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("error", "BUDGET_NOT_FOUND", "scope", "tenant:acme"));
+            when(jedis.eval(eq("EVENT_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            EventCreateRequest request = EventCreateRequest.builder()
+                    .idempotencyKey("event-nobudget")
+                    .subject(defaultSubject())
+                    .action(defaultAction())
+                    .actual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L))
+                    .build();
+
+            assertThatThrownBy(() -> repository.createEvent(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+        }
+
+        @Test
+        void shouldThrowOnEventIdempotencyMismatch() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("error", "IDEMPOTENCY_MISMATCH"));
+            when(jedis.eval(eq("EVENT_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            EventCreateRequest request = EventCreateRequest.builder()
+                    .idempotencyKey("event-mismatch")
+                    .subject(defaultSubject())
+                    .action(defaultAction())
+                    .actual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L))
+                    .build();
+
+            assertThatThrownBy(() -> repository.createEvent(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.IDEMPOTENCY_MISMATCH);
+        }
     }
 
     // ---- getBalances ----
@@ -1297,6 +1341,130 @@ class RedisReservationRepositoryTest {
 
             assertThat(response.getBalances()).isEmpty();
             assertThat(response.getHasMore()).isFalse();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByAppScope() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> myappBudget = budgetMap(50000, 45000, 5000, 0);
+            myappBudget.put("scope", "tenant:acme/app:myapp");
+            Map<String, String> otherappBudget = budgetMap(30000, 25000, 5000, 0);
+            otherappBudget.put("scope", "tenant:acme/app:otherapp");
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of(
+                    "budget:tenant:acme/app:myapp:USD_MICROCENTS",
+                    "budget:tenant:acme/app:otherapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(myappBudget);
+            when(jedis.hgetAll("budget:tenant:acme/app:otherapp:USD_MICROCENTS")).thenReturn(otherappBudget);
+
+            BalanceResponse response = repository.getBalances("acme", null, "myapp", null, null, null, false, 100, null);
+
+            assertThat(response.getBalances()).hasSize(1);
+            assertThat(response.getBalances().get(0).getScopePath()).isEqualTo("tenant:acme/app:myapp");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldIncludeDebtAndOverdraftWhenPresent() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> budget = budgetMap(100000, 95000, 5000, 0);
+            budget.put("debt", "500");
+            budget.put("overdraft_limit", "10000");
+            budget.put("is_over_limit", "true");
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
+
+            assertThat(response.getBalances()).hasSize(1);
+            Balance b = response.getBalances().get(0);
+            assertThat(b.getDebt()).isNotNull();
+            assertThat(b.getDebt().getAmount()).isEqualTo(500L);
+            assertThat(b.getOverdraftLimit()).isNotNull();
+            assertThat(b.getOverdraftLimit().getAmount()).isEqualTo(10000L);
+            assertThat(b.getIsOverLimit()).isTrue();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldRespectLimitOnBalances() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> b1 = budgetMap(100000, 95000, 5000, 0);
+            b1.put("scope", "tenant:acme");
+            Map<String, String> b2 = budgetMap(50000, 45000, 5000, 0);
+            b2.put("scope", "tenant:acme/app:myapp");
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of(
+                    "budget:tenant:acme:USD_MICROCENTS",
+                    "budget:tenant:acme/app:myapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("55");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(b1);
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(b2);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 1, null);
+
+            assertThat(response.getBalances()).hasSize(1);
+            assertThat(response.getHasMore()).isTrue();
+            assertThat(response.getNextCursor()).isEqualTo("55");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldSkipEmptyBudgetEntries() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(Map.of());
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
+
+            assertThat(response.getBalances()).isEmpty();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldOmitDebtAndOverdraftWhenZero() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> budget = budgetMap(100000, 95000, 5000, 0);
+            // debt=0, overdraft_limit=0, is_over_limit=false (defaults from budgetMap)
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
+
+            assertThat(response.getBalances()).hasSize(1);
+            Balance b = response.getBalances().get(0);
+            assertThat(b.getDebt()).isNull();
+            assertThat(b.getOverdraftLimit()).isNull();
+            assertThat(b.getIsOverLimit()).isNull();
         }
     }
 
