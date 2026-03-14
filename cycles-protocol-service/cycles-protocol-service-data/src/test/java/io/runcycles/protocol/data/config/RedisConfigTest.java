@@ -35,7 +35,7 @@ class RedisConfigTest {
         ObjectMapper mapper = redisConfig.objectMapper();
 
         assertThat(mapper.getRegisteredModuleIds())
-                .anyMatch(id -> id.contains("jackson-datatype-jsr310"));
+                .anyMatch(id -> id.toString().contains("jackson-datatype-jsr310"));
     }
 
     @Test
