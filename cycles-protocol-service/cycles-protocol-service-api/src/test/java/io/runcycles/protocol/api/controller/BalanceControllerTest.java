@@ -87,4 +87,99 @@ class BalanceControllerTest {
         mockMvc.perform(get("/v1/balances").param("workspace", "dev"))
                 .andExpect(status().isOk());
     }
+
+    @Test
+    void shouldQueryWithWorkspaceFilterOnly() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), eq("ws1"), any(), any(), any(), any(), anyBoolean(), anyInt(), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances").param("workspace", "ws1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.balances").isArray());
+    }
+
+    @Test
+    void shouldQueryWithAppFilter() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), eq("my-app"), any(), any(), any(), anyBoolean(), anyInt(), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances").param("app", "my-app"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldQueryWithWorkflowFilter() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), any(), eq("wf-1"), any(), any(), anyBoolean(), anyInt(), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances").param("workflow", "wf-1"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldQueryWithAgentFilter() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), any(), any(), eq("agent-x"), any(), anyBoolean(), anyInt(), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances").param("agent", "agent-x"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldQueryWithToolsetFilter() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), any(), any(), any(), eq("tools-1"), anyBoolean(), anyInt(), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances").param("toolset", "tools-1"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldQueryWithIncludeChildrenTrue() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), any(), any(), any(), any(), eq(true), anyInt(), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances")
+                        .param("tenant", TENANT)
+                        .param("include_children", "true"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldQueryWithCustomLimit() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), any(), any(), any(), any(), anyBoolean(), eq(10), any()))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances")
+                        .param("tenant", TENANT)
+                        .param("limit", "10"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void shouldQueryWithCursorParameter() throws Exception {
+        BalanceResponse resp = BalanceResponse.builder()
+                .balances(Collections.emptyList()).hasMore(false).build();
+        when(repository.getBalances(eq(TENANT), any(), any(), any(), any(), any(), anyBoolean(), anyInt(), eq("cursor_abc")))
+                .thenReturn(resp);
+
+        mockMvc.perform(get("/v1/balances")
+                        .param("tenant", TENANT)
+                        .param("cursor", "cursor_abc"))
+                .andExpect(status().isOk());
+    }
 }

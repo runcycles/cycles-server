@@ -203,6 +203,15 @@ class ReservationControllerTest {
         }
 
         @Test
+        void shouldReturn403ForTenantMismatchOnGet() throws Exception {
+            when(repository.findReservationTenantById("res_other")).thenReturn("other-tenant");
+
+            mockMvc.perform(get("/v1/reservations/res_other"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+        }
+
+        @Test
         void shouldReturn404ForUnknownReservation() throws Exception {
             when(repository.findReservationTenantById("res_unknown"))
                     .thenThrow(CyclesProtocolException.notFound("res_unknown"));
@@ -238,6 +247,22 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("COMMITTED"));
         }
+
+        @Test
+        void shouldRejectCommitIdempotencyKeyMismatch() throws Exception {
+            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
+
+            CommitRequest req = new CommitRequest();
+            req.setActual(new Amount(Enums.UnitEnum.TOKENS, 500L));
+            req.setIdempotencyKey("body-key");
+
+            mockMvc.perform(post("/v1/reservations/res_123/commit")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header("X-Idempotency-Key", "header-key")
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+        }
     }
 
     @Nested
@@ -261,6 +286,21 @@ class ReservationControllerTest {
                             .content(objectMapper.writeValueAsString(req)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("RELEASED"));
+        }
+
+        @Test
+        void shouldRejectReleaseIdempotencyKeyMismatch() throws Exception {
+            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
+
+            ReleaseRequest req = ReleaseRequest.builder()
+                    .idempotencyKey("body-key").build();
+
+            mockMvc.perform(post("/v1/reservations/res_123/release")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header("X-Idempotency-Key", "header-key")
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
         }
     }
 
@@ -286,6 +326,22 @@ class ReservationControllerTest {
                             .content(objectMapper.writeValueAsString(req)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("ACTIVE"));
+        }
+
+        @Test
+        void shouldRejectExtendIdempotencyKeyMismatch() throws Exception {
+            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
+
+            ReservationExtendRequest req = new ReservationExtendRequest();
+            req.setExtendByMs(60000L);
+            req.setIdempotencyKey("body-key");
+
+            mockMvc.perform(post("/v1/reservations/res_123/extend")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header("X-Idempotency-Key", "header-key")
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
         }
     }
 
@@ -314,6 +370,47 @@ class ReservationControllerTest {
             mockMvc.perform(get("/v1/reservations").param("status", "BOGUS"))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+        }
+
+        @Test
+        void shouldListWithActiveStatusFilter() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), eq("ACTIVE"), any(), any(), any(), any(), any(), eq(50), any()))
+                    .thenReturn(resp);
+
+            mockMvc.perform(get("/v1/reservations").param("status", "ACTIVE"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.has_more").value(false));
+        }
+
+        @Test
+        void shouldListWithCommittedStatusFilter() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), eq("COMMITTED"), any(), any(), any(), any(), any(), eq(50), any()))
+                    .thenReturn(resp);
+
+            mockMvc.perform(get("/v1/reservations").param("status", "COMMITTED"))
+                    .andExpect(status().isOk());
+        }
+
+        @Test
+        void shouldListWithExplicitTenantMatchingAuth() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+                    .thenReturn(resp);
+
+            mockMvc.perform(get("/v1/reservations").param("tenant", TENANT))
+                    .andExpect(status().isOk());
+        }
+
+        @Test
+        void shouldRejectListWithTenantMismatch() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("tenant", "other-tenant"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error").value("FORBIDDEN"));
         }
 
         @Test
