@@ -1274,7 +1274,7 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             try (Jedis jedis = jedisPool.getResource()) {
                 String revokedSecret = "cyc_revoked123456789abc";
                 String hash = BCrypt.hashpw(revokedSecret, BCrypt.gensalt());
-                String prefix = revokedSecret.substring(0, revokedSecret.indexOf('_') + 6);
+                String prefix = revokedSecret.substring(0, Math.min(14, revokedSecret.length()));
 
                 ApiKey apiKey = ApiKey.builder()
                         .keyId("key-revoked")

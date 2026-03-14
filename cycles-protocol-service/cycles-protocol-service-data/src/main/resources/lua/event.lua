@@ -53,6 +53,15 @@ for _, scope in ipairs(affected_scopes) do
         return cjson.encode({error = "BUDGET_NOT_FOUND", scope = scope})
     end
 
+    -- Check budget status (consistent with admin FUND_LUA)
+    local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
+    if budget_status == 'FROZEN' then
+        return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
+    end
+    if budget_status == 'CLOSED' then
+        return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
+    end
+
     -- Spec NORMATIVE: event actual.unit must be supported for the target scope
     local budget_unit = redis.call('HGET', budget_key, 'unit')
     if budget_unit and budget_unit ~= unit then

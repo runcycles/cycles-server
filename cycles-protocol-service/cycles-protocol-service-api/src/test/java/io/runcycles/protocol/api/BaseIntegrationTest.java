@@ -94,10 +94,9 @@ public abstract class BaseIntegrationTest {
         jedis.set("apikey:" + keyId, objectMapper.writeValueAsString(apiKey));
     }
 
+    private static final int PREFIX_LENGTH = 14;
     private String extractPrefix(String keySecret) {
-        int idx = keySecret.indexOf('_');
-        return idx > 0 ? keySecret.substring(0, Math.min(idx + 6, keySecret.length()))
-                       : keySecret.substring(0, Math.min(10, keySecret.length()));
+        return keySecret.substring(0, Math.min(PREFIX_LENGTH, keySecret.length()));
     }
 
     protected void seedBudget(Jedis jedis, String tenant, String unit, long allocated) {
