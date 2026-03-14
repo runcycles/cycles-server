@@ -48,14 +48,14 @@ class ScopeDerivationServiceTest {
         }
 
         @Test
-        void shouldFillGapsWithDefault() {
+        void shouldSkipGapsInsteadOfFillingWithDefault() {
             Subject subject = new Subject();
             subject.setTenant("acme");
             subject.setAgent("summarizer-v2");
 
             String path = service.buildScopePath(subject);
 
-            assertThat(path).isEqualTo("tenant:acme/workspace:default/app:default/workflow:default/agent:summarizer-v2");
+            assertThat(path).isEqualTo("tenant:acme/agent:summarizer-v2");
         }
 
         @Test
@@ -90,7 +90,7 @@ class ScopeDerivationServiceTest {
 
             assertThatThrownBy(() -> service.buildScopePath(subject))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("at least tenant defined");
+                    .hasMessageContaining("at least one scope level defined");
         }
     }
 
@@ -125,7 +125,7 @@ class ScopeDerivationServiceTest {
         }
 
         @Test
-        void shouldDeriveScopesWithGaps() {
+        void shouldDeriveScopesSkippingGaps() {
             Subject subject = new Subject();
             subject.setTenant("acme");
             subject.setAgent("summarizer-v2");
@@ -134,10 +134,7 @@ class ScopeDerivationServiceTest {
 
             assertThat(scopes).containsExactly(
                     "tenant:acme",
-                    "tenant:acme/workspace:default",
-                    "tenant:acme/workspace:default/app:default",
-                    "tenant:acme/workspace:default/app:default/workflow:default",
-                    "tenant:acme/workspace:default/app:default/workflow:default/agent:summarizer-v2"
+                    "tenant:acme/agent:summarizer-v2"
             );
         }
 

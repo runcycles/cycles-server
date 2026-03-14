@@ -44,60 +44,68 @@ for i = 14, #ARGV do
 end
 
 -- Check all scopes first (fail fast, no mutations).
+-- Skip scopes without budgets — operators may only define budgets at certain levels.
 -- Spec: debt/is_over_limit checks only block *reservations*, not events.
 -- Events use their overage_policy to handle insufficient budget.
+local budgeted_scopes = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
 
-    if redis.call('EXISTS', budget_key) == 0 then
-        return cjson.encode({error = "BUDGET_NOT_FOUND", scope = scope})
-    end
+    -- Skip scopes without a budget (operator may only define budgets at certain levels)
+    if redis.call('EXISTS', budget_key) == 1 then
+        table.insert(budgeted_scopes, scope)
 
-    -- Check budget status (consistent with admin FUND_LUA)
-    local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
-    if budget_status == 'FROZEN' then
-        return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
-    end
-    if budget_status == 'CLOSED' then
-        return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
-    end
+        -- Check budget status (consistent with admin FUND_LUA)
+        local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
+        if budget_status == 'FROZEN' then
+            return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
+        end
+        if budget_status == 'CLOSED' then
+            return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
+        end
 
-    -- Spec NORMATIVE: event actual.unit must be supported for the target scope
-    local budget_unit = redis.call('HGET', budget_key, 'unit')
-    if budget_unit and budget_unit ~= unit then
-        return cjson.encode({error = "UNIT_MISMATCH", scope = scope,
-            expected = budget_unit, actual = unit})
-    end
+        -- Spec NORMATIVE: event actual.unit must be supported for the target scope
+        local budget_unit = redis.call('HGET', budget_key, 'unit')
+        if budget_unit and budget_unit ~= unit then
+            return cjson.encode({error = "UNIT_MISMATCH", scope = scope,
+                expected = budget_unit, actual = unit})
+        end
 
-    local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-    if remaining < amount then
-        if overage_policy == "REJECT" or overage_policy == "ALLOW_IF_AVAILABLE" then
-            -- Spec: ALLOW_IF_AVAILABLE MUST atomically apply the full actual amount
-            -- only if sufficient remaining exists; otherwise MUST return 409 BUDGET_EXCEEDED.
-            return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
-        elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-            -- Spec v0.1.23 NORMATIVE (EventCreateRequest.overage_policy):
-            -- "check if (current_debt + deficit) <= overdraft_limit across all derived scopes.
-            --  If no: server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED."
-            -- When overdraft_limit=0, no overdraft is permitted (behaves as ALLOW_IF_AVAILABLE).
-            -- Use math.max(remaining, 0) so deficit matches the mutation pass.
-            local funded = math.max(remaining, 0)
-            local deficit = amount - funded
-            local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-            local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-            if current_debt + deficit > overdraft_limit then
-                return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
-                    current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
+        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+        if remaining < amount then
+            if overage_policy == "REJECT" or overage_policy == "ALLOW_IF_AVAILABLE" then
+                -- Spec: ALLOW_IF_AVAILABLE MUST atomically apply the full actual amount
+                -- only if sufficient remaining exists; otherwise MUST return 409 BUDGET_EXCEEDED.
+                return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
+            elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
+                -- Spec v0.1.23 NORMATIVE (EventCreateRequest.overage_policy):
+                -- "check if (current_debt + deficit) <= overdraft_limit across all derived scopes.
+                --  If no: server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED."
+                -- When overdraft_limit=0, no overdraft is permitted (behaves as ALLOW_IF_AVAILABLE).
+                -- Use math.max(remaining, 0) so deficit matches the mutation pass.
+                local funded = math.max(remaining, 0)
+                local deficit = amount - funded
+                local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
+                local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
+                if current_debt + deficit > overdraft_limit then
+                    return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
+                        current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
+                end
             end
         end
     end
 end
 
--- All checks passed - debit full amount across all scopes
+-- At least one scope must have a budget
+if #budgeted_scopes == 0 then
+    return cjson.encode({error = "BUDGET_NOT_FOUND", scope = affected_scopes[#affected_scopes]})
+end
+
+-- All checks passed - debit full amount across budgeted scopes only
 local effective_amount = amount
 local t_now = redis.call('TIME')
 local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
-for _, scope in ipairs(affected_scopes) do
+for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
 
@@ -134,6 +142,7 @@ redis.call('HMSET', event_key,
     'unit', unit,
     'scope_path', scope_path,
     'affected_scopes', cjson.encode(affected_scopes),
+    'budgeted_scopes', cjson.encode(budgeted_scopes),
     'created_at', now,
     'idempotency_key', idempotency_key,
     'metrics_json', metrics_json,

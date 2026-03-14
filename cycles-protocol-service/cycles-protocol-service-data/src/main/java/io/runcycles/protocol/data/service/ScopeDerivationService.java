@@ -66,34 +66,21 @@ public class ScopeDerivationService {
         return BUDGET_PREFIX + buildScopePath(subject) + ":" + unit.name();
     }
     /**
-     * Core: derives ordered path segments up to the deepest defined level,
-     * filling intermediate gaps with "default".
-     * Example: ["tenant:acme", "workspace:dev", "app:default", "agent:summarizer-v2"]
+     * Core: derives ordered path segments for explicitly provided subject levels only.
+     * Levels not present in the subject are skipped (no gap-filling with "default").
+     * Example: {tenant:acme, agent:summarizer-v2} → ["tenant:acme", "agent:summarizer-v2"]
      */
     private List<String> buildSegments(Subject subject) {
-        int deepest = findDeepest(subject);
-        if (deepest < 0) {
-            throw new IllegalArgumentException("Subject must have at least tenant defined");
-        }
-
         List<String> segments = new ArrayList<>();
-        for (int i = 0; i <= deepest; i++) {
-            ScopeLevel level = HIERARCHY.get(i);
+        for (ScopeLevel level : HIERARCHY) {
             String value = level.extractor().apply(subject);
             if (value != null && !value.isBlank()) {
                 segments.add(level.name() + ":" + value.toLowerCase());
-            } else {
-                segments.add(level.name() + ":" + DEFAULT);
             }
         }
-        return segments;
-    }
-
-    private int findDeepest(Subject subject) {
-        for (int i = HIERARCHY.size() - 1; i >= 0; i--) {
-            String value = HIERARCHY.get(i).extractor().apply(subject);
-            if (value != null && !value.isBlank()) return i;
+        if (segments.isEmpty()) {
+            throw new IllegalArgumentException("Subject must have at least one scope level defined");
         }
-        return -1;
+        return segments;
     }
 }
