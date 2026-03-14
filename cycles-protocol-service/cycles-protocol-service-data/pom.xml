@@ -4,7 +4,7 @@
     <parent>
         <groupId>io.runcycles</groupId>
         <artifactId>cycles-protocol-service</artifactId>
-        <version>0.1.23.3</version>
+        <version>${revision}</version>
     </parent>
     <artifactId>cycles-protocol-service-data</artifactId>
     <name>Cycles Protocol Service Data</name>
