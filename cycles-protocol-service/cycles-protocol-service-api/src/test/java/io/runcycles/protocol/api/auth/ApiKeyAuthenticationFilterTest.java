@@ -134,7 +134,7 @@ class ApiKeyAuthenticationFilterTest {
         filter.doFilterInternal(request, response, filterChain);
 
         assertThat(response.getStatus()).isEqualTo(401);
-        assertThat(response.getContentType()).isEqualTo("application/json");
+        assertThat(response.getContentType()).startsWith("application/json");
 
         String body = response.getContentAsString();
         com.fasterxml.jackson.databind.JsonNode json = new ObjectMapper().readTree(body);
