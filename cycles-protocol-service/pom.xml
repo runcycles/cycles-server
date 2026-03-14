@@ -8,7 +8,7 @@
     </parent>
     <groupId>io.runcycles</groupId>
     <artifactId>cycles-protocol-service</artifactId>
-    <version>0.1.23.2</version>
+    <version>0.1.23.3</version>
     <packaging>pom</packaging>
     <name>Cycles Protocol Service</name>
     <description>Cycles Protocol Service API v0.1.23</description>
