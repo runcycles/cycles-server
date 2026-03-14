@@ -703,6 +703,48 @@ class RedisReservationRepositoryTest {
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.RESERVATION_FINALIZED);
         }
+
+        @Test
+        void shouldHandleMissingEstimateDataOnCommit() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget("reservation:res_resNoEst", "estimate_amount", "estimate_unit", "affected_scopes"))
+                    .thenReturn(Arrays.asList(null, null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(Map.of("charged", 3000));
+            when(jedis.eval(eq("COMMIT_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-noest");
+
+            CommitResponse response = repository.commitReservation("resNoEst", request);
+
+            assertThat(response.getStatus()).isEqualTo(Enums.CommitStatus.COMMITTED);
+            assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
+            assertThat(response.getReleased()).isNull();
+            assertThat(response.getBalances()).isNull();
+        }
+
+        @Test
+        void shouldThrowOnCommitNotFoundError() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget(anyString(), any(), any(), any()))
+                    .thenReturn(Arrays.asList("5000", "USD_MICROCENTS", "[\"tenant:acme\"]"));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("error", "NOT_FOUND", "message", "res-notfound"));
+            when(jedis.eval(eq("COMMIT_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-notfound");
+
+            assertThatThrownBy(() -> repository.commitReservation("res-notfound", request))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+        }
     }
 
     // ---- releaseReservation ----
@@ -813,6 +855,47 @@ class RedisReservationRepositoryTest {
             assertThatThrownBy(() -> repository.extendReservation("res-exp", request, "acme"))
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.RESERVATION_EXPIRED);
+        }
+
+        @Test
+        void shouldHandleMissingPrefetchDataOnExtend() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget("reservation:res_extNoPre", "estimate_unit", "affected_scopes"))
+                    .thenReturn(Arrays.asList(null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(Map.of("expires_at_ms", 1700000090000L));
+            when(jedis.eval(eq("EXTEND_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            ReservationExtendRequest request = new ReservationExtendRequest();
+            request.setExtendByMs(30000L);
+            request.setIdempotencyKey("extend-nopre");
+
+            ReservationExtendResponse response = repository.extendReservation("extNoPre", request, "acme");
+
+            assertThat(response.getStatus()).isEqualTo(Enums.ExtendStatus.ACTIVE);
+            assertThat(response.getExpiresAtMs()).isEqualTo(1700000090000L);
+            assertThat(response.getBalances()).isNull();
+        }
+
+        @Test
+        void shouldThrowOnExtendNotFoundError() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget(anyString(), any(), any()))
+                    .thenReturn(Arrays.asList("USD_MICROCENTS", null));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("error", "NOT_FOUND", "message", "res-notfound"));
+            when(jedis.eval(eq("EXTEND_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            ReservationExtendRequest request = new ReservationExtendRequest();
+            request.setExtendByMs(30000L);
+            request.setIdempotencyKey("extend-notfound");
+
+            assertThatThrownBy(() -> repository.extendReservation("res-notfound", request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
         }
     }
 
@@ -947,6 +1030,132 @@ class RedisReservationRepositoryTest {
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
             // Should not call deriveScopes since cached
             verify(scopeService, never()).deriveScopes(any());
+        }
+
+        @Test
+        void shouldDenyWhenBudgetFrozen() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> frozen = budgetMap(10000, 8000, 0, 2000);
+            frozen.put("status", "FROZEN");
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(frozen);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-frozen");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo("BUDGET_FROZEN");
+        }
+
+        @Test
+        void shouldDenyWhenOverdraftLimitExceeded() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> overLimit = budgetMap(10000, 8000, 0, 2000);
+            overLimit.put("is_over_limit", "true");
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(overLimit);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-overlimit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
+        }
+
+        @Test
+        void shouldDenyWhenDebtOutstanding() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> debtBudget = budgetMap(10000, 8000, 0, 2000);
+            debtBudget.put("debt", "1000");
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(debtBudget);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-debt");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo("DEBT_OUTSTANDING");
+        }
+
+        @Test
+        void shouldThrowIdempotencyMismatchOnHashMismatch() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            String cachedJson = "{\"decision\":\"ALLOW\",\"affected_scopes\":[\"tenant:acme\"]}";
+            when(jedis.get("idem:acme:decide:decide-mismatch")).thenReturn(cachedJson);
+            when(jedis.get("idem:acme:decide:decide-mismatch:hash")).thenReturn("different-hash-value");
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-mismatch");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            assertThatThrownBy(() -> repository.decide(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.IDEMPOTENCY_MISMATCH);
+        }
+
+        @Test
+        void shouldSkipScopesWithoutBudgets() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            // First scope has no budget, second has sufficient budget
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(Map.of());
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-skip");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+
+        @Test
+        void shouldStoreIdempotencyResultAfterDecision() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-store");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            repository.decide(request, "acme");
+
+            // Verify idempotency key was stored
+            verify(jedis).psetex(eq("idem:acme:decide:decide-store"), eq(86400000L), anyString());
         }
     }
 
@@ -1138,6 +1347,159 @@ class RedisReservationRepositoryTest {
                     "acme", null, "ACTIVE", null, null, null, null, null, 100, null);
 
             assertThat(response.getReservations()).isEmpty();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByTenantExcludingOtherTenants() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> acmeFields = reservationFields("r1", "ACTIVE");
+            Map<String, String> otherFields = reservationFields("r2", "ACTIVE");
+            otherFields.put("tenant", "other-corp");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(acmeFields);
+            when(resp2.get()).thenReturn(otherFields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null);
+
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByWorkspaceSubjectField() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> devFields = reservationFields("r1", "ACTIVE");
+            devFields.put("scope_path", "tenant:acme/workspace:dev/app:myapp");
+            Map<String, String> prodFields = reservationFields("r2", "ACTIVE");
+            prodFields.put("scope_path", "tenant:acme/workspace:prod/app:myapp");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(devFields);
+            when(resp2.get()).thenReturn(prodFields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, "dev", null, null, null, null, 100, null);
+
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByAppSubjectField() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> myappFields = reservationFields("r1", "ACTIVE");
+            myappFields.put("scope_path", "tenant:acme/app:myapp");
+            Map<String, String> otherappFields = reservationFields("r2", "ACTIVE");
+            otherappFields.put("scope_path", "tenant:acme/app:otherapp");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(myappFields);
+            when(resp2.get()).thenReturn(otherappFields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, "myapp", null, null, null, 100, null);
+
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldRespectLimitAndReturnHasMore() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> r1Fields = reservationFields("r1", "ACTIVE");
+            Map<String, String> r2Fields = reservationFields("r2", "ACTIVE");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(r1Fields);
+            when(resp2.get()).thenReturn(r2Fields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("42");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 1, null);
+
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getHasMore()).isTrue();
+            assertThat(response.getNextCursor()).isEqualTo("42");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldReturnMatchingStatusFilter() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> committedFields = reservationFields("r1", "COMMITTED");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp = mock(Response.class);
+            when(resp.get()).thenReturn(committedFields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+
+            // Filter for COMMITTED and reservation IS COMMITTED
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, "COMMITTED", null, null, null, null, null, 100, null);
+
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
         }
     }
 
