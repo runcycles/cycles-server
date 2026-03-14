@@ -160,6 +160,16 @@ public class RedisReservationRepository {
                     .scopePath(scopePath)
                     .build();
             }
+            // Check budget status (consistent with admin FUND_LUA and reserve.lua)
+            String budgetStatus = budget.getOrDefault("status", "ACTIVE");
+            if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
+                return ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.DENY)
+                    .reasonCode("BUDGET_" + budgetStatus)
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build();
+            }
             if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
@@ -609,6 +619,16 @@ public class RedisReservationRepository {
                         .build();
                     break;
                 }
+                // Check budget status (consistent with admin FUND_LUA and reserve.lua)
+                String budgetStatus = budget.getOrDefault("status", "ACTIVE");
+                if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
+                    response = DecisionResponse.builder()
+                        .decision(Enums.DecisionEnum.DENY)
+                        .reasonCode("BUDGET_" + budgetStatus)
+                        .affectedScopes(affectedScopes)
+                        .build();
+                    break;
+                }
                 if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
                     response = DecisionResponse.builder()
                         .decision(Enums.DecisionEnum.DENY)
@@ -909,6 +929,12 @@ public class RedisReservationRepository {
             case "BUDGET_NOT_FOUND":
                 String budgetScope = response.containsKey("scope") ? response.get("scope").toString() : "unknown";
                 throw CyclesProtocolException.budgetNotFound(budgetScope);
+            case "BUDGET_FROZEN":
+                String frozenScope = response.containsKey("scope") ? response.get("scope").toString() : "unknown";
+                throw CyclesProtocolException.budgetFrozen(frozenScope);
+            case "BUDGET_CLOSED":
+                String closedScope = response.containsKey("scope") ? response.get("scope").toString() : "unknown";
+                throw CyclesProtocolException.budgetClosed(closedScope);
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
             case "UNIT_MISMATCH":
