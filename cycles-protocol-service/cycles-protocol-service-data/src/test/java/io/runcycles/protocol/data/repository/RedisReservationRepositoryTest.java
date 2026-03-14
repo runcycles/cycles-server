@@ -1417,7 +1417,6 @@ class RedisReservationRepositoryTest {
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
 
             when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(b1);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(b2);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 1, null);
 
@@ -1625,7 +1624,6 @@ class RedisReservationRepositoryTest {
             Response<Map<String, String>> resp1 = mock(Response.class);
             Response<Map<String, String>> resp2 = mock(Response.class);
             when(resp1.get()).thenReturn(r1Fields);
-            when(resp2.get()).thenReturn(r2Fields);
 
             ScanResult<String> scanResult = mock(ScanResult.class);
             when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
@@ -1633,7 +1631,7 @@ class RedisReservationRepositoryTest {
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
             when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp1);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, null);
