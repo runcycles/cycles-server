@@ -2286,7 +2286,7 @@ class RedisReservationRepositoryTest {
             when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
 
             // Budget with caps_json
-            String capsJson = "{\"max_tokens_per_request\":1000}";
+            String capsJson = "{\"max_tokens\":1000}";
             when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(capsJson);
             // fetchBalancesForScopes
             when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(100000, 80000, 10000, 10000));
