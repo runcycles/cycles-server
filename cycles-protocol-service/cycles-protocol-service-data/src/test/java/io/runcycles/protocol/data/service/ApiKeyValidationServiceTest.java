@@ -86,4 +86,29 @@ class ApiKeyValidationServiceTest {
         assertThat(result.isValid()).isFalse();
         assertThat(result.getReason()).isEqualTo("TENANT_SUSPENDED");
     }
+
+    @Test
+    void shouldHandleShortToken() {
+        String key = "short";
+        when(apiKeyRepository.validate(key)).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+
+        ApiKeyValidationResponse result = service.isValid(key);
+
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.getReason()).isEqualTo("KEY_NOT_FOUND");
+    }
+
+    @Test
+    void shouldHandleNullToken() {
+        when(apiKeyRepository.validate(null)).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+
+        ApiKeyValidationResponse result = service.isValid(null);
+
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.getReason()).isEqualTo("KEY_NOT_FOUND");
+    }
 }

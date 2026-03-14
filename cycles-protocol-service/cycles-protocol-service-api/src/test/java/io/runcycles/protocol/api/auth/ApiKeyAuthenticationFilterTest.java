@@ -125,4 +125,53 @@ class ApiKeyAuthenticationFilterTest {
         request.setRequestURI("/v1/balances");
         assertThat(filter.shouldNotFilter(request)).isFalse();
     }
+
+    @Test
+    void shouldReturnCorrectErrorResponseFields() throws Exception {
+        // No API key header set — triggers sendErrorResponse
+        request.setAttribute(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-fixed-id");
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentType()).isEqualTo("application/json");
+
+        String body = response.getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode json = new ObjectMapper().readTree(body);
+        assertThat(json.has("error")).isTrue();
+        assertThat(json.has("message")).isTrue();
+        assertThat(json.has("request_id")).isTrue();
+        assertThat(json.get("request_id").asText()).isEqualTo("req-fixed-id");
+        assertThat(json.get("message").asText()).isEqualTo("Missing API key");
+    }
+
+    @Test
+    void shouldUseFallbackUuidWhenRequestIdAttributeNotSet() throws Exception {
+        // No REQUEST_ID_ATTRIBUTE set on request — should generate UUID fallback
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+
+        String body = response.getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode json = new ObjectMapper().readTree(body);
+        assertThat(json.get("request_id").asText()).isNotBlank();
+        // Should be a valid UUID format
+        assertThat(json.get("request_id").asText()).matches(
+                "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @Test
+    void shouldUseRequestIdFromFilterAttribute() throws Exception {
+        request.setAttribute(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-from-filter");
+        request.addHeader("X-Cycles-API-Key", "cyc_live_badkey123456789");
+        when(apiKeyValidationService.isValid(anyString()))
+                .thenReturn(ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("INVALID_KEY").build());
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        String body = response.getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode json = new ObjectMapper().readTree(body);
+        assertThat(json.get("request_id").asText()).isEqualTo("req-from-filter");
+    }
 }

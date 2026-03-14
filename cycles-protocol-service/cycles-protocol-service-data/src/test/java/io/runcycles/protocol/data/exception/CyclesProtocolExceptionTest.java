@@ -101,4 +101,31 @@ class CyclesProtocolExceptionTest {
 
         assertThat(ex.getDetails()).isNull();
     }
+
+    @Test
+    void shouldCreateBudgetFrozen() {
+        CyclesProtocolException ex = CyclesProtocolException.budgetFrozen("tenant:acme");
+
+        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.BUDGET_FROZEN);
+        assertThat(ex.getHttpStatus()).isEqualTo(409);
+        assertThat(ex.getMessage()).contains("tenant:acme");
+    }
+
+    @Test
+    void shouldCreateBudgetClosed() {
+        CyclesProtocolException ex = CyclesProtocolException.budgetClosed("tenant:acme");
+
+        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.BUDGET_CLOSED);
+        assertThat(ex.getHttpStatus()).isEqualTo(409);
+        assertThat(ex.getMessage()).contains("tenant:acme");
+    }
+
+    @Test
+    void shouldCreateReservationExpirationNotFound() {
+        CyclesProtocolException ex = CyclesProtocolException.reservationExpirationNotFound();
+
+        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.INTERNAL_ERROR);
+        assertThat(ex.getHttpStatus()).isEqualTo(500);
+        assertThat(ex.getMessage()).contains("expiration");
+    }
 }

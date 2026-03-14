@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import redis.clients.jedis.JedisPool;
 
 import java.lang.reflect.Field;
 
@@ -100,5 +101,22 @@ class RedisConfigTest {
         String script = redisConfig.expireLuaScript();
 
         assertThat(script).isNotNull().isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("should create JedisPool with password when password is non-empty")
+    void shouldCreateJedisPoolWithPassword() throws Exception {
+        setField("password", "secret123");
+        JedisPool pool = redisConfig.jedisPool();
+        assertThat(pool).isNotNull();
+        pool.close();
+    }
+
+    @Test
+    @DisplayName("should create JedisPool without password when password is empty")
+    void shouldCreateJedisPoolWithoutPassword() throws Exception {
+        JedisPool pool = redisConfig.jedisPool();
+        assertThat(pool).isNotNull();
+        pool.close();
     }
 }

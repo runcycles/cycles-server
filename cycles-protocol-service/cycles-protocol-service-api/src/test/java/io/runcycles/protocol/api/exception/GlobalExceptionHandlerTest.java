@@ -7,9 +7,11 @@ import io.runcycles.protocol.model.ErrorResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 
 import java.util.Map;
 
@@ -91,6 +93,60 @@ class GlobalExceptionHandlerTest {
 
         // Should generate a UUID fallback
         assertThat(response.getBody().getRequestId()).isNotBlank();
+    }
+
+    @Test
+    void shouldHandleValidationException() {
+        org.springframework.validation.BeanPropertyBindingResult bindingResult =
+            new org.springframework.validation.BeanPropertyBindingResult(new Object(), "request");
+        bindingResult.addError(new org.springframework.validation.FieldError("request", "amount", "must not be null"));
+        MethodArgumentNotValidException ex = new MethodArgumentNotValidException(bindingResult);
+
+        ResponseEntity<ErrorResponse> response = handler.handleValidationException(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("amount");
+        assertThat(response.getBody().getMessage()).startsWith("Validation failed:");
+        assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
+    }
+
+    @Test
+    void shouldHandleConstraintViolationWithDottedPath() {
+        jakarta.validation.ConstraintViolation<?> violation = org.mockito.Mockito.mock(jakarta.validation.ConstraintViolation.class);
+        jakarta.validation.Path path = org.mockito.Mockito.mock(jakarta.validation.Path.class);
+        org.mockito.Mockito.when(path.toString()).thenReturn("list.limit");
+        org.mockito.Mockito.when(violation.getPropertyPath()).thenReturn(path);
+        org.mockito.Mockito.when(violation.getMessage()).thenReturn("must be greater than 0");
+
+        ConstraintViolationException ex = new ConstraintViolationException(java.util.Set.of(violation));
+
+        ResponseEntity<ErrorResponse> response = handler.handleConstraintViolation(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("limit");
+        assertThat(response.getBody().getMessage()).contains("must be greater than 0");
+        assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
+    }
+
+    @Test
+    void shouldHandleConstraintViolationWithSimplePath() {
+        jakarta.validation.ConstraintViolation<?> violation = org.mockito.Mockito.mock(jakarta.validation.ConstraintViolation.class);
+        jakarta.validation.Path path = org.mockito.Mockito.mock(jakarta.validation.Path.class);
+        org.mockito.Mockito.when(path.toString()).thenReturn("amount");
+        org.mockito.Mockito.when(violation.getPropertyPath()).thenReturn(path);
+        org.mockito.Mockito.when(violation.getMessage()).thenReturn("must not be null");
+
+        ConstraintViolationException ex = new ConstraintViolationException(java.util.Set.of(violation));
+
+        ResponseEntity<ErrorResponse> response = handler.handleConstraintViolation(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("amount");
+        assertThat(response.getBody().getMessage()).doesNotContain(".");
+        assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
     }
 
     @Test

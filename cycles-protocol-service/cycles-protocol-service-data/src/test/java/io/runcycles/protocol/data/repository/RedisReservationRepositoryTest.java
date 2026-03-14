@@ -1973,6 +1973,500 @@ class RedisReservationRepositoryTest {
         }
     }
 
+    // ---- Generic exception wrapping ----
+
+    @Nested
+    @DisplayName("generic exception wrapping")
+    class GenericExceptionWrapping {
+
+        @Test
+        void shouldWrapGenericExceptionInCreateReservation() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class)))
+                .thenThrow(new IllegalStateException("Unexpected error"));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        void shouldWrapGenericExceptionInCommitReservation() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget(anyString(), any(), any(), any()))
+                .thenReturn(Arrays.asList("5000", "USD_MICROCENTS", "[\"tenant:acme\"]"));
+            when(jedis.eval(eq("COMMIT_SCRIPT"), eq(0), any(String[].class)))
+                .thenThrow(new IllegalStateException("Unexpected error"));
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-wrap");
+
+            assertThatThrownBy(() -> repository.commitReservation("res-wrap", request))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        void shouldWrapGenericExceptionInReleaseReservation() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget(anyString(), any(), any(), any()))
+                .thenReturn(Arrays.asList("5000", "USD_MICROCENTS", null));
+            when(jedis.eval(eq("RELEASE_SCRIPT"), eq(0), any(String[].class)))
+                .thenThrow(new IllegalStateException("Unexpected error"));
+
+            ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-wrap").build();
+
+            assertThatThrownBy(() -> repository.releaseReservation("res-wrap", request))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        void shouldWrapGenericExceptionInExtendReservation() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget(anyString(), any(), any()))
+                .thenReturn(Arrays.asList("USD_MICROCENTS", null));
+            when(jedis.eval(eq("EXTEND_SCRIPT"), eq(0), any(String[].class)))
+                .thenThrow(new IllegalStateException("Unexpected error"));
+
+            ReservationExtendRequest request = new ReservationExtendRequest();
+            request.setExtendByMs(30000L);
+            request.setIdempotencyKey("extend-wrap");
+
+            assertThatThrownBy(() -> repository.extendReservation("res-wrap", request, "acme"))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        void shouldWrapGenericExceptionInCreateEvent() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.eval(eq("EVENT_SCRIPT"), eq(0), any(String[].class)))
+                .thenThrow(new IllegalStateException("Unexpected error"));
+
+            EventCreateRequest request = EventCreateRequest.builder()
+                .idempotencyKey("event-wrap")
+                .subject(defaultSubject())
+                .action(defaultAction())
+                .actual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L))
+                .build();
+
+            assertThatThrownBy(() -> repository.createEvent(request, "acme"))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        }
+
+        @Test
+        void shouldWrapGenericExceptionInGetReservationById() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hgetAll("reservation:res_wrap-id"))
+                .thenThrow(new IllegalStateException("Unexpected error"));
+
+            assertThatThrownBy(() -> repository.getReservationById("wrap-id"))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(IllegalStateException.class);
+        }
+    }
+
+    // ---- createReservation idempotency with empty existing fields ----
+
+    @Nested
+    @DisplayName("createReservation idempotency edge cases")
+    class CreateReservationIdempotencyEdgeCases {
+
+        @Test
+        void shouldThrowNotFoundWhenIdempotencyHitWithEmptyExistingFields() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            // Idempotency hit: response has reservation_id but no expires_at
+            String luaResponse = objectMapper.writeValueAsString(
+                Map.of("reservation_id", "vanished-res"));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            // Existing reservation fields are empty (expired/evicted)
+            when(jedis.hgetAll("reservation:res_vanished-res")).thenReturn(Map.of());
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-vanished");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                .isInstanceOf(CyclesProtocolException.class)
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+        }
+
+        @Test
+        void shouldThrowNotFoundWhenIdempotencyHitWithNullExistingFields() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            String luaResponse = objectMapper.writeValueAsString(
+                Map.of("reservation_id", "null-res"));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hgetAll("reservation:res_null-res")).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-null");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                .isInstanceOf(CyclesProtocolException.class)
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+        }
+    }
+
+    // ---- dry-run idempotency edge cases ----
+
+    @Nested
+    @DisplayName("createReservation dry_run idempotency edge cases")
+    class DryRunIdempotencyEdgeCases {
+
+        @Test
+        void shouldReplayCacheWhenStoredHashIsNull() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            ReservationCreateResponse cached = ReservationCreateResponse.builder()
+                .decision(Enums.DecisionEnum.ALLOW)
+                .affectedScopes(defaultScopes())
+                .scopePath("tenant:acme/app:myapp")
+                .build();
+            when(jedis.get("idem:acme:dry_run:dry-no-hash")).thenReturn(objectMapper.writeValueAsString(cached));
+            // storedHash is null — no hash was stored
+            when(jedis.get("idem:acme:dry_run:dry-no-hash:hash")).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-no-hash");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+    }
+
+    // ---- getBalances with includeChildren ----
+
+    @Nested
+    @DisplayName("getBalances with includeChildren")
+    class GetBalancesIncludeChildren {
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldReturnBalancesWithIncludeChildrenTrue() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> parentBudget = budgetMap(100000, 80000, 10000, 10000);
+            parentBudget.put("scope", "tenant:acme");
+            Map<String, String> childBudget = budgetMap(50000, 40000, 5000, 5000);
+            childBudget.put("scope", "tenant:acme/app:myapp");
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of(
+                "budget:tenant:acme:USD_MICROCENTS",
+                "budget:tenant:acme/app:myapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(parentBudget);
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(childBudget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, true, 100, null);
+
+            assertThat(response.getBalances()).hasSize(2);
+        }
+    }
+
+    // ---- listReservations with idempotency_key filter ----
+
+    @Nested
+    @DisplayName("listReservations with idempotency_key filter")
+    class ListReservationsIdempotencyFilter {
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByIdempotencyKey() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> r1Fields = reservationFields("r1", "ACTIVE");
+            r1Fields.put("idempotency_key", "idem-abc");
+            Map<String, String> r2Fields = reservationFields("r2", "ACTIVE");
+            r2Fields.put("idempotency_key", "idem-xyz");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(r1Fields);
+            when(resp2.get()).thenReturn(r2Fields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                "acme", "idem-abc", null, null, null, null, null, null, 100, null);
+
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldReturnEmptyWhenIdempotencyKeyDoesNotMatch() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> fields = reservationFields("r1", "ACTIVE");
+            fields.put("idempotency_key", "idem-abc");
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp = mock(Response.class);
+            when(resp.get()).thenReturn(fields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+
+            ReservationListResponse response = repository.listReservations(
+                "acme", "idem-nonexistent", null, null, null, null, null, null, 100, null);
+
+            assertThat(response.getReservations()).isEmpty();
+        }
+    }
+
+    // ---- createReservation with capsJson (ALLOW_WITH_CAPS) ----
+
+    @Nested
+    @DisplayName("createReservation ALLOW_WITH_CAPS")
+    class CreateReservationWithCaps {
+
+        @Test
+        void shouldReturnAllowWithCapsWhenCapsJsonPresent() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            Map<String, Object> luaResult = new HashMap<>();
+            luaResult.put("reservation_id", "res-caps");
+            luaResult.put("expires_at", 1700060000000L);
+            String luaResponse = objectMapper.writeValueAsString(luaResult);
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            // Budget with caps_json
+            String capsJson = "{\"max_tokens_per_request\":1000}";
+            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(capsJson);
+            // fetchBalancesForScopes
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(100000, 80000, 10000, 10000));
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(50000, 40000, 5000, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW_WITH_CAPS);
+            assertThat(response.getCaps()).isNotNull();
+        }
+    }
+
+    // ---- releaseReservation with null estimate data ----
+
+    @Nested
+    @DisplayName("releaseReservation edge cases")
+    class ReleaseReservationEdgeCases {
+
+        @Test
+        void shouldFallbackToZeroWhenEstimateDataMissing() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hmget(anyString(), eq("estimate_amount"), eq("estimate_unit"), eq("affected_scopes")))
+                .thenReturn(Arrays.asList(null, null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(Map.of("status", "RELEASED"));
+            when(jedis.eval(eq("RELEASE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+
+            ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("rel-null").build();
+            ReleaseResponse response = repository.releaseReservation("res-null-est", request);
+
+            assertThat(response.getReleased().getAmount()).isZero();
+            assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);
+        }
+    }
+
+    // ---- decide with generic exception wrapping ----
+
+    @Nested
+    @DisplayName("decide exception wrapping")
+    class DecideExceptionWrapping {
+
+        @Test
+        void shouldWrapGenericExceptionInDecide() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenThrow(new IllegalStateException("Unexpected"));
+
+            DecisionRequest request = DecisionRequest.builder()
+                .idempotencyKey("decide-wrap")
+                .subject(defaultSubject())
+                .action(defaultAction())
+                .estimate(defaultEstimate())
+                .build();
+
+            assertThatThrownBy(() -> repository.decide(request, "acme"))
+                .isInstanceOf(RuntimeException.class);
+        }
+    }
+
+    // ---- findReservationTenantById with generic exception wrapping ----
+
+    @Nested
+    @DisplayName("findReservationTenantById exception wrapping")
+    class FindTenantExceptionWrapping {
+
+        @Test
+        void shouldWrapGenericExceptionInFindTenant() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(jedis.hget(anyString(), eq("tenant")))
+                .thenThrow(new IllegalStateException("Unexpected"));
+
+            assertThatThrownBy(() -> repository.findReservationTenantById("err-id"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to resolve reservation tenant");
+        }
+    }
+
+    // ---- getReservationById with committed/released/metadata fields ----
+
+    @Nested
+    @DisplayName("getReservationById with extended fields")
+    class GetReservationByIdExtendedFields {
+
+        @Test
+        void shouldParseChargedAmountAndCommittedAt() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("committed-res", "COMMITTED");
+            fields.put("charged_amount", "3000");
+            fields.put("committed_at", "1700050000000");
+            when(jedis.hgetAll("reservation:res_committed-res")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("committed-res");
+
+            assertThat(detail.getCommitted()).isNotNull();
+            assertThat(detail.getCommitted().getAmount()).isEqualTo(3000L);
+            assertThat(detail.getFinalizedAtMs()).isEqualTo(1700050000000L);
+        }
+
+        @Test
+        void shouldParseReleasedAt() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("released-res", "RELEASED");
+            fields.put("released_at", "1700055000000");
+            when(jedis.hgetAll("reservation:res_released-res")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("released-res");
+
+            assertThat(detail.getFinalizedAtMs()).isEqualTo(1700055000000L);
+        }
+
+        @Test
+        void shouldParseMetadataJson() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("meta-res", "ACTIVE");
+            fields.put("metadata_json", "{\"env\":\"production\",\"team\":\"backend\"}");
+            when(jedis.hgetAll("reservation:res_meta-res")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("meta-res");
+
+            assertThat(detail.getMetadata()).containsEntry("env", "production");
+            assertThat(detail.getMetadata()).containsEntry("team", "backend");
+        }
+    }
+
+    // ---- handleScriptError RESERVATION_EXPIRATION_NOT_FOUND ----
+
+    @Nested
+    @DisplayName("handleScriptError additional cases")
+    class HandleScriptErrorMore {
+
+        @Test
+        void shouldThrowForReservationExpirationNotFound() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "RESERVATION_EXPIRATION_NOT_FOUND")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasFieldOrPropertyWithValue("httpStatus", 500);
+        }
+
+        @Test
+        void shouldIncludeScopeInBudgetFrozenError() {
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("error", "BUDGET_FROZEN");
+            resp.put("scope", "tenant:acme/app:myapp");
+            assertThatThrownBy(() -> invokeHandleScriptError(resp))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_FROZEN)
+                    .hasMessageContaining("tenant:acme/app:myapp");
+        }
+
+        @Test
+        void shouldIncludeScopeInBudgetClosedError() {
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("error", "BUDGET_CLOSED");
+            resp.put("scope", "tenant:acme");
+            assertThatThrownBy(() -> invokeHandleScriptError(resp))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_CLOSED)
+                    .hasMessageContaining("tenant:acme");
+        }
+
+        @Test
+        void shouldUseFallbackScopeWhenScopeFieldMissing() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "BUDGET_FROZEN")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasMessageContaining("unknown");
+        }
+    }
+
     // ---- Helper to build reservation fields ----
 
     private Map<String, String> reservationFields(String id, String state) {
