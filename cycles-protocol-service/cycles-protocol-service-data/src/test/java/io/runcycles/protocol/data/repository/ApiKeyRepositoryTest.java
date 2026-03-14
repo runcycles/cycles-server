@@ -44,36 +44,33 @@ class ApiKeyRepositoryTest {
     }
 
     // ---- extractPrefix ----
-    // Logic: indexOf('_') → substring(0, min(idx+6, len)); no underscore → substring(0, min(10, len))
+    // Logic: first 14 characters (PREFIX_LENGTH), matching admin's KeyService
 
     @Nested
     @DisplayName("extractPrefix")
     class ExtractPrefix {
 
         @Test
-        void shouldExtractPrefixWithUnderscore() {
-            // idx=3, idx+6=9 → "cyc_live_"
+        void shouldExtractFirst14CharsAsPrefix() {
+            // "cyc_live_valid" = first 14 chars
             assertThat(repository.extractPrefix("cyc_live_validkey12345678901234567890"))
-                    .isEqualTo("cyc_live_");
+                    .isEqualTo("cyc_live_valid");
         }
 
         @Test
-        void shouldExtractPrefixWithoutUnderscore() {
-            // no underscore → substring(0, min(10, 11)) = "shortkey12"
-            assertThat(repository.extractPrefix("shortkey123"))
-                    .isEqualTo("shortkey12");
+        void shouldExtract14CharsRegardlessOfUnderscores() {
+            assertThat(repository.extractPrefix("shortkey123456789"))
+                    .isEqualTo("shortkey123456");
         }
 
         @Test
-        void shouldHandleShortKeyWithUnderscore() {
-            // idx=1, idx+6=7 → min(7, 5) = 5 → "k_abc"
+        void shouldHandleShortKeyGracefully() {
             assertThat(repository.extractPrefix("k_abc"))
                     .isEqualTo("k_abc");
         }
 
         @Test
-        void shouldHandleVeryShortKeyWithoutUnderscore() {
-            // no underscore → substring(0, min(10, 3)) = "abc"
+        void shouldHandleVeryShortKey() {
             assertThat(repository.extractPrefix("abc"))
                     .isEqualTo("abc");
         }
@@ -116,8 +113,8 @@ class ApiKeyRepositoryTest {
     class Validate {
 
         private final String secret = "cyc_live_testkey1234567890";
-        // extractPrefix: idx=3 (first '_'), idx+6=9 → "cyc_live_"
-        private final String prefix = "cyc_live_";
+        // extractPrefix: first 14 chars → "cyc_live_testk"
+        private final String prefix = "cyc_live_testk";
         private final String keyId = "key-001";
         private final String hash = BCrypt.hashpw(secret, BCrypt.gensalt());
 
