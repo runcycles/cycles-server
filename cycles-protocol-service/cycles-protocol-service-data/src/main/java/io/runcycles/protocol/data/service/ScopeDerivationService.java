@@ -11,7 +11,6 @@ import java.util.function.Function;
 @Service
 public class ScopeDerivationService {
 
-    private static final String DEFAULT = "default";
     private static final String BUDGET_PREFIX = "budget:";
 
     private record ScopeLevel(String name, Function<Subject, String> extractor) {}
@@ -27,9 +26,9 @@ public class ScopeDerivationService {
 
 
     /**
-     * Returns the full canonical scope path as a single string up to the deepest defined level.
-     * Gaps between defined levels are filled with "default".
-     * Example: tenant:acme/workspace:dev/app:default/agent:summarizer-v2
+     * Returns the full canonical scope path as a single string.
+     * Only explicitly provided subject levels are included (gaps are skipped).
+     * Example: {tenant:acme, agent:summarizer-v2} → "tenant:acme/agent:summarizer-v2"
      */
     public String buildScopePath(@NonNull Subject subject) {
         List<String> segments = buildSegments(subject);
@@ -38,13 +37,11 @@ public class ScopeDerivationService {
 
 
     /**
-     * Returns a list of cumulative ancestor scope paths, one per defined (or gap-filled) level.
-     * Each entry represents a real budget enforcement point.
-     * Example: [
+     * Returns a list of cumulative ancestor scope paths, one per explicitly provided level.
+     * Gaps are skipped — only levels present in the subject are included.
+     * Example: {tenant:acme, agent:summarizer-v2} → [
      *   "tenant:acme",
-     *   "tenant:acme/workspace:dev",
-     *   "tenant:acme/workspace:dev/app:default",
-     *   "tenant:acme/workspace:dev/app:default/agent:summarizer-v2"
+     *   "tenant:acme/agent:summarizer-v2"
      * ]
      */
     public List<String> deriveScopes(@NonNull Subject subject) {
@@ -60,7 +57,7 @@ public class ScopeDerivationService {
     }
     /**
      * Builds a Redis budget key for the given subject and unit.
-     * Example: budget:tenant:acme/workspace:dev/app:default/agent:summarizer-v2:USD_MICROCENTS
+     * Example: budget:tenant:acme/agent:summarizer-v2:USD_MICROCENTS
      */
     public String buildBudgetKey(@NonNull Subject subject, @NonNull Enums.UnitEnum unit) {
         return BUDGET_PREFIX + buildScopePath(subject) + ":" + unit.name();
