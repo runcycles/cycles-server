@@ -21,5 +21,5 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
-      - name: Run unit tests
-        run: mvn -B test --file cycles-protocol-service/pom.xml
+      - name: Run unit tests and coverage check
+        run: mvn -B verify --file cycles-protocol-service/pom.xml
