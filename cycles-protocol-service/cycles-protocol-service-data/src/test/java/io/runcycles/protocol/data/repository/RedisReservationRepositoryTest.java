@@ -1669,6 +1669,310 @@ class RedisReservationRepositoryTest {
         }
     }
 
+    // ---- handleScriptError additional cases ----
+
+    @Nested
+    @DisplayName("handleScriptError additional cases")
+    class HandleScriptErrorAdditional {
+
+        @Test
+        void shouldThrowBudgetFrozen() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "BUDGET_FROZEN", "scope", "tenant:acme")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_FROZEN);
+        }
+
+        @Test
+        void shouldThrowBudgetClosed() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "BUDGET_CLOSED", "scope", "tenant:acme")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_CLOSED);
+        }
+
+        @Test
+        void shouldThrowReservationExpirationNotFound() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "RESERVATION_EXPIRATION_NOT_FOUND", "message", "no ttl")))
+                    .isInstanceOf(CyclesProtocolException.class);
+        }
+
+        @Test
+        void shouldUseScopeFromResponseForBudgetNotFound() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "BUDGET_NOT_FOUND")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+        }
+
+        @Test
+        void shouldUseScopeFromResponseForBudgetFrozen() {
+            // Without scope key — fallback to "unknown"
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "BUDGET_FROZEN")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_FROZEN);
+        }
+
+        @Test
+        void shouldUseScopeFromResponseForBudgetClosed() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "BUDGET_CLOSED")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.BUDGET_CLOSED);
+        }
+    }
+
+    // ---- evaluateDryRun additional cases ----
+
+    @Nested
+    @DisplayName("createReservation dry_run additional")
+    class CreateReservationDryRunAdditional {
+
+        @Test
+        void shouldReplayIdempotencyCacheOnDryRun() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            ReservationCreateResponse cached = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .affectedScopes(defaultScopes())
+                    .scopePath("tenant:acme/app:myapp")
+                    .build();
+            when(jedis.get("idem:acme:dry_run:dry-cached")).thenReturn(objectMapper.writeValueAsString(cached));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-cached");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            // Should not scan budgets since cached
+            verify(jedis, never()).hgetAll(startsWith("budget:"));
+        }
+
+        @Test
+        void shouldThrowIdempotencyMismatchOnDryRunCacheReplay() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            when(jedis.get("idem:acme:dry_run:dry-mismatch")).thenReturn("{\"decision\":\"ALLOW\"}");
+            when(jedis.get("idem:acme:dry_run:dry-mismatch:hash")).thenReturn("stale-hash-value");
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-mismatch");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.IDEMPOTENCY_MISMATCH);
+        }
+
+        @Test
+        void shouldReturnAllowWithCapsOnDryRun() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json"))
+                    .thenReturn("{\"max_tokens\":200,\"max_steps_remaining\":5}");
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-caps");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW_WITH_CAPS);
+            assertThat(response.getCaps().getMaxTokens()).isEqualTo(200);
+            assertThat(response.getCaps().getMaxStepsRemaining()).isEqualTo(5);
+        }
+
+        @Test
+        void shouldCacheIdempotencyResultOnDryRun() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
+            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-store");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            repository.createReservation(request, "acme");
+
+            verify(jedis).psetex(eq("idem:acme:dry_run:dry-store"), eq(86400000L), anyString());
+        }
+    }
+
+    // ---- buildReservationSummary additional cases ----
+
+    @Nested
+    @DisplayName("getReservationById additional cases")
+    class GetReservationByIdAdditional {
+
+        @Test
+        void shouldParseCommittedReservation() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("res-committed", "COMMITTED");
+            fields.put("charged_amount", "3000");
+            fields.put("committed_at", "1700001000000");
+            when(jedis.hgetAll("reservation:res_res-committed")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("res-committed");
+
+            assertThat(detail.getStatus()).isEqualTo(Enums.ReservationStatus.COMMITTED);
+            assertThat(detail.getCommitted()).isNotNull();
+            assertThat(detail.getCommitted().getAmount()).isEqualTo(3000L);
+            assertThat(detail.getFinalizedAtMs()).isEqualTo(1700001000000L);
+        }
+
+        @Test
+        void shouldParseReleasedReservation() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("res-released", "RELEASED");
+            fields.put("released_at", "1700002000000");
+            when(jedis.hgetAll("reservation:res_res-released")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("res-released");
+
+            assertThat(detail.getStatus()).isEqualTo(Enums.ReservationStatus.RELEASED);
+            assertThat(detail.getFinalizedAtMs()).isEqualTo(1700002000000L);
+        }
+
+        @Test
+        void shouldParseMetadata() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("res-meta", "ACTIVE");
+            fields.put("metadata_json", "{\"model\":\"gpt-4\",\"temperature\":0.7}");
+            when(jedis.hgetAll("reservation:res_res-meta")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("res-meta");
+
+            assertThat(detail.getMetadata()).isNotNull();
+            assertThat(detail.getMetadata()).containsEntry("model", "gpt-4");
+        }
+
+        @Test
+        void shouldThrowOnCorruptedData() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = new HashMap<>();
+            fields.put("reservation_id", "res-corrupt");
+            fields.put("state", "ACTIVE");
+            // Missing required fields: estimate_unit, estimate_amount, subject_json, etc.
+            when(jedis.hgetAll("reservation:res_res-corrupt")).thenReturn(fields);
+
+            assertThatThrownBy(() -> repository.getReservationById("res-corrupt"))
+                    .isInstanceOf(RuntimeException.class);
+        }
+    }
+
+    // ---- getBalances additional filter cases ----
+
+    @Nested
+    @DisplayName("getBalances additional filters")
+    class GetBalancesAdditionalFilters {
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByWorkspace() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> budget = budgetMap(10000, 5000, 2000, 3000);
+            budget.put("scope", "tenant:acme/workspace:prod/app:myapp");
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/workspace:prod/app:myapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/workspace:prod/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+
+            BalanceResponse response = repository.getBalances("acme", "prod", null, null, null, null, false, 100, null);
+            assertThat(response.getBalances()).hasSize(1);
+
+            // Wrong workspace should filter out
+            BalanceResponse filtered = repository.getBalances("acme", "staging", null, null, null, null, false, 100, null);
+            assertThat(filtered.getBalances()).isEmpty();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByWorkflow() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> budget = budgetMap(10000, 5000, 2000, 3000);
+            budget.put("scope", "tenant:acme/workflow:onboarding");
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/workflow:onboarding:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/workflow:onboarding:USD_MICROCENTS")).thenReturn(budget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, "onboarding", null, null, false, 100, null);
+            assertThat(response.getBalances()).hasSize(1);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByAgent() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> budget = budgetMap(10000, 5000, 2000, 3000);
+            budget.put("scope", "tenant:acme/agent:summarizer");
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/agent:summarizer:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/agent:summarizer:USD_MICROCENTS")).thenReturn(budget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, "summarizer", null, false, 100, null);
+            assertThat(response.getBalances()).hasSize(1);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldFilterByToolset() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> budget = budgetMap(10000, 5000, 2000, 3000);
+            budget.put("scope", "tenant:acme/toolset:search");
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/toolset:search:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/toolset:search:USD_MICROCENTS")).thenReturn(budget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, "search", false, 100, null);
+            assertThat(response.getBalances()).hasSize(1);
+        }
+    }
+
     // ---- Helper to build reservation fields ----
 
     private Map<String, String> reservationFields(String id, String state) {
