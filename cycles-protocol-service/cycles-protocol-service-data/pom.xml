@@ -13,7 +13,7 @@
         <dependency>
             <groupId>io.runcycles</groupId>
             <artifactId>cycles-protocol-service-model</artifactId>
-            <version>0.1.23</version>
+            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>redis.clients</groupId>
