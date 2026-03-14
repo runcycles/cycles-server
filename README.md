@@ -1,6 +1,6 @@
 # cycles-server
 
-Reference implementation of the [Cycles Budget Authority API](cycles-protocol-v0.yaml) (v0.1.23) — a reservation-based budget control service for AI agents and workflows.
+Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.23) — a reservation-based budget control service for AI agents and workflows.
 
 ## Quick Start
 
