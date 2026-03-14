@@ -3,7 +3,7 @@ package io.runcycles.protocol.data.repository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
-import io.runcycles.protocol.model.Enums;
+import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -14,15 +14,20 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.Response;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Map;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("RedisReservationRepository")
@@ -40,6 +45,57 @@ class RedisReservationRepositoryTest {
         var omField = RedisReservationRepository.class.getDeclaredField("objectMapper");
         omField.setAccessible(true);
         omField.set(repository, objectMapper);
+
+        setField("reserveScript", "RESERVE_SCRIPT");
+        setField("commitScript", "COMMIT_SCRIPT");
+        setField("releaseScript", "RELEASE_SCRIPT");
+        setField("extendScript", "EXTEND_SCRIPT");
+        setField("eventScript", "EVENT_SCRIPT");
+    }
+
+    private void setField(String name, Object value) throws Exception {
+        Field f = RedisReservationRepository.class.getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(repository, value);
+    }
+
+    // ---- Common test fixtures ----
+
+    private Subject defaultSubject() {
+        Subject s = new Subject();
+        s.setTenant("acme");
+        s.setApp("myapp");
+        return s;
+    }
+
+    private Action defaultAction() {
+        Action a = new Action();
+        a.setKind("llm");
+        a.setName("chat");
+        return a;
+    }
+
+    private Amount defaultEstimate() {
+        return new Amount(Enums.UnitEnum.USD_MICROCENTS, 5000L);
+    }
+
+    private List<String> defaultScopes() {
+        return List.of("tenant:acme", "tenant:acme/app:myapp");
+    }
+
+    private Map<String, String> budgetMap(long allocated, long remaining, long reserved, long spent) {
+        Map<String, String> m = new HashMap<>();
+        m.put("allocated", String.valueOf(allocated));
+        m.put("remaining", String.valueOf(remaining));
+        m.put("reserved", String.valueOf(reserved));
+        m.put("spent", String.valueOf(spent));
+        m.put("debt", "0");
+        m.put("overdraft_limit", "0");
+        m.put("is_over_limit", "false");
+        m.put("scope", "tenant:acme/app:myapp");
+        m.put("unit", "USD_MICROCENTS");
+        m.put("status", "ACTIVE");
+        return m;
     }
 
     // ---- Helper to invoke private methods ----
