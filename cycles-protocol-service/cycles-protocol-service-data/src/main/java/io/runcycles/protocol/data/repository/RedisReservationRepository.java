@@ -148,18 +148,18 @@ public class RedisReservationRepository {
             }
         }
 
+        // Skip scopes without budgets — operators may only define budgets at certain levels.
+        // At least one scope must have a budget (consistent with reserve.lua).
+        boolean foundBudget = false;
         for (String scope : affectedScopes) {
             String budgetKey = "budget:" + scope + ":" + unit;
             Map<String, String> budget = jedis.hgetAll(budgetKey);
 
             if (budget == null || budget.isEmpty()) {
-                return ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("BUDGET_NOT_FOUND")
-                    .affectedScopes(affectedScopes)
-                    .scopePath(scopePath)
-                    .build();
+                continue; // Skip scopes without budgets
             }
+            foundBudget = true;
+
             // Check budget status (consistent with admin FUND_LUA and reserve.lua)
             String budgetStatus = budget.getOrDefault("status", "ACTIVE");
             if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
@@ -196,6 +196,15 @@ public class RedisReservationRepository {
                     .scopePath(scopePath)
                     .build();
             }
+        }
+
+        if (!foundBudget) {
+            return ReservationCreateResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .reasonCode("BUDGET_NOT_FOUND")
+                .affectedScopes(affectedScopes)
+                .scopePath(scopePath)
+                .build();
         }
 
         // Collect current balances for all affected scopes
@@ -607,18 +616,18 @@ public class RedisReservationRepository {
 
             DecisionResponse response = null;
             String deepestScope = affectedScopes.get(affectedScopes.size() - 1);
+            // Skip scopes without budgets — operators may only define budgets at certain levels.
+            // At least one scope must have a budget (consistent with reserve.lua).
+            boolean foundBudgetDecide = false;
             for (String scope : affectedScopes) {
                 String budgetKey = "budget:" + scope + ":" + unit;
                 Map<String, String> budget = jedis.hgetAll(budgetKey);
 
                 if (budget == null || budget.isEmpty()) {
-                    response = DecisionResponse.builder()
-                        .decision(Enums.DecisionEnum.DENY)
-                        .reasonCode("BUDGET_NOT_FOUND")
-                        .affectedScopes(affectedScopes)
-                        .build();
-                    break;
+                    continue; // Skip scopes without budgets
                 }
+                foundBudgetDecide = true;
+
                 // Check budget status (consistent with admin FUND_LUA and reserve.lua)
                 String budgetStatus = budget.getOrDefault("status", "ACTIVE");
                 if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
@@ -655,6 +664,14 @@ public class RedisReservationRepository {
                         .build();
                     break;
                 }
+            }
+
+            if (!foundBudgetDecide && response == null) {
+                response = DecisionResponse.builder()
+                    .decision(Enums.DecisionEnum.DENY)
+                    .reasonCode("BUDGET_NOT_FOUND")
+                    .affectedScopes(affectedScopes)
+                    .build();
             }
 
             if (response == null) {

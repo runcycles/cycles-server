@@ -45,47 +45,53 @@ local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local expires_at = now + ttl_ms
 
--- Check all scopes first (fail fast)
+-- Check all scopes first (fail fast). Skip scopes without budgets.
+local budgeted_scopes = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
-    
-    -- Check if budget exists
-    if redis.call('EXISTS', budget_key) == 0 then
-        return cjson.encode({error = "BUDGET_NOT_FOUND", scope = scope})
-    end
 
-    -- Check budget status (consistent with admin FUND_LUA)
-    local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
-    if budget_status == 'FROZEN' then
-        return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
-    end
-    if budget_status == 'CLOSED' then
-        return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
-    end
+    -- Skip scopes without a budget (operator may only define budgets at certain levels)
+    if redis.call('EXISTS', budget_key) == 1 then
+        table.insert(budgeted_scopes, scope)
 
-    -- Get budget state
-    local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-    local debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-    local is_over_limit = redis.call('HGET', budget_key, 'is_over_limit')
-    
-    -- v0.1.22: Check if scope is over-limit (debt > overdraft_limit)
-    if is_over_limit == "true" then
-        return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope, message = "Scope is over-limit, no new reservations allowed"})
-    end
-    
-    -- v0.1.22: Check if scope has outstanding debt
-    if debt > 0 then
-        return cjson.encode({error = "DEBT_OUTSTANDING", scope = scope, debt = debt})
-    end
-    
-    -- Check if sufficient budget
-    if remaining < estimate_amount then
-        return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = estimate_amount})
+        -- Check budget status (consistent with admin FUND_LUA)
+        local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
+        if budget_status == 'FROZEN' then
+            return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
+        end
+        if budget_status == 'CLOSED' then
+            return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
+        end
+
+        -- Get budget state
+        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+        local debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
+        local is_over_limit = redis.call('HGET', budget_key, 'is_over_limit')
+
+        -- Check if scope is over-limit (debt > overdraft_limit)
+        if is_over_limit == "true" then
+            return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope, message = "Scope is over-limit, no new reservations allowed"})
+        end
+
+        -- Check if scope has outstanding debt
+        if debt > 0 then
+            return cjson.encode({error = "DEBT_OUTSTANDING", scope = scope, debt = debt})
+        end
+
+        -- Check if sufficient budget
+        if remaining < estimate_amount then
+            return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = estimate_amount})
+        end
     end
 end
 
--- All checks passed - reserve across all scopes
-for _, scope in ipairs(affected_scopes) do
+-- At least one scope must have a budget
+if #budgeted_scopes == 0 then
+    return cjson.encode({error = "BUDGET_NOT_FOUND", scope = affected_scopes[#affected_scopes]})
+end
+
+-- All checks passed - reserve across budgeted scopes only
+for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
     redis.call('HINCRBY', budget_key, 'reserved', estimate_amount)
     redis.call('HINCRBY', budget_key, 'remaining', -estimate_amount)
@@ -108,7 +114,8 @@ redis.call('HMSET', reservation_key,
     'grace_ms', grace_ms,
     'idempotency_key', idempotency_key,
     'overage_policy', overage_policy,
-    'metadata_json', metadata_json
+    'metadata_json', metadata_json,
+    'budgeted_scopes', cjson.encode(budgeted_scopes)
 )
 
 -- Add to reservation index

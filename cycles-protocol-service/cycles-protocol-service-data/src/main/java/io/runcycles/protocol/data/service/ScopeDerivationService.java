@@ -11,7 +11,6 @@ import java.util.function.Function;
 @Service
 public class ScopeDerivationService {
 
-    private static final String DEFAULT = "default";
     private static final String BUDGET_PREFIX = "budget:";
 
     private record ScopeLevel(String name, Function<Subject, String> extractor) {}
@@ -27,9 +26,9 @@ public class ScopeDerivationService {
 
 
     /**
-     * Returns the full canonical scope path as a single string up to the deepest defined level.
-     * Gaps between defined levels are filled with "default".
-     * Example: tenant:acme/workspace:dev/app:default/agent:summarizer-v2
+     * Returns the full canonical scope path as a single string.
+     * Only explicitly provided subject levels are included (gaps are skipped).
+     * Example: {tenant:acme, agent:summarizer-v2} → "tenant:acme/agent:summarizer-v2"
      */
     public String buildScopePath(@NonNull Subject subject) {
         List<String> segments = buildSegments(subject);
@@ -38,13 +37,11 @@ public class ScopeDerivationService {
 
 
     /**
-     * Returns a list of cumulative ancestor scope paths, one per defined (or gap-filled) level.
-     * Each entry represents a real budget enforcement point.
-     * Example: [
+     * Returns a list of cumulative ancestor scope paths, one per explicitly provided level.
+     * Gaps are skipped — only levels present in the subject are included.
+     * Example: {tenant:acme, agent:summarizer-v2} → [
      *   "tenant:acme",
-     *   "tenant:acme/workspace:dev",
-     *   "tenant:acme/workspace:dev/app:default",
-     *   "tenant:acme/workspace:dev/app:default/agent:summarizer-v2"
+     *   "tenant:acme/agent:summarizer-v2"
      * ]
      */
     public List<String> deriveScopes(@NonNull Subject subject) {
@@ -60,40 +57,27 @@ public class ScopeDerivationService {
     }
     /**
      * Builds a Redis budget key for the given subject and unit.
-     * Example: budget:tenant:acme/workspace:dev/app:default/agent:summarizer-v2:USD_MICROCENTS
+     * Example: budget:tenant:acme/agent:summarizer-v2:USD_MICROCENTS
      */
     public String buildBudgetKey(@NonNull Subject subject, @NonNull Enums.UnitEnum unit) {
         return BUDGET_PREFIX + buildScopePath(subject) + ":" + unit.name();
     }
     /**
-     * Core: derives ordered path segments up to the deepest defined level,
-     * filling intermediate gaps with "default".
-     * Example: ["tenant:acme", "workspace:dev", "app:default", "agent:summarizer-v2"]
+     * Core: derives ordered path segments for explicitly provided subject levels only.
+     * Levels not present in the subject are skipped (no gap-filling with "default").
+     * Example: {tenant:acme, agent:summarizer-v2} → ["tenant:acme", "agent:summarizer-v2"]
      */
     private List<String> buildSegments(Subject subject) {
-        int deepest = findDeepest(subject);
-        if (deepest < 0) {
-            throw new IllegalArgumentException("Subject must have at least tenant defined");
-        }
-
         List<String> segments = new ArrayList<>();
-        for (int i = 0; i <= deepest; i++) {
-            ScopeLevel level = HIERARCHY.get(i);
+        for (ScopeLevel level : HIERARCHY) {
             String value = level.extractor().apply(subject);
             if (value != null && !value.isBlank()) {
                 segments.add(level.name() + ":" + value.toLowerCase());
-            } else {
-                segments.add(level.name() + ":" + DEFAULT);
             }
         }
-        return segments;
-    }
-
-    private int findDeepest(Subject subject) {
-        for (int i = HIERARCHY.size() - 1; i >= 0; i--) {
-            String value = HIERARCHY.get(i).extractor().apply(subject);
-            if (value != null && !value.isBlank()) return i;
+        if (segments.isEmpty()) {
+            throw new IllegalArgumentException("Subject must have at least one scope level defined");
         }
-        return -1;
+        return segments;
     }
 }

@@ -22,6 +22,9 @@ local state = redis.call('HGET', reservation_key, 'state')
 local estimate_amount = tonumber(redis.call('HGET', reservation_key, 'estimate_amount'))
 local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
 local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scopes')
+-- Use budgeted_scopes (scopes that actually had budgets at reserve time) for mutations;
+-- fall back to affected_scopes for backward compatibility with pre-existing reservations.
+local budgeted_scopes_json = redis.call('HGET', reservation_key, 'budgeted_scopes')
 local stored_idempotency_key = redis.call('HGET', reservation_key, 'committed_idempotency_key')
 local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or "REJECT"
 
@@ -78,8 +81,8 @@ if now > current_expires_at + grace_ms then
     return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
--- Parse affected scopes
-local affected_scopes = cjson.decode(affected_scopes_json)
+-- Parse scopes: use budgeted_scopes for budget mutations (only scopes with actual budgets)
+local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
 
 -- Calculate delta (actual - estimate)
 local delta = actual_amount - estimate_amount

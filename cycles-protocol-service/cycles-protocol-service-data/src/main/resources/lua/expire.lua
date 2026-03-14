@@ -35,9 +35,11 @@ end
 local estimate_amount    = tonumber(redis.call('HGET', key, 'estimate_amount'))
 local estimate_unit      = redis.call('HGET', key, 'estimate_unit')
 local affected_scopes_json = redis.call('HGET', key, 'affected_scopes')
+-- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
+local budgeted_scopes_json = redis.call('HGET', key, 'budgeted_scopes')
 
 if estimate_amount and estimate_unit and affected_scopes_json then
-    local affected_scopes = cjson.decode(affected_scopes_json)
+    local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
     for _, scope in ipairs(affected_scopes) do
         local budget_key = "budget:" .. scope .. ":" .. estimate_unit
         redis.call('HINCRBY', budget_key, 'reserved',  -estimate_amount)

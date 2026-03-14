@@ -2445,19 +2445,13 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
         @Test
         void shouldReserveAcrossMultipleHierarchyLevels() {
-            // Seed budgets at all derived scope levels for tenant-a with agent=my-agent.
-            // deriveScopes for {tenant: "tenant-a", agent: "my-agent"} produces:
+            // Seed budgets at derived scope levels for tenant-a with agent=my-agent.
+            // deriveScopes for {tenant: "tenant-a", agent: "my-agent"} produces (gaps skipped):
             //   tenant:tenant-a
-            //   tenant:tenant-a/workspace:default
-            //   tenant:tenant-a/workspace:default/app:default
-            //   tenant:tenant-a/workspace:default/app:default/workflow:default
-            //   tenant:tenant-a/workspace:default/app:default/workflow:default/agent:my-agent
+            //   tenant:tenant-a/agent:my-agent
             try (Jedis jedis = jedisPool.getResource()) {
-                // Tenant-level already seeded by @BeforeEach; re-seed sub-levels
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:my-agent", "TOKENS", 200_000, 20_000);
+                // Tenant-level already seeded by @BeforeEach; seed agent-level
+                seedScopeBudget(jedis, "tenant:tenant-a/agent:my-agent", "TOKENS", 200_000, 20_000);
             }
 
             Map<String, String> subject = Map.of("tenant", TENANT_A, "agent", "my-agent");
@@ -2469,21 +2463,19 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
             assertThat(resp.getBody().get("reservation_id")).isNotNull();
 
-            // Verify affected_scopes contains all hierarchy levels
+            // Verify affected_scopes contains only explicitly provided levels
             var affectedScopes = (java.util.List<String>) resp.getBody().get("affected_scopes");
-            assertThat(affectedScopes).hasSize(5);
-            assertThat(affectedScopes.get(0)).contains("tenant:tenant-a");
+            assertThat(affectedScopes).hasSize(2);
+            assertThat(affectedScopes.get(0)).isEqualTo("tenant:tenant-a");
+            assertThat(affectedScopes.get(1)).isEqualTo("tenant:tenant-a/agent:my-agent");
         }
 
         @Test
         void shouldEnforceLowestLevelBudget() {
-            // Seed lower-level budget that is too small
+            // Seed lower-level budget that is too small (gaps skipped, so use direct scope path)
             try (Jedis jedis = jedisPool.getResource()) {
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
                 // Agent budget is only 100 tokens — too small for 5000 estimate
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:small-budget", "TOKENS", 100, 10);
+                seedScopeBudget(jedis, "tenant:tenant-a/agent:small-budget", "TOKENS", 100, 10);
             }
 
             Map<String, String> subject = Map.of("tenant", TENANT_A, "agent", "small-budget");
@@ -2497,11 +2489,9 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
         @Test
         void shouldCommitAcrossHierarchyAndUpdateBalances() {
+            // Seed budgets at derived scope levels (gaps skipped)
             try (Jedis jedis = jedisPool.getResource()) {
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:test-agent", "TOKENS", 200_000, 20_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/agent:test-agent", "TOKENS", 200_000, 20_000);
             }
 
             Map<String, String> subject = Map.of("tenant", TENANT_A, "agent", "test-agent");
@@ -2522,22 +2512,18 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
                 assertThat(Long.parseLong(tenantSpent)).isEqualTo(3000);
 
                 String agentSpent = jedis.hget(
-                        "budget:tenant:tenant-a/workspace:default/app:default/workflow:default/agent:test-agent:TOKENS",
+                        "budget:tenant:tenant-a/agent:test-agent:TOKENS",
                         "spent");
                 assertThat(Long.parseLong(agentSpent)).isEqualTo(3000);
             }
         }
 
         @Test
-        void shouldDeriveScopePathWithGapFilling() {
+        void shouldDeriveScopePathSkippingGaps() {
             // Subject with tenant + toolset (skipping workspace/app/workflow/agent)
-            // Should fill gaps with "default"
+            // Gaps are skipped — only explicitly provided levels appear in scope path
             try (Jedis jedis = jedisPool.getResource()) {
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default", "TOKENS", 500_000, 50_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default", "TOKENS", 400_000, 40_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default", "TOKENS", 300_000, 30_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:default", "TOKENS", 200_000, 20_000);
-                seedScopeBudget(jedis, "tenant:tenant-a/workspace:default/app:default/workflow:default/agent:default/toolset:search", "TOKENS", 100_000, 10_000);
+                seedScopeBudget(jedis, "tenant:tenant-a/toolset:search", "TOKENS", 100_000, 10_000);
             }
 
             Map<String, String> subject = Map.of("tenant", TENANT_A, "toolset", "search");
@@ -2546,13 +2532,14 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
 
             assertThat(resp.getStatusCode().value()).isEqualTo(200);
-            // Should derive all 6 scope levels with gaps filled
+            // Should derive only 2 scope levels (tenant + toolset), gaps skipped
             var affectedScopes = (java.util.List<String>) resp.getBody().get("affected_scopes");
-            assertThat(affectedScopes).hasSize(6);
+            assertThat(affectedScopes).hasSize(2);
+            assertThat(affectedScopes.get(0)).isEqualTo("tenant:tenant-a");
+            assertThat(affectedScopes.get(1)).isEqualTo("tenant:tenant-a/toolset:search");
 
             String scopePath = (String) resp.getBody().get("scope_path");
-            assertThat(scopePath).contains("toolset:search");
-            assertThat(scopePath).contains("agent:default");
+            assertThat(scopePath).isEqualTo("tenant:tenant-a/toolset:search");
         }
     }
 
