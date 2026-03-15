@@ -1,6 +1,6 @@
 # Cycles Protocol v0.1.23 — Server Implementation Audit
 
-**Date:** 2026-03-08
+**Date:** 2026-03-15
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.23)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
@@ -24,6 +24,7 @@
 | Dry-Run Semantics | — | 0 |
 | Overdraft/Debt Model | — | 0 |
 | Grace Period Handling | — | 0 |
+| Test Coverage | — | 0 |
 
 **All previously identified issues have been fixed. No remaining spec violations found.**
 
@@ -144,6 +145,14 @@ Two-pass audit covering:
 - Event.lua uses same fail-fast atomicity patterns
 - Reserve.lua atomically checks and deducts across all derived scopes
 - All Lua scripts leverage Redis single-threaded execution for atomicity
+
+### Test Coverage (above 98%)
+- JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
+- **API module**: 209/209 lines covered — **100%** line coverage (91 unit tests)
+- **Data module**: 766/780 lines covered — **98.2%** line coverage (14 uncovered lines are defensive catch blocks in scan/parse error paths)
+- **Model module**: Coverage skipped (POJOs only, no business logic)
+- Total unit test count: 91 (API) + 68 (Data) + 5 (Model) = **164 unit tests**
+- All tests pass without Docker/Testcontainers (integration tests excluded by default)
 
 ### Overdraft/Debt Model (correct)
 - `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event
