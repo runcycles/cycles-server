@@ -163,4 +163,15 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
         assertThat(response.getBody().getMessage()).isEqualTo("Malformed request body");
     }
+
+    @Test
+    void shouldHandleNullRequest() {
+        CyclesProtocolException ex = CyclesProtocolException.notFound("res_123");
+
+        ResponseEntity<ErrorResponse> response = handler.handleCyclesException(ex, null);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        // Should generate a UUID fallback when request is null
+        assertThat(response.getBody().getRequestId()).isNotBlank();
+    }
 }

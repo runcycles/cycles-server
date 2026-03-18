@@ -2467,6 +2467,151 @@ class RedisReservationRepositoryTest {
         }
     }
 
+    // ---- Branch coverage tests: null defaults, catch blocks, ternary edges ----
+
+    @Nested
+    @DisplayName("createReservation null defaults")
+    class CreateReservationNullDefaults {
+
+        @Test
+        void shouldUseDefaultOveragePolicyWhenNull() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-def", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-def");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setOveragePolicy(null);  // null → defaults to REJECT
+            request.setTtlMs(null);          // null → defaults to 60000
+            request.setGracePeriodMs(null);   // null → defaults to 5000
+            request.setMetadata(null);        // null → empty string
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+
+        @Test
+        void shouldUseExplicitOveragePolicyWhenProvided() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-pol", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-pol");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setOveragePolicy(Enums.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT);
+            request.setTtlMs(30000L);
+            request.setGracePeriodMs(10000L);
+            request.setMetadata(Map.of("key", "value"));
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+    }
+
+    @Nested
+    @DisplayName("listReservations error handling")
+    class ListReservationsErrorHandling {
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldSkipMalformedReservationInList() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // One valid reservation, one that will cause a parse error (missing required fields)
+            Map<String, String> validFields = reservationFields("r1", "ACTIVE");
+            Map<String, String> brokenFields = new HashMap<>();
+            brokenFields.put("reservation_id", "r2");
+            // Missing all other fields → will throw during buildReservationSummary
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(brokenFields);
+            when(resp2.get()).thenReturn(validFields);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r2", "reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null);
+
+            // Broken reservation skipped, valid one returned
+            assertThat(response.getReservations()).hasSize(1);
+            assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
+        }
+    }
+
+    @Nested
+    @DisplayName("getBalances error handling")
+    class GetBalancesErrorHandling {
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldSkipBudgetWithInvalidUnitEnum() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> invalidBudget = new HashMap<>(budgetMap(10000, 5000, 0, 5000));
+            invalidBudget.put("unit", "INVALID_UNIT");
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:INVALID_UNIT"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:INVALID_UNIT")).thenReturn(invalidBudget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
+
+            // Should skip the invalid entry
+            assertThat(response.getBalances()).isEmpty();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        void shouldSkipBudgetWithMalformedNumericData() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> malformedBudget = new HashMap<>(budgetMap(10000, 5000, 0, 5000));
+            malformedBudget.put("allocated", "not-a-number");
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(malformedBudget);
+
+            BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
+
+            // Should skip the malformed entry
+            assertThat(response.getBalances()).isEmpty();
+        }
+    }
+
     // ---- Helper to build reservation fields ----
 
     private Map<String, String> reservationFields(String id, String state) {

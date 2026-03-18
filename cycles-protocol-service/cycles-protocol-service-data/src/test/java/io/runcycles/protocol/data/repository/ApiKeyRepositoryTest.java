@@ -278,5 +278,112 @@ class ApiKeyRepositoryTest {
             assertThat(result.isValid()).isFalse();
             assertThat(result.getReason()).isEqualTo("INTERNAL_ERROR");
         }
+
+        @Test
+        void shouldReturnEmptyTenantIdWhenRevokedKeyHasNullTenant() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId(null)
+                    .keyHash(hash).status(ApiKeyStatus.REVOKED).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getTenantId()).isEmpty();
+            assertThat(result.getReason()).isEqualTo("KEY_REVOKED");
+        }
+
+        @Test
+        void shouldReturnEmptyTenantIdWhenExpiredKeyHasNullTenant() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId(null)
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .expiresAt(Instant.now().minusSeconds(3600)).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getTenantId()).isEmpty();
+            assertThat(result.getReason()).isEqualTo("KEY_EXPIRED");
+        }
+
+        @Test
+        void shouldReturnEmptyTenantIdWhenInvalidKeyHasNullTenant() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            String differentHash = BCrypt.hashpw("different_secret", BCrypt.gensalt());
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId(null)
+                    .keyHash(differentHash).status(ApiKeyStatus.ACTIVE).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getTenantId()).isEmpty();
+            assertThat(result.getReason()).isEqualTo("INVALID_KEY");
+        }
+
+        @Test
+        void shouldReturnInvalidWhenTenantNull() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId(null)
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getReason()).isEqualTo("KEY_NOT_OWNED_BY_TENANT");
+        }
+
+        @Test
+        void shouldReturnEmptyPermissionsWhenNull() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(null) // null permissions
+                    .build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isTrue();
+            assertThat(result.getPermissions()).isEmpty();
+        }
+
+        @Test
+        void shouldReturnValidForKeyWithNonNullNonExpiredExpiresAt() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .expiresAt(Instant.now().plusSeconds(3600)) // not expired
+                    .permissions(List.of("read"))
+                    .build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isTrue();
+        }
     }
 }
