@@ -2715,12 +2715,16 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         void shouldSkipReservationInGracePeriod() {
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
 
-            // Set expires_at 5s ago but with 60s grace period — should NOT expire
+            // Use Redis TIME (not System.currentTimeMillis) for expires_at to avoid clock
+            // skew with expire.lua, which checks grace period using redis.call('TIME').
             try (Jedis jedis = jedisPool.getResource()) {
+                List<String> t = jedis.time();
+                long redisNow = Long.parseLong(t.get(0)) * 1000 + Long.parseLong(t.get(1)) / 1000;
+                long expiresAt = redisNow - 5_000;
                 String key = "reservation:res_" + reservationId;
-                jedis.hset(key, "expires_at", String.valueOf(System.currentTimeMillis() - 5_000));
+                jedis.hset(key, "expires_at", String.valueOf(expiresAt));
                 jedis.hset(key, "grace_ms", "60000");
-                jedis.zadd("reservation:ttl", System.currentTimeMillis() - 5_000, reservationId);
+                jedis.zadd("reservation:ttl", expiresAt, reservationId);
             }
 
             expiryService.expireReservations();
