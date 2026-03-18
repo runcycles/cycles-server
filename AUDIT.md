@@ -152,7 +152,10 @@ Two-pass audit covering:
 - **Data module**: 194 unit tests (includes expiry sweep: Redis TIME, batch limit, and TIME failure tests)
 - **Model module**: Coverage skipped (POJOs only, no business logic)
 - Total unit test count: 91 (API) + 194 (Data) + 5 (Model) = **290 unit tests**
-- All tests pass without Docker/Testcontainers (integration tests excluded by default)
+- **Integration tests**: 26 nested test classes covering all 9 endpoints, including:
+  - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
+  - Budget Status (2 tests): BUDGET_FROZEN and BUDGET_CLOSED enforcement on reserve
+- All unit tests pass without Docker/Testcontainers (integration tests excluded by default)
 
 ### Overdraft/Debt Model (correct)
 - `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event

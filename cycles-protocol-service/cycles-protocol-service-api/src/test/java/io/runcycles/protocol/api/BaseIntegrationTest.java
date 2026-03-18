@@ -255,4 +255,23 @@ public abstract class BaseIntegrationTest {
             jedis.zadd("reservation:ttl", pastExpiresAt, reservationId);
         }
     }
+
+    /**
+     * Seed a budget with a specific status (e.g. FROZEN, CLOSED).
+     */
+    protected void seedBudgetWithStatus(Jedis jedis, String tenant, String unit, long allocated, String status) {
+        String key = "budget:tenant:" + tenant + ":" + unit;
+        jedis.hset(key, Map.of(
+                "scope", "tenant:" + tenant,
+                "unit", unit,
+                "allocated", String.valueOf(allocated),
+                "remaining", String.valueOf(allocated),
+                "reserved", "0",
+                "spent", "0",
+                "debt", "0",
+                "overdraft_limit", String.valueOf(allocated / 10),
+                "is_over_limit", "false",
+                "status", status
+        ));
+    }
 }
