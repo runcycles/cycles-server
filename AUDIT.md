@@ -149,10 +149,13 @@ Two-pass audit covering:
 ### Test Coverage (above 98%)
 - JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
 - **API module**: 209/209 lines covered — **100%** line coverage (91 unit tests)
-- **Data module**: 766/780 lines covered — **98.2%** line coverage (14 uncovered lines are defensive catch blocks in scan/parse error paths)
+- **Data module**: 194 unit tests (includes expiry sweep: Redis TIME, batch limit, and TIME failure tests)
 - **Model module**: Coverage skipped (POJOs only, no business logic)
-- Total unit test count: 91 (API) + 68 (Data) + 5 (Model) = **164 unit tests**
-- All tests pass without Docker/Testcontainers (integration tests excluded by default)
+- Total unit test count: 91 (API) + 194 (Data) + 5 (Model) = **290 unit tests**
+- **Integration tests**: 26 nested test classes covering all 9 endpoints, including:
+  - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
+  - Budget Status (2 tests): BUDGET_FROZEN and BUDGET_CLOSED enforcement on reserve
+- All unit tests pass without Docker/Testcontainers (integration tests excluded by default)
 
 ### Overdraft/Debt Model (correct)
 - `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event
@@ -184,6 +187,21 @@ Two-pass audit covering:
 - **Was:** Only dry_run responses included balances; non-dry_run omitted them
 - **Fix:** Added `fetchBalancesForScopes()` calls for both normal and idempotency-hit paths
 - **Location:** `RedisReservationRepository.java:84,96-106`
+
+### Issue 5 [FIXED]: expire.lua did not clean up orphaned TTL entries for missing reservations
+- **Was:** NOT_FOUND path returned without `ZREM`, causing orphaned `reservation:ttl` entries to be retried every 5 seconds indefinitely
+- **Fix:** Added `redis.call('ZREM', 'reservation:ttl', reservation_id)` before NOT_FOUND return, matching the existing cleanup in the non-ACTIVE path
+- **Location:** `expire.lua:16-18`
+
+### Issue 6 [FIXED]: Unbounded `zrangeByScore` in expiry sweep could cause OOM after outages
+- **Was:** `jedis.zrangeByScore("reservation:ttl", 0, now)` loaded all expired candidates into memory at once
+- **Fix:** Added LIMIT of 1000 per sweep cycle via `zrangeByScore(key, 0, now, 0, SWEEP_BATCH_SIZE)` — backlog drains naturally across subsequent sweeps
+- **Location:** `ReservationExpiryService.java:31,45`
+
+### Issue 7 [FIXED]: Clock skew between Java and Redis in expiry sweep candidate query
+- **Was:** Java `System.currentTimeMillis()` used for the `zrangeByScore` query; all Lua scripts use `redis.call('TIME')` — clock drift could cause missed or premature candidate selection
+- **Fix:** Replaced with `jedis.time()` to use Redis server clock, consistent with reserve/commit/release/extend/expire Lua scripts
+- **Location:** `ReservationExpiryService.java:39-41`
 
 ---
 
