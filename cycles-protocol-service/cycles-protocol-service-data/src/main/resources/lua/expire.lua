@@ -14,6 +14,7 @@ local key   = "reservation:res_" .. reservation_id
 local state = redis.call('HGET', key, 'state')
 
 if not state then
+    redis.call('ZREM', 'reservation:ttl', reservation_id)
     return cjson.encode({status = "NOT_FOUND"})
 end
 

@@ -32,6 +32,9 @@ class ReservationExpiryServiceTest {
         setField(service, "jedisPool", jedisPool);
         setField(service, "expireScript", "-- expire lua script");
         when(jedisPool.getResource()).thenReturn(jedis);
+        // Mock Redis TIME — returns [seconds, microseconds].
+        // Use lenient() because some tests override getResource() to throw before time() is called.
+        lenient().when(jedis.time()).thenReturn(List.of("1710768000", "123456"));
     }
 
     private void setField(Object target, String name, Object value) throws Exception {
@@ -42,7 +45,7 @@ class ReservationExpiryServiceTest {
 
     @Test
     void shouldExpireCandidatesFromSortedSet() {
-        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble()))
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(List.of("res_1", "res_2"));
         when(jedis.eval(anyString(), eq(0), anyString())).thenReturn("OK");
 
@@ -54,7 +57,7 @@ class ReservationExpiryServiceTest {
 
     @Test
     void shouldSkipWhenNoCandidates() {
-        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble()))
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(Collections.emptyList());
 
         service.expireReservations();
@@ -64,7 +67,7 @@ class ReservationExpiryServiceTest {
 
     @Test
     void shouldContinueOnPerReservationFailure() {
-        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble()))
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(List.of("res_1", "res_2", "res_3"));
         when(jedis.eval(anyString(), eq(0), eq("res_1"))).thenReturn("OK");
         when(jedis.eval(anyString(), eq(0), eq("res_2")))
@@ -83,5 +86,40 @@ class ReservationExpiryServiceTest {
 
         // Should not throw — exception is caught internally
         service.expireReservations();
+    }
+
+    @Test
+    void shouldUseRedisTimeForCandidateQuery() {
+        // Redis TIME returns [seconds, microseconds] → expected millis = 1710768000*1000 + 123456/1000 = 1710768000123
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), eq(1710768000123.0), eq(0), eq(1000)))
+                .thenReturn(Collections.emptyList());
+
+        service.expireReservations();
+
+        // Verify that Redis TIME was called and the computed millis were passed to zrangeByScore
+        verify(jedis).time();
+        verify(jedis).zrangeByScore("reservation:ttl", 0, 1710768000123.0, 0, 1000);
+    }
+
+    @Test
+    void shouldLimitCandidateBatchSize() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(Collections.emptyList());
+
+        service.expireReservations();
+
+        // Verify the LIMIT parameters (offset=0, count=1000) are passed
+        verify(jedis).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000));
+    }
+
+    @Test
+    void shouldHandleRedisTimeFailure() {
+        when(jedis.time()).thenThrow(new RuntimeException("Redis TIME failed"));
+
+        // Should not throw — exception is caught by outer handler
+        service.expireReservations();
+
+        // Should never reach zrangeByScore
+        verify(jedis, never()).zrangeByScore(anyString(), anyDouble(), anyDouble(), anyInt(), anyInt());
     }
 }

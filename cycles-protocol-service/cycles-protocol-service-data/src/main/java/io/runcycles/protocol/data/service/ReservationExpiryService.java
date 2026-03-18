@@ -27,15 +27,22 @@ public class ReservationExpiryService {
     @Autowired private JedisPool jedisPool;
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
 
+    /** Max candidates per sweep to avoid OOM after prolonged outages. */
+    private static final int SWEEP_BATCH_SIZE = 1000;
+
     @Scheduled(fixedDelayString = "${cycles.expiry.interval-ms:5000}",
                initialDelayString = "${cycles.expiry.initial-delay-ms:5000}")
     public void expireReservations() {
-        long now = System.currentTimeMillis();
-
         try (Jedis jedis = jedisPool.getResource()) {
-            // Fetch all reservation IDs whose score (expires_at_ms) <= now.
+            // Use Redis TIME (not System.currentTimeMillis) so the candidate query is
+            // consistent with the Lua scripts, which all use Redis TIME internally.
+            List<String> timeResult = jedis.time();
+            long now = Long.parseLong(timeResult.get(0)) * 1000
+                     + Long.parseLong(timeResult.get(1)) / 1000;
+
+            // Fetch up to SWEEP_BATCH_SIZE reservation IDs whose score (expires_at_ms) <= now.
             // Any that are still in their grace period will be skipped by the Lua script.
-            List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now);
+            List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now, 0, SWEEP_BATCH_SIZE);
             if (candidates.isEmpty()) return;
 
             LOG.debug("Expiry sweep: {} candidate(s)", candidates.size());
