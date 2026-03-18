@@ -1,6 +1,7 @@
 package io.runcycles.protocol.api.filter;
 
 import jakarta.servlet.FilterChain;
+import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -32,6 +33,20 @@ class RateLimitHeaderFilterTest {
     void shouldNotSetHeadersForNonV1Paths() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRequestURI("/actuator/health");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilterInternal(request, response, chain);
+
+        assertThat(response.getHeader("X-RateLimit-Remaining")).isNull();
+        assertThat(response.getHeader("X-RateLimit-Reset")).isNull();
+        verify(chain).doFilter(request, response);
+    }
+
+    @Test
+    void shouldHandleNullRequestUri() throws Exception {
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        when(request.getRequestURI()).thenReturn(null);
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
 

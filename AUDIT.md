@@ -148,10 +148,11 @@ Two-pass audit covering:
 
 ### Test Coverage (above 98%)
 - JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
-- **API module**: 209/209 lines covered — **100%** line coverage (91 unit tests)
-- **Data module**: 194 unit tests (includes expiry sweep: Redis TIME, batch limit, and TIME failure tests)
+- **API module**: 209/209 lines covered — **100%** line coverage (93 unit tests)
+- **Data module**: 770/782 lines covered — **98.5%** line coverage, 76% branch coverage (205 unit tests)
+  - Branch gaps: defensive null-check ternaries and unreachable `&&` short-circuit branches in `RedisReservationRepository`
 - **Model module**: Coverage skipped (POJOs only, no business logic)
-- Total unit test count: 91 (API) + 194 (Data) + 5 (Model) = **290 unit tests**
+- Total unit test count: 93 (API) + 205 (Data) + 5 (Model) = **303 unit tests**
 - **Integration tests**: 26 nested test classes covering all 9 endpoints, including:
   - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
   - Budget Status (2 tests): BUDGET_FROZEN and BUDGET_CLOSED enforcement on reserve
