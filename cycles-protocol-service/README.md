@@ -154,6 +154,8 @@ Beyond expires_at_ms:                  extend blocked (410)
 
 The same three policies apply to `/v1/events` for direct debits.
 
+When `overage_policy` is omitted from the request, the server resolves it from the tenant's `default_commit_overage_policy` (set via the Admin API). If the tenant has no default configured, `REJECT` is used.
+
 ### Debt and Overdraft
 
 - If `overdraft_limit` is absent or `0`, no overdraft is permitted (`ALLOW_WITH_OVERDRAFT` behaves as `ALLOW_IF_AVAILABLE`).
@@ -304,9 +306,9 @@ Reserve budget before executing an action. Returns `200 OK`.
 | `action.tags` | no | — | max 10 items, each max 64 chars |
 | `estimate.unit` | yes | — | see Units |
 | `estimate.amount` | yes | — | ≥ 0 |
-| `ttl_ms` | no | `60000` | 1000–86400000 ms |
+| `ttl_ms` | no | tenant `default_reservation_ttl_ms` or `60000` | 1000–86400000 ms; capped to tenant `max_reservation_ttl_ms` |
 | `grace_period_ms` | no | `5000` | 0–60000 ms |
-| `overage_policy` | no | `REJECT` | see Overage Policies |
+| `overage_policy` | no | tenant `default_commit_overage_policy` or `REJECT` | see Overage Policies |
 | `dry_run` | no | `false` | evaluates without persisting if true |
 
 **Response** `200 OK`
@@ -430,7 +432,7 @@ Extend the reservation TTL. Only allowed while `server_time ≤ expires_at_ms` (
 
 `extend_by_ms` is added to the current `expires_at_ms` (not to request time). Does not change reserved amount, unit, subject, action, or scope.
 
-**Error conditions:** `409 RESERVATION_FINALIZED` if the reservation is already COMMITTED or RELEASED; `410 RESERVATION_EXPIRED` if `server_time > expires_at_ms`; `404 NOT_FOUND` if the reservation does not exist.
+**Error conditions:** `409 RESERVATION_FINALIZED` if the reservation is already COMMITTED or RELEASED; `410 RESERVATION_EXPIRED` if `server_time > expires_at_ms`; `409 MAX_EXTENSIONS_EXCEEDED` if the tenant's `max_reservation_extensions` limit has been reached; `404 NOT_FOUND` if the reservation does not exist.
 
 ---
 

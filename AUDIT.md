@@ -25,6 +25,7 @@
 | Overdraft/Debt Model | — | 0 |
 | Grace Period Handling | — | 0 |
 | Test Coverage | — | 0 |
+| Tenant Default Config | — | 0 |
 
 **All previously identified issues have been fixed. No remaining spec violations found.**
 
@@ -149,14 +150,32 @@ Two-pass audit covering:
 ### Test Coverage (above 98%)
 - JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
 - **API module**: 209/209 lines covered — **100%** line coverage (93 unit tests)
-- **Data module**: 770/782 lines covered — **98.5%** line coverage, 76% branch coverage (205 unit tests)
+- **Data module**: 770+ lines covered — **98.5%+** line coverage, 76%+ branch coverage (215 unit tests)
   - Branch gaps: defensive null-check ternaries and unreachable `&&` short-circuit branches in `RedisReservationRepository`
+  - Tenant default resolution: 10 unit tests covering all fallback paths, TTL capping, max extensions, malformed JSON recovery
 - **Model module**: Coverage skipped (POJOs only, no business logic)
-- Total unit test count: 93 (API) + 205 (Data) + 5 (Model) = **303 unit tests**
-- **Integration tests**: 26 nested test classes covering all 9 endpoints, including:
+- Total unit test count: 93 (API) + 215 (Data) + 5 (Model) = **313 unit tests**
+- **Integration tests**: 27+ nested test classes covering all 9 endpoints, including:
+  - Tenant Defaults (9 tests): overage policy resolution (ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT, REJECT), explicit override vs tenant default, TTL capping, max extensions enforcement, default TTL usage, no-tenant-record fallback
   - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
   - Budget Status (2 tests): BUDGET_FROZEN and BUDGET_CLOSED enforcement on reserve
 - All unit tests pass without Docker/Testcontainers (integration tests excluded by default)
+
+### Tenant Default Configuration (correct)
+- `default_commit_overage_policy`: resolved at reservation/event creation time
+  - Resolution order: request-level `overage_policy` > tenant `default_commit_overage_policy` > hardcoded `REJECT`
+  - Tenant config read from Redis `tenant:{tenant_id}` JSON record (shared with admin service)
+  - Graceful fallback to `REJECT` on tenant read failure or missing record
+- `default_reservation_ttl_ms`: used when request omits `ttl_ms` (was hardcoded to 60000ms)
+  - Resolution order: request `ttl_ms` > tenant `default_reservation_ttl_ms` > hardcoded 60000ms
+- `max_reservation_ttl_ms`: caps requested TTL to tenant maximum (default 3600000ms)
+  - Applied after default resolution: `Math.min(effectiveTtl, maxTtl)`
+- `max_reservation_extensions`: stored on reservation at creation, enforced in extend.lua
+  - `extension_count` tracked and incremented atomically in extend.lua
+  - Returns `MAX_EXTENSIONS_EXCEEDED` (HTTP 409) when count reaches max
+  - Default: 10 (spec default)
+- Request model fields (`overagePolicy`, `ttlMs`) changed from hardcoded defaults to `null`
+  to allow tenant config resolution when client omits them
 
 ### Overdraft/Debt Model (correct)
 - `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event
@@ -198,6 +217,19 @@ Two-pass audit covering:
 - **Was:** `jedis.zrangeByScore("reservation:ttl", 0, now)` loaded all expired candidates into memory at once
 - **Fix:** Added LIMIT of 1000 per sweep cycle via `zrangeByScore(key, 0, now, 0, SWEEP_BATCH_SIZE)` — backlog drains naturally across subsequent sweeps
 - **Location:** `ReservationExpiryService.java:31,45`
+
+### Issue 8 [FIXED]: Tenant default configuration not honored by protocol server
+- **Was:** `default_commit_overage_policy`, `default_reservation_ttl_ms`, `max_reservation_ttl_ms`, and `max_reservation_extensions` were set via admin API but ignored by the protocol server. The request models hardcoded `overagePolicy = REJECT` and `ttlMs = 60000L` as field defaults, so when clients omitted these fields they always got hardcoded values — never the tenant's configured defaults.
+- **Fix:**
+  1. Removed hardcoded defaults from `ReservationCreateRequest.overagePolicy` (was `REJECT`), `ReservationCreateRequest.ttlMs` (was `60000L`), and `EventCreateRequest.overagePolicy` (was `REJECT`) — now `null` when omitted
+  2. Added `getTenantConfig()` to read tenant JSON from `tenant:{id}` Redis key
+  3. Added `resolveOveragePolicy()`: request > tenant `default_commit_overage_policy` > `REJECT`
+  4. Added `resolveReservationTtl()`: request > tenant `default_reservation_ttl_ms` > 60000ms, then `Math.min(ttl, max_reservation_ttl_ms)`
+  5. Added `resolveMaxExtensions()`: reads tenant `max_reservation_extensions` (default 10), stored on reservation, enforced in extend.lua
+  6. extend.lua: tracks `extension_count`, returns `MAX_EXTENSIONS_EXCEEDED` when limit reached
+  7. reserve.lua: accepts `max_extensions` as ARGV[14], stores on reservation hash
+  8. Added `MAX_EXTENSIONS_EXCEEDED` error code (HTTP 409)
+- **Location:** `RedisReservationRepository.java`, `ReservationCreateRequest.java`, `EventCreateRequest.java`, `reserve.lua`, `extend.lua`, `Enums.java`
 
 ### Issue 7 [FIXED]: Clock skew between Java and Redis in expiry sweep candidate query
 - **Was:** Java `System.currentTimeMillis()` used for the `zrangeByScore` query; all Lua scripts use `redis.call('TIME')` — clock drift could cause missed or premature candidate selection

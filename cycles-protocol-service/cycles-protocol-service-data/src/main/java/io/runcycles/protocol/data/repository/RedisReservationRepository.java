@@ -34,9 +34,12 @@ public class RedisReservationRepository {
         LOG.info("Creating reservation for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
+            Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
             List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
             String scopePath = affectedScopes.get(affectedScopes.size() - 1);
-            String overagePolicy = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "REJECT";
+            String overagePolicy = resolveOveragePolicy(request.getOveragePolicy(), tenantConfig);
+            long effectiveTtl = resolveReservationTtl(request.getTtlMs(), tenantConfig);
+            int maxExtensions = resolveMaxExtensions(tenantConfig);
 
             // dry_run: evaluate budget without persisting a reservation
             if (Boolean.TRUE.equals(request.getDryRun())) {
@@ -51,16 +54,17 @@ public class RedisReservationRepository {
             args.add(objectMapper.writeValueAsString(request.getAction()));
             args.add(String.valueOf(request.getEstimate().getAmount()));
             args.add(request.getEstimate().getUnit().name());
-            args.add(String.valueOf(request.getTtlMs() != null ? request.getTtlMs() : 60000));
+            args.add(String.valueOf(effectiveTtl));
             args.add(String.valueOf(request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000));
             args.add(request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "");
             args.add(scopePath);
             args.add(tenant);
             args.add(overagePolicy);
-            // ARGV[12] = metadata_json, ARGV[13] = payload_hash; scopes start at ARGV[14]
+            // ARGV[12] = metadata_json, ARGV[13] = payload_hash, ARGV[14] = max_extensions; scopes start at ARGV[15]
             args.add(request.getMetadata() != null
                 ? objectMapper.writeValueAsString(request.getMetadata()) : "");
             args.add(computePayloadHash(request));
+            args.add(String.valueOf(maxExtensions));
             args.addAll(affectedScopes);
 
             Object result = jedis.eval(reserveScript, 0, args.toArray(new String[0]));
@@ -715,11 +719,12 @@ public class RedisReservationRepository {
         LOG.info("Creating event for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
+            Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
             String eventId = UUID.randomUUID().toString();
             List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
             String scopePath = affectedScopes.get(affectedScopes.size() - 1);
 
-            String eventOveragePolicy = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "REJECT";
+            String eventOveragePolicy = resolveOveragePolicy(request.getOveragePolicy(), tenantConfig);
 
             List<String> args = new ArrayList<>();
             args.add(eventId);
@@ -928,6 +933,73 @@ public class RedisReservationRepository {
         return balances;
     }
 
+    /**
+     * Fetches tenant configuration from Redis and returns parsed defaults.
+     * Returns null if tenant record is not found (caller uses hardcoded defaults).
+     */
+    private Map<String, Object> getTenantConfig(Jedis jedis, String tenant) {
+        try {
+            String tenantJson = jedis.get("tenant:" + tenant);
+            if (tenantJson != null) {
+                return objectMapper.readValue(tenantJson, Map.class);
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to read tenant config for tenant: {}", tenant, e);
+        }
+        return null;
+    }
+
+    /**
+     * Resolve the effective overage policy: use the request-level policy if provided,
+     * otherwise fall back to the tenant's default_commit_overage_policy, then REJECT.
+     */
+    private String resolveOveragePolicy(Enums.CommitOveragePolicy requestPolicy, Map<String, Object> tenantConfig) {
+        if (requestPolicy != null) {
+            return requestPolicy.name();
+        }
+        if (tenantConfig != null) {
+            Object defaultPolicy = tenantConfig.get("default_commit_overage_policy");
+            if (defaultPolicy != null && !defaultPolicy.toString().isEmpty()) {
+                return defaultPolicy.toString();
+            }
+        }
+        return "REJECT";
+    }
+
+    /**
+     * Resolve effective TTL: use request value if provided, else tenant default, else 60000ms.
+     * Then cap to tenant's max_reservation_ttl_ms (default 3600000ms).
+     */
+    private long resolveReservationTtl(Long requestTtlMs, Map<String, Object> tenantConfig) {
+        long defaultTtl = 60000L;
+        long maxTtl = 3600000L;
+        if (tenantConfig != null) {
+            Object tenantDefault = tenantConfig.get("default_reservation_ttl_ms");
+            if (tenantDefault != null) {
+                defaultTtl = ((Number) tenantDefault).longValue();
+            }
+            Object tenantMax = tenantConfig.get("max_reservation_ttl_ms");
+            if (tenantMax != null) {
+                maxTtl = ((Number) tenantMax).longValue();
+            }
+        }
+        long ttl = requestTtlMs != null ? requestTtlMs : defaultTtl;
+        return Math.min(ttl, maxTtl);
+    }
+
+    /**
+     * Resolve max_reservation_extensions from tenant config (default 10).
+     */
+    private int resolveMaxExtensions(Map<String, Object> tenantConfig) {
+        if (tenantConfig != null) {
+            Object maxExt = tenantConfig.get("max_reservation_extensions");
+            if (maxExt != null) {
+                return ((Number) maxExt).intValue();
+            }
+        }
+        return 10;
+    }
+
     private void handleScriptError(Map<String, Object> response) {
         String error = (String) response.get("error");
         String message = response.getOrDefault("message", error).toString();
@@ -960,6 +1032,8 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.reservationExpired();
             case "RESERVATION_EXPIRATION_NOT_FOUND":
                 throw CyclesProtocolException.reservationExpirationNotFound();
+            case "MAX_EXTENSIONS_EXCEEDED":
+                throw new CyclesProtocolException(Enums.ErrorCode.MAX_EXTENSIONS_EXCEEDED, message, 409);
             default:
                 throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, "Script error: " + error, 500);
         }
