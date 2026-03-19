@@ -1,3 +1,6 @@
+[![CI](https://github.com/runcycles/cycles-server/actions/workflows/ci.yml/badge.svg)](https://github.com/runcycles/cycles-server/actions)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 # RunCycles Server
 
 Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.23) — a reservation-based budget control service for AI agents and workflows.
