@@ -16,7 +16,7 @@ public class ReservationCreateRequest {
     @NotNull @Valid @JsonProperty("estimate") private Amount estimate;
     @Min(1000) @Max(86400000) @JsonProperty("ttl_ms") private Long ttlMs = 60000L;
     @Min(0) @Max(60000) @JsonProperty("grace_period_ms") private Long gracePeriodMs = 5000L;
-    @JsonProperty("overage_policy") private Enums.CommitOveragePolicy overagePolicy = Enums.CommitOveragePolicy.REJECT;
+    @JsonProperty("overage_policy") private Enums.CommitOveragePolicy overagePolicy;
     @JsonProperty("dry_run") private Boolean dryRun = false;
     @JsonProperty("metadata") private Map<String, Object> metadata;
 }

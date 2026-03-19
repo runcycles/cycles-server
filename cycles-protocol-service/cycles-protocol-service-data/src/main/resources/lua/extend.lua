@@ -46,9 +46,17 @@ if now > current_expires_at then
     return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
+-- Enforce max_reservation_extensions from tenant config
+local extension_count = tonumber(redis.call('HGET', reservation_key, 'extension_count') or 0)
+local max_extensions = tonumber(redis.call('HGET', reservation_key, 'max_extensions') or 10)
+if extension_count >= max_extensions then
+    return cjson.encode({error = "MAX_EXTENSIONS_EXCEEDED", message = "Maximum reservation extensions (" .. max_extensions .. ") reached"})
+end
+
 local new_expires_at = current_expires_at + extend_by_ms
 
 redis.call('HSET', reservation_key, 'expires_at', new_expires_at)
+redis.call('HINCRBY', reservation_key, 'extension_count', 1)
 redis.call('ZADD', 'reservation:ttl', new_expires_at, reservation_id)
 
 local result = cjson.encode({
