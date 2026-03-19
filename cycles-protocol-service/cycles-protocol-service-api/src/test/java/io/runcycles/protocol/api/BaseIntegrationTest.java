@@ -212,6 +212,23 @@ public abstract class BaseIntegrationTest {
     }
 
     /**
+     * Seed a tenant record in Redis with configurable defaults.
+     */
+    protected void seedTenant(Jedis jedis, String tenantId, String overagePolicy,
+                               Long defaultTtlMs, Long maxTtlMs, Integer maxExtensions) throws Exception {
+        Map<String, Object> tenant = new HashMap<>();
+        tenant.put("tenant_id", tenantId);
+        tenant.put("name", tenantId);
+        tenant.put("status", "ACTIVE");
+        tenant.put("created_at", Instant.now().toString());
+        if (overagePolicy != null) tenant.put("default_commit_overage_policy", overagePolicy);
+        if (defaultTtlMs != null) tenant.put("default_reservation_ttl_ms", defaultTtlMs);
+        if (maxTtlMs != null) tenant.put("max_reservation_ttl_ms", maxTtlMs);
+        if (maxExtensions != null) tenant.put("max_reservation_extensions", maxExtensions);
+        jedis.set("tenant:" + tenantId, objectMapper.writeValueAsString(tenant));
+    }
+
+    /**
      * Seed a budget at an arbitrary scope path (e.g. "tenant:tenant-a/workspace:default/agent:my-agent").
      */
     protected void seedScopeBudget(Jedis jedis, String scopePath, String unit, long allocated, long overdraftLimit) {

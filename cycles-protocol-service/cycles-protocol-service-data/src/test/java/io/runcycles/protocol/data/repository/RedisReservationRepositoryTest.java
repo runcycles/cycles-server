@@ -2612,6 +2612,292 @@ class RedisReservationRepositoryTest {
         }
     }
 
+    // ---- Tenant default resolution ----
+
+    @Nested
+    @DisplayName("Tenant default resolution")
+    class TenantDefaultResolution {
+
+        private String tenantJson(String policy, Long defaultTtl, Long maxTtl, Integer maxExt) throws Exception {
+            Map<String, Object> tenant = new HashMap<>();
+            tenant.put("tenant_id", "acme");
+            tenant.put("name", "Acme");
+            tenant.put("status", "ACTIVE");
+            if (policy != null) tenant.put("default_commit_overage_policy", policy);
+            if (defaultTtl != null) tenant.put("default_reservation_ttl_ms", defaultTtl);
+            if (maxTtl != null) tenant.put("max_reservation_ttl_ms", maxTtl);
+            if (maxExt != null) tenant.put("max_reservation_extensions", maxExt);
+            return objectMapper.writeValueAsString(tenant);
+        }
+
+        private String[] captureReserveArgs() throws Exception {
+            var captor = org.mockito.ArgumentCaptor.forClass(String[].class);
+            verify(jedis).eval(eq("RESERVE_SCRIPT"), eq(0), captor.capture());
+            return captor.getValue();
+        }
+
+        private String[] captureEventArgs() throws Exception {
+            var captor = org.mockito.ArgumentCaptor.forClass(String[].class);
+            verify(jedis).eval(eq("EVENT_SCRIPT"), eq(0), captor.capture());
+            return captor.getValue();
+        }
+
+        @Test
+        void shouldUseTenantsDefaultOveragePolicyWhenRequestOmits() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson("ALLOW_IF_AVAILABLE", null, null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-tenant-pol", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-tenant-pol");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            // overagePolicy is null (not set) → should fall back to tenant default
+
+            repository.createReservation(request, "acme");
+
+            // ARGV[11] = args[10] = overage_policy
+            String[] args = captureReserveArgs();
+            assertThat(args[10]).isEqualTo("ALLOW_IF_AVAILABLE");
+        }
+
+        @Test
+        void shouldPreferExplicitOveragePolicyOverTenantDefault() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson("ALLOW_IF_AVAILABLE", null, null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-explicit-pol", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-explicit-pol");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setOveragePolicy(Enums.CommitOveragePolicy.REJECT);
+
+            repository.createReservation(request, "acme");
+
+            String[] args = captureReserveArgs();
+            assertThat(args[10]).isEqualTo("REJECT");
+        }
+
+        @Test
+        void shouldFallBackToRejectWhenNoTenantRecord() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(null);  // no tenant record
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-no-tenant", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-no-tenant");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            repository.createReservation(request, "acme");
+
+            String[] args = captureReserveArgs();
+            assertThat(args[10]).isEqualTo("REJECT");
+        }
+
+        @Test
+        void shouldUseTenantsDefaultTtlWhenRequestOmits() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson(null, 120000L, null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-ttl", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-ttl");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setTtlMs(null);  // null → use tenant default 120000
+
+            repository.createReservation(request, "acme");
+
+            // ARGV[6] = args[5] = ttl_ms
+            String[] args = captureReserveArgs();
+            assertThat(args[5]).isEqualTo("120000");
+        }
+
+        @Test
+        void shouldCapTtlToTenantMaxTtl() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson(null, null, 30000L, null));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-cap-ttl", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-cap-ttl");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setTtlMs(86400000L);  // request wants 24h, tenant max is 30s
+
+            repository.createReservation(request, "acme");
+
+            String[] args = captureReserveArgs();
+            assertThat(args[5]).isEqualTo("30000");
+        }
+
+        @Test
+        void shouldPassMaxExtensionsToReserveScript() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson(null, null, null, 5));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-maxext", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-maxext");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            repository.createReservation(request, "acme");
+
+            // ARGV[14] = args[13] = max_extensions
+            String[] args = captureReserveArgs();
+            assertThat(args[13]).isEqualTo("5");
+        }
+
+        @Test
+        void shouldUseTenantsDefaultOveragePolicyForEvents() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson("ALLOW_WITH_OVERDRAFT", null, null, null));
+
+            String luaResponse = objectMapper.writeValueAsString(Map.of("status", "ok"));
+            when(jedis.eval(eq("EVENT_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 7000, 0, 3000));
+
+            EventCreateRequest request = EventCreateRequest.builder()
+                    .idempotencyKey("event-tenant-pol")
+                    .subject(defaultSubject())
+                    .action(defaultAction())
+                    .actual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L))
+                    .build();
+
+            repository.createEvent(request, "acme");
+
+            // ARGV[9] = args[8] = overage_policy for events
+            String[] args = captureEventArgs();
+            assertThat(args[8]).isEqualTo("ALLOW_WITH_OVERDRAFT");
+        }
+
+        @Test
+        void shouldHandleMaxExtensionsExceededError() throws Throwable {
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "MAX_EXTENSIONS_EXCEEDED");
+            response.put("message", "Maximum reservation extensions (5) reached");
+
+            assertThatThrownBy(() -> invokeHandleScriptError(response))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.MAX_EXTENSIONS_EXCEEDED);
+        }
+
+        @Test
+        void shouldGracefullyHandleMalformedTenantJson() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn("{invalid json!!!");
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-bad-tenant", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-bad-tenant");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            // Should not throw — falls back to REJECT
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+
+            // Verify fallback to REJECT
+            String[] args = captureReserveArgs();
+            assertThat(args[10]).isEqualTo("REJECT");
+        }
+
+        @Test
+        void shouldPreferExplicitTtlOverTenantDefault() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson(null, 120000L, 300000L, null));
+
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "res-ttl-explicit", "expires_at", 9999999L));
+            when(jedis.eval(eq("RESERVE_SCRIPT"), eq(0), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            when(jedis.hgetAll(anyString())).thenReturn(budgetMap(10000, 5000, 0, 5000));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-ttl-explicit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setTtlMs(45000L);  // explicit 45s, tenant default is 120s
+
+            repository.createReservation(request, "acme");
+
+            // Explicit request TTL takes precedence over tenant default
+            String[] args = captureReserveArgs();
+            assertThat(args[5]).isEqualTo("45000");
+        }
+    }
+
     // ---- Helper to build reservation fields ----
 
     private Map<String, String> reservationFields(String id, String state) {
