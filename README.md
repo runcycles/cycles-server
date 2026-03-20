@@ -155,4 +155,7 @@ Integration tests (`*IntegrationTest.java`) use [Testcontainers](https://www.tes
 
 ## Documentation
 
-See [`cycles-protocol-service/README.md`](cycles-protocol-service/README.md) for full documentation including core concepts, authentication, error codes, and the Redis data model.
+- [Cycles Documentation](https://runcycles.io) — full docs site
+- [Deploy the Full Stack](https://runcycles.io/quickstart/deploying-the-full-cycles-stack) — deployment guide with server setup
+- [Server Configuration Reference](https://runcycles.io/configuration/server-configuration-reference-for-cycles) — all server configuration options
+- [`cycles-protocol-service/README.md`](cycles-protocol-service/README.md) — core concepts, authentication, error codes, and the Redis data model
