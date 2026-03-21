@@ -15,7 +15,7 @@ FROM eclipse-temurin:21-jre-alpine
 ARG APP_VERSION=0.0.0
 
 LABEL org.opencontainers.image.title="cycles-server" \
-      org.opencontainers.image.description="Cycles Protocol budget authority server" \
+      org.opencontainers.image.description="Cycles Protocol runtime authority server" \
       org.opencontainers.image.source="https://github.com/runcycles/cycles-server" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${APP_VERSION}"
