@@ -1,10 +1,8 @@
 package io.runcycles.protocol.api;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
 import org.junit.jupiter.api.*;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -28,26 +26,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("Concurrent Load Benchmarks")
 @Tag("benchmark")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@ActiveProfiles({"test", "benchmark"})
 class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_OPS = 50;
     private static final long MEASURE_DURATION_MS = 5_000;
 
     private static final List<ConcurrencyResult> ALL_RESULTS = new ArrayList<>();
-
-    private static final String[] QUIET_LOGGERS = {
-            org.slf4j.Logger.ROOT_LOGGER_NAME, "io.runcycles.protocol", "org.springframework"
-    };
-    private static final Map<String, Level> savedLevels = new LinkedHashMap<>();
-
-    // Static initializer runs before Spring context startup, suppressing all boot noise
-    static {
-        for (String name : QUIET_LOGGERS) {
-            Logger logger = (Logger) LoggerFactory.getLogger(name);
-            savedLevels.put(name, logger.getLevel());
-            logger.setLevel(Level.WARN);
-        }
-    }
 
     record ConcurrencyResult(int threads, long totalOps, double opsPerSec,
                              long p50, long p95, long p99, long min, long max, int errors) {}

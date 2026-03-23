@@ -1,10 +1,8 @@
 package io.runcycles.protocol.api;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
 import org.junit.jupiter.api.*;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.util.*;
 import java.util.stream.LongStream;
@@ -24,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @DisplayName("Performance Benchmarks")
 @Tag("benchmark")
+@ActiveProfiles({"test", "benchmark"})
 class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_ITERATIONS = 50;
@@ -31,20 +30,6 @@ class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
 
     // Collect all results for a summary table at the end
     private static final List<BenchmarkResult> ALL_RESULTS = new ArrayList<>();
-
-    private static final String[] QUIET_LOGGERS = {
-            org.slf4j.Logger.ROOT_LOGGER_NAME, "io.runcycles.protocol", "org.springframework"
-    };
-    private static final Map<String, Level> savedLevels = new LinkedHashMap<>();
-
-    // Static initializer runs before Spring context startup, suppressing all boot noise
-    static {
-        for (String name : QUIET_LOGGERS) {
-            Logger logger = (Logger) LoggerFactory.getLogger(name);
-            savedLevels.put(name, logger.getLevel());
-            logger.setLevel(Level.WARN);
-        }
-    }
 
     record BenchmarkResult(String name, long p50, long p95, long p99, long min, long max, long mean) {}
 
