@@ -1,6 +1,6 @@
 # Cycles Protocol v0.1.23 — Server Implementation Audit
 
-**Date:** 2026-03-15
+**Date:** 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.23)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
@@ -149,16 +149,17 @@ Two-pass audit covering:
 
 ### Test Coverage (above 98%)
 - JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
-- **API module**: 209/209 lines covered — **100%** line coverage (93 unit tests)
-- **Data module**: 770+ lines covered — **98.5%+** line coverage, 76%+ branch coverage (215 unit tests)
+- **API module**: **100%** line coverage (270 tests across 14 test classes)
+- **Data module**: **98.5%+** line coverage, 76%+ branch coverage (215 tests across 7 test classes)
   - Branch gaps: defensive null-check ternaries and unreachable `&&` short-circuit branches in `RedisReservationRepository`
   - Tenant default resolution: 10 unit tests covering all fallback paths, TTL capping, max extensions, malformed JSON recovery
-- **Model module**: Coverage skipped (POJOs only, no business logic)
-- Total unit test count: 93 (API) + 215 (Data) + 5 (Model) = **313 unit tests**
+- **Model module**: Coverage skipped (POJOs only, no business logic) — 9 tests
+- Total test count: 270 (API) + 215 (Data) + 9 (Model) = **494 tests** across 22 test classes
 - **Integration tests**: 27+ nested test classes covering all 9 endpoints, including:
   - Tenant Defaults (9 tests): overage policy resolution (ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT, REJECT), explicit override vs tenant default, TTL capping, max extensions enforcement, default TTL usage, no-tenant-record fallback
   - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
   - Budget Status (2 tests): BUDGET_FROZEN and BUDGET_CLOSED enforcement on reserve
+  - ALLOW_IF_AVAILABLE commit overage (integration coverage)
 - All unit tests pass without Docker/Testcontainers (integration tests excluded by default)
 
 ### Tenant Default Configuration (correct)
@@ -240,4 +241,4 @@ Two-pass audit covering:
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.23). All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.23). All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Test coverage expanded to 494 tests across 22 test classes. No remaining spec violations found.
