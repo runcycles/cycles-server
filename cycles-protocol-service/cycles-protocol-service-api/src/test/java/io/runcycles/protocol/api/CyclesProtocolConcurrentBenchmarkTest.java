@@ -77,6 +77,11 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
     }
 
     private void runConcurrentLifecycle(int threadCount) throws Exception {
+        // Re-seed budget with enough headroom for sustained concurrent load
+        try (var jedis = jedisPool.getResource()) {
+            seedBudget(jedis, TENANT_A, "TOKENS", 1_000_000_000L);
+        }
+
         // Warm up: sequential operations to prime JIT, connection pool, EVALSHA cache
         for (int i = 0; i < WARMUP_OPS; i++) {
             String resId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
