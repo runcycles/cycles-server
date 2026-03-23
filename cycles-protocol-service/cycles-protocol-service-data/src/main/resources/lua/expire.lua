@@ -40,7 +40,8 @@ local affected_scopes_json = redis.call('HGET', key, 'affected_scopes')
 local budgeted_scopes_json = redis.call('HGET', key, 'budgeted_scopes')
 
 if estimate_amount and estimate_unit and affected_scopes_json then
-    local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
+    local ok, affected_scopes = pcall(cjson.decode, budgeted_scopes_json or affected_scopes_json)
+    if not ok then affected_scopes = {} end
     for _, scope in ipairs(affected_scopes) do
         local budget_key = "budget:" .. scope .. ":" .. estimate_unit
         redis.call('HINCRBY', budget_key, 'reserved',  -estimate_amount)

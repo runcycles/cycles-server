@@ -87,7 +87,10 @@ end
 if not (budgeted_scopes_json or affected_scopes_json) then
     return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing scope data"})
 end
-local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
+local ok, affected_scopes = pcall(cjson.decode, budgeted_scopes_json or affected_scopes_json)
+if not ok then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Malformed scope JSON in reservation"})
+end
 
 -- Calculate delta (actual - estimate)
 local delta = actual_amount - estimate_amount
