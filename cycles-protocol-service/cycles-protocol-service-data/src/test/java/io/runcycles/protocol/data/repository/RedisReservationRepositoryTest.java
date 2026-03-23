@@ -882,14 +882,15 @@ class RedisReservationRepositoryTest {
         void shouldExtendSuccessfully() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hmget("reservation:res_res5", "estimate_unit", "affected_scopes"))
-                    .thenReturn(Arrays.asList("USD_MICROCENTS", "[\"tenant:acme\"]"));
 
-            String luaResponse = objectMapper.writeValueAsString(Map.of("expires_at_ms", 1234567890L));
+            Map<String, Object> luaMap = new HashMap<>();
+            luaMap.put("expires_at_ms", 1234567890L);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            luaMap.put("balances", List.of(Map.of("scope", "tenant:acme",
+                    "remaining", 5000, "reserved", 5000, "spent", 0, "allocated", 10000,
+                    "debt", 0, "overdraft_limit", 0, "is_over_limit", false)));
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("extend"), eq("EXTEND_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            Response<Map<String, String>> budgetResponse = mock(Response.class);
-            when(budgetResponse.get()).thenReturn(budgetMap(10000, 5000, 5000, 0));
-            when(pipeline.hgetAll(anyString())).thenReturn(budgetResponse);
 
             ReservationExtendRequest request = new ReservationExtendRequest();
             request.setExtendByMs(30000L);
@@ -899,14 +900,13 @@ class RedisReservationRepositoryTest {
 
             assertThat(response.getStatus()).isEqualTo(Enums.ExtendStatus.ACTIVE);
             assertThat(response.getExpiresAtMs()).isEqualTo(1234567890L);
+            assertThat(response.getBalances()).isNotEmpty();
         }
 
         @Test
         void shouldThrowOnExtendScriptError() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hmget(anyString(), any(), any()))
-                    .thenReturn(Arrays.asList("USD_MICROCENTS", null));
 
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("error", "RESERVATION_EXPIRED", "message", "expired"));
@@ -922,12 +922,11 @@ class RedisReservationRepositoryTest {
         }
 
         @Test
-        void shouldHandleMissingPrefetchDataOnExtend() throws Exception {
+        void shouldHandleMissingBalancesOnExtend() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hmget("reservation:res_extNoPre", "estimate_unit", "affected_scopes"))
-                    .thenReturn(Arrays.asList(null, null));
 
+            // Lua response without balances (e.g., reservation with no scopes)
             String luaResponse = objectMapper.writeValueAsString(Map.of("expires_at_ms", 1700000090000L));
             when(luaScripts.eval(eq(jedis), eq("extend"), eq("EXTEND_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
 
@@ -939,15 +938,13 @@ class RedisReservationRepositoryTest {
 
             assertThat(response.getStatus()).isEqualTo(Enums.ExtendStatus.ACTIVE);
             assertThat(response.getExpiresAtMs()).isEqualTo(1700000090000L);
-            assertThat(response.getBalances()).isNull();
+            assertThat(response.getBalances()).isEmpty();
         }
 
         @Test
         void shouldThrowOnExtendNotFoundError() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hmget(anyString(), any(), any()))
-                    .thenReturn(Arrays.asList("USD_MICROCENTS", null));
 
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("error", "NOT_FOUND", "message", "res-notfound"));
@@ -1235,11 +1232,13 @@ class RedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
 
-            String luaResponse = objectMapper.writeValueAsString(Map.of("status", "ok"));
+            Map<String, Object> luaMap = new HashMap<>();
+            luaMap.put("status", "ok");
+            luaMap.put("balances", List.of(Map.of("scope", "tenant:acme",
+                    "remaining", 7000, "reserved", 0, "spent", 3000, "allocated", 10000,
+                    "debt", 0, "overdraft_limit", 0, "is_over_limit", false)));
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("event"), eq("EVENT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            Response<Map<String, String>> budgetResp = mock(Response.class);
-            when(budgetResp.get()).thenReturn(budgetMap(10000, 7000, 0, 3000));
-            when(pipeline.hgetAll(anyString())).thenReturn(budgetResp);
 
             EventCreateRequest request = EventCreateRequest.builder()
                     .idempotencyKey("event-1")
@@ -1263,9 +1262,6 @@ class RedisReservationRepositoryTest {
 
             String luaResponse = objectMapper.writeValueAsString(Map.of("event_id", "existing-event-123"));
             when(luaScripts.eval(eq(jedis), eq("event"), eq("EVENT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            Response<Map<String, String>> budgetResp = mock(Response.class);
-            when(budgetResp.get()).thenReturn(budgetMap(10000, 7000, 0, 3000));
-            when(pipeline.hgetAll(anyString())).thenReturn(budgetResp);
 
             EventCreateRequest request = EventCreateRequest.builder()
                     .idempotencyKey("event-dup")
@@ -2099,8 +2095,6 @@ class RedisReservationRepositoryTest {
         void shouldWrapGenericExceptionInExtendReservation() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hmget(anyString(), any(), any()))
-                .thenReturn(Arrays.asList("USD_MICROCENTS", null));
             when(luaScripts.eval(eq(jedis), eq("extend"), eq("EXTEND_SCRIPT"), any(String[].class)))
                 .thenThrow(new IllegalStateException("Unexpected error"));
 
@@ -2885,9 +2879,6 @@ class RedisReservationRepositoryTest {
 
             String luaResponse = objectMapper.writeValueAsString(Map.of("status", "ok"));
             when(luaScripts.eval(eq(jedis), eq("event"), eq("EVENT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            Response<Map<String, String>> budgetResp = mock(Response.class);
-            when(budgetResp.get()).thenReturn(budgetMap(10000, 7000, 0, 3000));
-            when(pipeline.hgetAll(anyString())).thenReturn(budgetResp);
 
             EventCreateRequest request = EventCreateRequest.builder()
                     .idempotencyKey("event-tenant-pol")

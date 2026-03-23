@@ -131,6 +131,23 @@ for _, scope in ipairs(budgeted_scopes) do
     end
 end
 
+-- Collect balance snapshots for all budgeted scopes (avoids post-operation Java round-trips)
+local balances = {}
+for _, scope in ipairs(budgeted_scopes) do
+    local budget_key = "budget:" .. scope .. ":" .. unit
+    local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    table.insert(balances, {
+        scope = scope,
+        remaining = tonumber(b[1] or 0),
+        reserved = tonumber(b[2] or 0),
+        spent = tonumber(b[3] or 0),
+        allocated = tonumber(b[4] or 0),
+        debt = tonumber(b[5] or 0),
+        overdraft_limit = tonumber(b[6] or 0),
+        is_over_limit = (b[7] == "true")
+    })
+end
+
 -- Store event record
 local event_key = "event:evt_" .. event_id
 redis.call('HMSET', event_key,
@@ -162,5 +179,6 @@ end
 
 return cjson.encode({
     event_id = event_id,
-    status = "APPLIED"
+    status = "APPLIED",
+    balances = balances
 })

@@ -2,6 +2,7 @@ package io.runcycles.protocol.api;
 
 import org.junit.jupiter.api.*;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.util.*;
 import java.util.stream.LongStream;
@@ -17,10 +18,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Results are environment-dependent (CI vs local, container overhead, etc.).
  * Use these numbers as relative guidance, not absolute SLA targets.
  *
- * Run separately: mvn test -Dgroups=benchmark
+ * Run separately: mvn test -Pbenchmark
  */
 @DisplayName("Performance Benchmarks")
 @Tag("benchmark")
+@ActiveProfiles({"test", "benchmark"})
 class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_ITERATIONS = 50;

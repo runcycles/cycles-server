@@ -382,12 +382,6 @@ public class RedisReservationRepository {
         LOG.debug("Extending reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            // Pre-fetch affected scopes and unit for balances
-            String reservationKey = "reservation:res_" + reservationId;
-            List<String> prefetch = jedis.hmget(reservationKey, "estimate_unit", "affected_scopes");
-            String estimateUnitStr = prefetch.get(0);
-            String affectedScopesJson = prefetch.get(1);
-
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getExtendByMs()),
@@ -404,12 +398,14 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
-            // Populate balances snapshot for operator visibility
-            List<Balance> balances = null;
-            if (affectedScopesJson != null && estimateUnitStr != null) {
-                List<String> scopes = objectMapper.readValue(affectedScopesJson, List.class);
-                balances = fetchBalancesForScopes(jedis, scopes, Enums.UnitEnum.valueOf(estimateUnitStr));
+            // Parse balances returned atomically from Lua (no extra round-trips)
+            String estimateUnitStr = (String) response.get("estimate_unit");
+            Enums.UnitEnum unitForBalances = Enums.UnitEnum.USD_MICROCENTS;
+            if (estimateUnitStr != null) {
+                try { unitForBalances = Enums.UnitEnum.valueOf(estimateUnitStr); }
+                catch (IllegalArgumentException ignored) { /* corrupted Redis data, use default */ }
             }
+            List<Balance> balances = parseLuaBalances(response, unitForBalances);
 
             return ReservationExtendResponse.builder()
                 .status(Enums.ExtendStatus.ACTIVE)
@@ -753,8 +749,8 @@ public class RedisReservationRepository {
             String responseEventId = response.containsKey("event_id") ?
                 (String) response.get("event_id") : eventId;
 
-            // Populate balances snapshot for operator visibility
-            List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getActual().getUnit());
+            // Parse balances returned atomically from Lua (no extra round-trips)
+            List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
 
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
