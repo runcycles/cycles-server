@@ -36,16 +36,16 @@ class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
         if (ALL_RESULTS.isEmpty()) return;
 
         System.out.println();
-        System.out.println("╔═══════════════════════════╦════════╦════════╦════════╦════════╦════════╦════════╗");
-        System.out.println("║ Operation                 ║  p50   ║  p95   ║  p99   ║  min   ║  max   ║  mean  ║");
-        System.out.println("╠═══════════════════════════╬════════╬════════╬════════╬════════╬════════╬════════╣");
+        System.out.println("+---------------------------+--------+--------+--------+--------+--------+--------+");
+        System.out.println("| Operation                 |  p50   |  p95   |  p99   |  min   |  max   |  mean  |");
+        System.out.println("+---------------------------+--------+--------+--------+--------+--------+--------+");
         for (BenchmarkResult r : ALL_RESULTS) {
-            System.out.printf("║ %-25s ║ %5.1fms║ %5.1fms║ %5.1fms║ %5.1fms║ %5.1fms║ %5.1fms║%n",
+            System.out.printf("| %-25s | %5.1fms| %5.1fms| %5.1fms| %5.1fms| %5.1fms| %5.1fms|%n",
                     r.name,
                     r.p50 / 1_000_000.0, r.p95 / 1_000_000.0, r.p99 / 1_000_000.0,
                     r.min / 1_000_000.0, r.max / 1_000_000.0, r.mean / 1_000_000.0);
         }
-        System.out.println("╚═══════════════════════════╩════════╩════════╩════════╩════════╩════════╩════════╝");
+        System.out.println("+---------------------------+--------+--------+--------+--------+--------+--------+");
         System.out.println("  Iterations: " + MEASURE_ITERATIONS + " (after " + WARMUP_ITERATIONS + " warmup)");
         System.out.println();
     }
@@ -106,10 +106,15 @@ class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
     @Test
     @DisplayName("Extend (POST /v1/reservations/{id}/extend)")
     void benchmarkExtend() {
-        // Create one reservation and extend it repeatedly
-        String resId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
+        // Pre-create reservations (each can only be extended max_extensions times)
+        List<String> reservationIds = new ArrayList<>();
+        for (int i = 0; i < WARMUP_ITERATIONS + MEASURE_ITERATIONS; i++) {
+            reservationIds.add(createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100));
+        }
 
+        int[] idx = {0};
         long[] timings = runBenchmark("Extend", () -> {
+            String resId = reservationIds.get(idx[0]++);
             Map<String, Object> body = new HashMap<>();
             body.put("idempotency_key", UUID.randomUUID().toString());
             body.put("extend_by_ms", 10000);
