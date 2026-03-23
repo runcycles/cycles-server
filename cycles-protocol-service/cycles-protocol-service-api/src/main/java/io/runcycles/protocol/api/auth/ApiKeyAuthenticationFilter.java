@@ -27,6 +27,7 @@ import java.util.UUID;
 public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyAuthenticationFilter.class);
+    private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
     @Autowired
     private ApiKeyValidationService apiKeyValidationService;
     @Autowired
@@ -72,10 +73,8 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        AntPathMatcher matcher = new AntPathMatcher();
-
         for (String pattern : SecurityConfig.PUBLIC_PATHS) {
-            if (matcher.match(pattern, path)) {
+            if (PATH_MATCHER.match(pattern, path)) {
                 return true;
             }
         }

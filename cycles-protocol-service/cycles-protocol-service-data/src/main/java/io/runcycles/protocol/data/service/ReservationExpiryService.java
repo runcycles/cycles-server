@@ -25,6 +25,7 @@ public class ReservationExpiryService {
     private static final Logger LOG = LoggerFactory.getLogger(ReservationExpiryService.class);
 
     @Autowired private JedisPool jedisPool;
+    @Autowired private LuaScriptRegistry luaScripts;
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
 
     /** Max candidates per sweep to avoid OOM after prolonged outages. */
@@ -51,7 +52,7 @@ public class ReservationExpiryService {
                 try {
                     // expire.lua now uses Redis TIME internally for consistent time-source
                     // with reserve/commit/release/extend scripts. We still pass reservation_id only.
-                    Object result = jedis.eval(expireScript, 0, reservationId);
+                    Object result = luaScripts.eval(jedis, "expire", expireScript, reservationId);
                     LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
                 } catch (Exception e) {
                     LOG.warn("Failed to expire reservation: {}", reservationId, e);

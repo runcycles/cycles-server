@@ -22,6 +22,7 @@ class ReservationExpiryServiceTest {
 
     @Mock private JedisPool jedisPool;
     @Mock private Jedis jedis;
+    @Mock private LuaScriptRegistry luaScripts;
 
     private ReservationExpiryService service;
 
@@ -30,6 +31,7 @@ class ReservationExpiryServiceTest {
         service = new ReservationExpiryService();
         // Inject mocks via reflection (field injection)
         setField(service, "jedisPool", jedisPool);
+        setField(service, "luaScripts", luaScripts);
         setField(service, "expireScript", "-- expire lua script");
         when(jedisPool.getResource()).thenReturn(jedis);
         // Mock Redis TIME — returns [seconds, microseconds].
@@ -47,12 +49,12 @@ class ReservationExpiryServiceTest {
     void shouldExpireCandidatesFromSortedSet() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(List.of("res_1", "res_2"));
-        when(jedis.eval(anyString(), eq(0), anyString())).thenReturn("OK");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString())).thenReturn("OK");
 
         service.expireReservations();
 
-        verify(jedis).eval(anyString(), eq(0), eq("res_1"));
-        verify(jedis).eval(anyString(), eq(0), eq("res_2"));
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("res_1"));
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("res_2"));
     }
 
     @Test
@@ -62,22 +64,22 @@ class ReservationExpiryServiceTest {
 
         service.expireReservations();
 
-        verify(jedis, never()).eval(anyString(), anyInt(), any(String[].class));
+        verify(luaScripts, never()).eval(any(Jedis.class), anyString(), anyString(), any(String[].class));
     }
 
     @Test
     void shouldContinueOnPerReservationFailure() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(List.of("res_1", "res_2", "res_3"));
-        when(jedis.eval(anyString(), eq(0), eq("res_1"))).thenReturn("OK");
-        when(jedis.eval(anyString(), eq(0), eq("res_2")))
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_1"))).thenReturn("OK");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_2")))
                 .thenThrow(new RuntimeException("Lua error"));
-        when(jedis.eval(anyString(), eq(0), eq("res_3"))).thenReturn("OK");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_3"))).thenReturn("OK");
 
         service.expireReservations();
 
         // res_3 should still be processed despite res_2 failure
-        verify(jedis).eval(anyString(), eq(0), eq("res_3"));
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("res_3"));
     }
 
     @Test

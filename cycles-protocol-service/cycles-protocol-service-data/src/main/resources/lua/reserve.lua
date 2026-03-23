@@ -47,39 +47,33 @@ local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local expires_at = now + ttl_ms
 
 -- Check all scopes first (fail fast). Skip scopes without budgets.
+-- Use HMGET to fetch all needed fields in a single call per scope.
 local budgeted_scopes = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
+    local vals = redis.call('HMGET', budget_key, 'status', 'remaining', 'debt', 'is_over_limit')
 
-    -- Skip scopes without a budget (operator may only define budgets at certain levels)
-    if redis.call('EXISTS', budget_key) == 1 then
+    -- Skip scopes without a budget (all fields nil means key doesn't exist)
+    if vals[1] ~= false or vals[2] ~= false or vals[3] ~= false or vals[4] ~= false then
         table.insert(budgeted_scopes, scope)
 
-        -- Check budget status (consistent with admin FUND_LUA)
-        local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
+        local budget_status = vals[1] or 'ACTIVE'
+        local remaining = tonumber(vals[2] or 0)
+        local debt = tonumber(vals[3] or 0)
+        local is_over_limit = vals[4]
+
         if budget_status == 'FROZEN' then
             return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
         end
         if budget_status == 'CLOSED' then
             return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
         end
-
-        -- Get budget state
-        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-        local debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-        local is_over_limit = redis.call('HGET', budget_key, 'is_over_limit')
-
-        -- Check if scope is over-limit (debt > overdraft_limit)
         if is_over_limit == "true" then
             return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope, message = "Scope is over-limit, no new reservations allowed"})
         end
-
-        -- Check if scope has outstanding debt
         if debt > 0 then
             return cjson.encode({error = "DEBT_OUTSTANDING", scope = scope, debt = debt})
         end
-
-        -- Check if sufficient budget
         if remaining < estimate_amount then
             return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = estimate_amount})
         end
@@ -136,9 +130,27 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     end
 end
 
+-- Collect balance snapshots for all budgeted scopes (avoids post-operation Java round-trips)
+local balances = {}
+for _, scope in ipairs(budgeted_scopes) do
+    local budget_key = "budget:" .. scope .. ":" .. estimate_unit
+    local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    table.insert(balances, {
+        scope = scope,
+        remaining = tonumber(b[1] or 0),
+        reserved = tonumber(b[2] or 0),
+        spent = tonumber(b[3] or 0),
+        allocated = tonumber(b[4] or 0),
+        debt = tonumber(b[5] or 0),
+        overdraft_limit = tonumber(b[6] or 0),
+        is_over_limit = (b[7] == "true")
+    })
+end
+
 return cjson.encode({
     reservation_id = reservation_id,
     state = "ACTIVE",
     expires_at = expires_at,
-    affected_scopes = affected_scopes
+    affected_scopes = affected_scopes,
+    balances = balances
 })

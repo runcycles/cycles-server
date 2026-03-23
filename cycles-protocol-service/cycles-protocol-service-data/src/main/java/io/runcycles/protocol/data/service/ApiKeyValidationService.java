@@ -15,11 +15,11 @@ public class ApiKeyValidationService {
     private ApiKeyRepository apiKeyRepository ;
 
     public ApiKeyValidationResponse isValid (String apiToken){
-        String masked = (apiToken != null && apiToken.length() > 8) ? apiToken.substring(0, 8) + "***" : "***";
-        LOG.info("Validating API token: apiToken={}", masked);
-
         ApiKeyValidationResponse apiKeyValidationResponse = apiKeyRepository.validate(apiToken) ;
-        LOG.info("API key validation result: result={}",apiKeyValidationResponse);
+        if (LOG.isDebugEnabled()) {
+            String masked = (apiToken != null && apiToken.length() > 8) ? apiToken.substring(0, 8) + "***" : "***";
+            LOG.debug("API key validation: apiToken={}, result={}", masked, apiKeyValidationResponse);
+        }
         return apiKeyValidationResponse ;
     }
 }

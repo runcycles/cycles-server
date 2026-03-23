@@ -1,6 +1,7 @@
 package io.runcycles.protocol.data.repository;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
+import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +15,7 @@ import redis.clients.jedis.resps.ScanResult;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
 /** Cycles Protocol v0.1.23 - Repository with Lua script execution */
@@ -24,14 +26,23 @@ public class RedisReservationRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private ScopeDerivationService scopeService;
+    @Autowired private LuaScriptRegistry luaScripts;
     @Autowired @Qualifier("reserveLuaScript") private String reserveScript;
     @Autowired @Qualifier("commitLuaScript") private String commitScript;
     @Autowired @Qualifier("releaseLuaScript") private String releaseScript;
     @Autowired @Qualifier("extendLuaScript") private String extendScript;
     @Autowired @Qualifier("eventLuaScript") private String eventScript;
 
+    private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    });
+
     public ReservationCreateResponse createReservation(ReservationCreateRequest request, String tenant) {
-        LOG.info("Creating reservation for tenant: {}", tenant);
+        LOG.debug("Creating reservation for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
             Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
@@ -67,10 +78,9 @@ public class RedisReservationRepository {
             args.add(String.valueOf(maxExtensions));
             args.addAll(affectedScopes);
 
-            Object result = jedis.eval(reserveScript, 0, args.toArray(new String[0]));
-            LOG.info("Direct Response from create:{}",result);
+            Object result = luaScripts.eval(jedis, "reserve", reserveScript, args.toArray(new String[0]));
             Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
-            LOG.info("Response from create:{}",response);
+            LOG.debug("Reserve response: {}", response);
             if (response.containsKey("error")) {
                 handleScriptError(response);
             }
@@ -97,8 +107,8 @@ public class RedisReservationRepository {
                     .build();
             }
 
-            // Populate balances snapshot for operator visibility
-            List<Balance> balances = fetchBalancesForScopes(jedis, affectedScopes, request.getEstimate().getUnit());
+            // Parse balances from Lua response (read atomically with mutation)
+            List<Balance> balances = parseLuaBalances(response, request.getEstimate().getUnit());
 
             // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
             Enums.DecisionEnum decision = Enums.DecisionEnum.ALLOW;
@@ -267,16 +277,9 @@ public class RedisReservationRepository {
     }
 
     public CommitResponse commitReservation(String reservationId, CommitRequest request) {
-        LOG.info("Committing reservation: {}", reservationId);
+        LOG.debug("Committing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            // Pre-fetch estimate and affected scopes for released amount and balances
-            String reservationKey = "reservation:res_" + reservationId;
-            List<String> prefetch = jedis.hmget(reservationKey, "estimate_amount", "estimate_unit", "affected_scopes");
-            String estimateAmountStr = prefetch.get(0);
-            String estimateUnitStr = prefetch.get(1);
-            String affectedScopesJson = prefetch.get(2);
-
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getActual().getAmount()),
@@ -287,7 +290,7 @@ public class RedisReservationRepository {
                 request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : ""
             );
 
-            Object result = jedis.eval(commitScript, 0, args.toArray(new String[0]));
+            Object result = luaScripts.eval(jedis, "commit", commitScript, args.toArray(new String[0]));
             Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
 
             if (response.containsKey("error")) {
@@ -296,20 +299,18 @@ public class RedisReservationRepository {
 
             long chargedAmount = ((Number) response.get("charged")).longValue();
 
+            // Lua now returns estimate_amount — use it for released calculation
             Amount released = null;
-            if (estimateAmountStr != null) {
-                long est = Long.parseLong(estimateAmountStr);
+            Number luaEstimate = (Number) response.get("estimate_amount");
+            if (luaEstimate != null) {
+                long est = luaEstimate.longValue();
                 if (chargedAmount < est) {
                     released = new Amount(request.getActual().getUnit(), est - chargedAmount);
                 }
             }
 
-            // Populate balances snapshot for operator visibility
-            List<Balance> balances = null;
-            if (affectedScopesJson != null && estimateUnitStr != null) {
-                List<String> scopes = objectMapper.readValue(affectedScopesJson, List.class);
-                balances = fetchBalancesForScopes(jedis, scopes, Enums.UnitEnum.valueOf(estimateUnitStr));
-            }
+            // Parse balances from Lua response (read atomically with mutation)
+            List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
 
             return CommitResponse.builder()
                 .status(Enums.CommitStatus.COMMITTED)
@@ -327,34 +328,30 @@ public class RedisReservationRepository {
     }
 
     public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request) {
-        LOG.info("Releasing reservation: {}", reservationId);
+        LOG.debug("Releasing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
-            String reservationKey = "reservation:res_" + reservationId;
-            List<String> prefetch = jedis.hmget(reservationKey, "estimate_amount", "estimate_unit", "affected_scopes");
-            String estimateAmountStr = prefetch.get(0);
-            String estimateUnitStr = prefetch.get(1);
-            String affectedScopesJson = prefetch.get(2);
-
             List<String> args = Arrays.asList(
                 reservationId,
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
                 computePayloadHash(request)
             );
 
-            Object result = jedis.eval(releaseScript, 0, args.toArray(new String[0]));
-            LOG.info("Release result:{}",result);
+            Object result = luaScripts.eval(jedis, "release", releaseScript, args.toArray(new String[0]));
             Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
 
             if (response.containsKey("error")) {
                 handleScriptError(response);
             }
 
+            // Lua now returns estimate_amount and estimate_unit — use them directly
             Amount releasedAmount;
-            if (estimateAmountStr != null && estimateUnitStr != null) {
+            Number luaEstimate = (Number) response.get("estimate_amount");
+            String luaUnit = (String) response.get("estimate_unit");
+            if (luaEstimate != null && luaUnit != null) {
                 releasedAmount = new Amount(
-                    Enums.UnitEnum.valueOf(estimateUnitStr),
-                    Long.parseLong(estimateAmountStr)
+                    Enums.UnitEnum.valueOf(luaUnit),
+                    luaEstimate.longValue()
                 );
             } else {
                 // Spec requires released to be present; fall back to zero with the request unit context
@@ -362,12 +359,9 @@ public class RedisReservationRepository {
                 releasedAmount = new Amount(Enums.UnitEnum.USD_MICROCENTS, 0L);
             }
 
-            // Populate balances snapshot for operator visibility
-            List<Balance> balances = null;
-            if (affectedScopesJson != null && estimateUnitStr != null) {
-                List<String> scopes = objectMapper.readValue(affectedScopesJson, List.class);
-                balances = fetchBalancesForScopes(jedis, scopes, Enums.UnitEnum.valueOf(estimateUnitStr));
-            }
+            // Parse balances from Lua response (read atomically with mutation)
+            Enums.UnitEnum unitForBalances = luaUnit != null ? Enums.UnitEnum.valueOf(luaUnit) : Enums.UnitEnum.USD_MICROCENTS;
+            List<Balance> balances = parseLuaBalances(response, unitForBalances);
 
             return ReleaseResponse.builder()
                 .status(Enums.ReleaseStatus.RELEASED)
@@ -384,7 +378,7 @@ public class RedisReservationRepository {
     }
 
     public ReservationExtendResponse extendReservation(String reservationId, ReservationExtendRequest request, String tenant) {
-        LOG.info("Extending reservation: {}", reservationId);
+        LOG.debug("Extending reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
             // Pre-fetch affected scopes and unit for balances
@@ -402,9 +396,9 @@ public class RedisReservationRepository {
                 request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : ""
             );
 
-            Object result = jedis.eval(extendScript, 0, args.toArray(new String[0]));
+            Object result = luaScripts.eval(jedis, "extend", extendScript, args.toArray(new String[0]));
             Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
-            LOG.info("Response from extend script: response={}",response);
+            LOG.debug("Extend response: {}", response);
             if (response.containsKey("error")) {
                 handleScriptError(response);
             }
@@ -593,7 +587,7 @@ public class RedisReservationRepository {
     }
 
     public DecisionResponse decide(DecisionRequest request, String tenant) {
-        LOG.info("Evaluating decision for tenant: {}", tenant);
+        LOG.debug("Evaluating decision for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
             // Idempotency: replay if same (tenant, key) seen before
@@ -716,7 +710,7 @@ public class RedisReservationRepository {
     }
 
     public EventCreateResponse createEvent(EventCreateRequest request, String tenant) {
-        LOG.info("Creating event for tenant: {}", tenant);
+        LOG.debug("Creating event for tenant: {}", tenant);
 
         try (Jedis jedis = jedisPool.getResource()) {
             Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
@@ -746,9 +740,9 @@ public class RedisReservationRepository {
                 ? objectMapper.writeValueAsString(request.getMetadata()) : "");
             args.addAll(affectedScopes);
 
-            Object result = jedis.eval(eventScript, 0, args.toArray(new String[0]));
+            Object result = luaScripts.eval(jedis, "event", eventScript, args.toArray(new String[0]));
             Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
-            LOG.info("Response from event script: {}", response);
+            LOG.debug("Event response: {}", response);
 
             if (response.containsKey("error")) {
                 handleScriptError(response);
@@ -778,7 +772,7 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "reservation:res_" + reservationId;
             String tenant = jedis.hget(key, "tenant");
-            LOG.info("Resolved reservation tenant for: key={}, tenant={}",key,tenant);
+            LOG.debug("Resolved reservation tenant for: key={}, tenant={}", key, tenant);
             if (tenant == null) {
                 throw CyclesProtocolException.notFound(reservationId);
             }
@@ -895,7 +889,8 @@ public class RedisReservationRepository {
     private String computePayloadHash(Object request) {
         try {
             String json = objectMapper.writeValueAsString(request);
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            MessageDigest digest = SHA256_DIGEST.get();
+            digest.reset();
             byte[] hash = digest.digest(json.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
@@ -909,10 +904,21 @@ public class RedisReservationRepository {
      * Used to populate the optional balances field in mutation responses.
      */
     private List<Balance> fetchBalancesForScopes(Jedis jedis, List<String> scopes, Enums.UnitEnum unit) {
-        List<Balance> balances = new ArrayList<>();
+        if (scopes == null || scopes.isEmpty()) return Collections.emptyList();
+
+        // Pipeline all HGETALL calls into a single round-trip
+        Pipeline pipeline = jedis.pipelined();
+        Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
         for (String scope : scopes) {
             String budgetKey = "budget:" + scope + ":" + unit.name();
-            Map<String, String> budget = jedis.hgetAll(budgetKey);
+            responses.put(scope, pipeline.hgetAll(budgetKey));
+        }
+        pipeline.sync();
+
+        List<Balance> balances = new ArrayList<>();
+        for (Map.Entry<String, Response<Map<String, String>>> entry : responses.entrySet()) {
+            String scope = entry.getKey();
+            Map<String, String> budget = entry.getValue().get();
             if (budget != null && !budget.isEmpty()) {
                 long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
                 long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
@@ -934,15 +940,58 @@ public class RedisReservationRepository {
     }
 
     /**
-     * Fetches tenant configuration from Redis and returns parsed defaults.
+     * Parse balance snapshots returned by Lua scripts (reserve/commit/release).
+     * Falls back to empty list if balances are not present in the response.
+     */
+    @SuppressWarnings("unchecked")
+    private List<Balance> parseLuaBalances(Map<String, Object> response, Enums.UnitEnum unit) {
+        Object balancesObj = response.get("balances");
+        if (balancesObj == null || !(balancesObj instanceof List)) {
+            return Collections.emptyList();
+        }
+        List<Map<String, Object>> luaBalances = (List<Map<String, Object>>) balancesObj;
+        List<Balance> balances = new ArrayList<>();
+        for (Map<String, Object> lb : luaBalances) {
+            String scope = (String) lb.get("scope");
+            long debtVal = ((Number) lb.getOrDefault("debt", 0)).longValue();
+            long overdraftLimitVal = ((Number) lb.getOrDefault("overdraft_limit", 0)).longValue();
+            boolean isOverLimit = Boolean.TRUE.equals(lb.get("is_over_limit"));
+            balances.add(Balance.builder()
+                .scope(leafScope(scope))
+                .scopePath(scope)
+                .remaining(new SignedAmount(unit, ((Number) lb.getOrDefault("remaining", 0)).longValue()))
+                .reserved(new Amount(unit, ((Number) lb.getOrDefault("reserved", 0)).longValue()))
+                .spent(new Amount(unit, ((Number) lb.getOrDefault("spent", 0)).longValue()))
+                .allocated(new Amount(unit, ((Number) lb.getOrDefault("allocated", 0)).longValue()))
+                .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
+                .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
+                .isOverLimit(isOverLimit ? true : null)
+                .build());
+        }
+        return balances;
+    }
+
+    /**
+     * Fetches tenant configuration from Redis with 60-second in-memory cache.
      * Returns null if tenant record is not found (caller uses hardcoded defaults).
      */
+    private record CachedTenantConfig(Map<String, Object> config, long expiresAtMs) {}
+    private final java.util.concurrent.ConcurrentHashMap<String, CachedTenantConfig> tenantConfigCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long TENANT_CONFIG_CACHE_TTL_MS = 60_000L;
+
     private Map<String, Object> getTenantConfig(Jedis jedis, String tenant) {
+        CachedTenantConfig cached = tenantConfigCache.get(tenant);
+        if (cached != null && System.currentTimeMillis() < cached.expiresAtMs()) {
+            return cached.config();
+        }
         try {
             String tenantJson = jedis.get("tenant:" + tenant);
+            Map<String, Object> config = null;
             if (tenantJson != null) {
-                return objectMapper.readValue(tenantJson, Map.class);
+                config = objectMapper.readValue(tenantJson, Map.class);
             }
+            tenantConfigCache.put(tenant, new CachedTenantConfig(config, System.currentTimeMillis() + TENANT_CONFIG_CACHE_TTL_MS));
+            return config;
         } catch (Exception e) {
             LOG.warn("Failed to read tenant config for tenant: {}", tenant, e);
         }
