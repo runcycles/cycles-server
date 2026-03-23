@@ -74,6 +74,7 @@
                     <excludes>
                         <exclude>**/*IntegrationTest.java</exclude>
                     </excludes>
+                    <excludedGroups>benchmark</excludedGroups>
                 </configuration>
             </plugin>
         </plugins>
