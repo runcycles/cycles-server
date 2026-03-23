@@ -39,13 +39,15 @@ if state == "COMMITTED" then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        local charged = tonumber(redis.call('HGET', reservation_key, 'charged_amount'))
-        local debt_incurred = tonumber(redis.call('HGET', reservation_key, 'debt_incurred') or 0)
+        local idem_vals = redis.call('HMGET', reservation_key,
+            'charged_amount', 'debt_incurred', 'estimate_amount', 'estimate_unit')
         return cjson.encode({
             reservation_id = reservation_id,
             state = "COMMITTED",
-            charged = charged,
-            debt_incurred = debt_incurred
+            charged = tonumber(idem_vals[1] or 0),
+            debt_incurred = tonumber(idem_vals[2] or 0),
+            estimate_amount = tonumber(idem_vals[3] or 0),
+            estimate_unit = idem_vals[4]
         })
     else
         -- Different key on already-committed reservation = finalized, not idempotency mismatch
@@ -82,6 +84,9 @@ if now > current_expires_at + grace_ms then
 end
 
 -- Parse scopes: use budgeted_scopes for budget mutations (only scopes with actual budgets)
+if not (budgeted_scopes_json or affected_scopes_json) then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing scope data"})
+end
 local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
 
 -- Calculate delta (actual - estimate)
@@ -110,28 +115,32 @@ if delta > 0 then
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
         -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption.
-        -- Use math.max(remaining, 0) so deficit calculation matches the mutation pass —
-        -- when remaining is already negative the funded portion is 0, not negative.
+        -- Cache values from fail-fast loop for reuse in mutation loop.
+        local scope_budget_cache = {}
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
-            local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+            local vals = redis.call('HMGET', budget_key, 'remaining', 'debt', 'overdraft_limit')
+            local remaining = tonumber(vals[1] or 0)
+            local current_debt = tonumber(vals[2] or 0)
+            local overdraft_limit = tonumber(vals[3] or 0)
+            scope_budget_cache[scope] = {remaining = remaining, debt = current_debt, overdraft_limit = overdraft_limit}
+
             if remaining < delta then
                 local funded = math.max(remaining, 0)
                 local deficit = delta - funded
-                local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-                local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
                 if current_debt + deficit > overdraft_limit then
                     return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
                         current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
                 end
             end
         end
-        -- All checks passed - apply mutations
+        -- All checks passed - apply mutations using cached values
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
-            local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-            local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-            local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
+            local cached = scope_budget_cache[scope]
+            local remaining = cached.remaining
+            local current_debt = cached.debt
+            local overdraft_limit = cached.overdraft_limit
 
             if remaining >= delta then
                 -- Sufficient remaining - charge normally
@@ -196,14 +205,12 @@ for _, scope in ipairs(affected_scopes) do
     end
 end
 
--- Update reservation
-local tCommit = redis.call('TIME')
-local nowCommit = tonumber(tCommit[1]) * 1000 + math.floor(tonumber(tCommit[2]) / 1000)
+-- Update reservation (reuse TIME from earlier — no need to call again)
 redis.call('HMSET', reservation_key,
     'state', 'COMMITTED',
     'charged_amount', charged_amount,
     'debt_incurred', total_debt_incurred,
-    'committed_at', nowCommit,
+    'committed_at', now,
     'committed_idempotency_key', idempotency_key,
     'committed_payload_hash', payload_hash,
     'committed_metrics_json', metrics_json,
@@ -213,9 +220,30 @@ redis.call('HMSET', reservation_key,
 -- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
+-- Collect balance snapshots for all budgeted scopes (avoids post-operation Java round-trips)
+local balances = {}
+for _, scope in ipairs(affected_scopes) do
+    local budget_key = "budget:" .. scope .. ":" .. actual_unit
+    local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    table.insert(balances, {
+        scope = scope,
+        remaining = tonumber(b[1] or 0),
+        reserved = tonumber(b[2] or 0),
+        spent = tonumber(b[3] or 0),
+        allocated = tonumber(b[4] or 0),
+        debt = tonumber(b[5] or 0),
+        overdraft_limit = tonumber(b[6] or 0),
+        is_over_limit = (b[7] == "true")
+    })
+end
+
 return cjson.encode({
     reservation_id = reservation_id,
     state = "COMMITTED",
     charged = charged_amount,
-    debt_incurred = total_debt_incurred
+    debt_incurred = total_debt_incurred,
+    estimate_amount = estimate_amount,
+    estimate_unit = estimate_unit,
+    affected_scopes_json = affected_scopes_json,
+    balances = balances
 })

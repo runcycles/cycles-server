@@ -26,7 +26,13 @@ if state == "RELEASED" then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})
+        local idem_vals = redis.call('HMGET', reservation_key, 'estimate_amount', 'estimate_unit')
+        return cjson.encode({
+            reservation_id = reservation_id,
+            state = "RELEASED",
+            estimate_amount = tonumber(idem_vals[1]),
+            estimate_unit = idem_vals[2]
+        })
     else
         -- Different key on already-released reservation = finalized, not idempotency mismatch
         return cjson.encode({error = "RESERVATION_FINALIZED", state = "RELEASED"})
@@ -49,12 +55,21 @@ if now_ms > current_expires_at + grace_ms then
     return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
--- Get reservation data
-local estimate_amount = tonumber(redis.call('HGET', reservation_key, 'estimate_amount'))
-local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
-local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scopes')
+-- Get reservation data using HMGET for efficiency
+local rvals = redis.call('HMGET', reservation_key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
+local estimate_amount = tonumber(rvals[1])
+local estimate_unit = rvals[2]
+local affected_scopes_json = rvals[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
-local budgeted_scopes_json = redis.call('HGET', reservation_key, 'budgeted_scopes')
+local budgeted_scopes_json = rvals[4]
+
+-- Guard against corrupted reservation data
+if not estimate_amount or not estimate_unit then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing estimate data"})
+end
+if not (budgeted_scopes_json or affected_scopes_json) then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing scope data"})
+end
 local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
 
 -- Release from all scopes
@@ -64,12 +79,10 @@ for _, scope in ipairs(affected_scopes) do
     redis.call('HINCRBY', budget_key, 'remaining', estimate_amount)
 end
 
--- Update reservation
-local tRelease = redis.call('TIME')
-local now = tonumber(tRelease[1]) * 1000 + math.floor(tonumber(tRelease[2]) / 1000)
+-- Update reservation (reuse TIME from earlier — no need to call again)
 redis.call('HMSET', reservation_key,
     'state', 'RELEASED',
-    'released_at', now,
+    'released_at', now_ms,
     'released_idempotency_key', idempotency_key,
     'released_payload_hash', payload_hash
 )
@@ -77,4 +90,28 @@ redis.call('HMSET', reservation_key,
 -- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
-return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})
+-- Collect balance snapshots for all budgeted scopes (avoids post-operation Java round-trips)
+local balances = {}
+for _, scope in ipairs(affected_scopes) do
+    local budget_key = "budget:" .. scope .. ":" .. estimate_unit
+    local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    table.insert(balances, {
+        scope = scope,
+        remaining = tonumber(b[1] or 0),
+        reserved = tonumber(b[2] or 0),
+        spent = tonumber(b[3] or 0),
+        allocated = tonumber(b[4] or 0),
+        debt = tonumber(b[5] or 0),
+        overdraft_limit = tonumber(b[6] or 0),
+        is_over_limit = (b[7] == "true")
+    })
+end
+
+return cjson.encode({
+    reservation_id = reservation_id,
+    state = "RELEASED",
+    estimate_amount = estimate_amount,
+    estimate_unit = estimate_unit,
+    affected_scopes_json = affected_scopes_json,
+    balances = balances
+})

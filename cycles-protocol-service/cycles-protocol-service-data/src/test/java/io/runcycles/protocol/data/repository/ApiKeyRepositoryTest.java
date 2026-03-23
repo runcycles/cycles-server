@@ -22,8 +22,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ApiKeyRepository")
@@ -368,6 +367,30 @@ class ApiKeyRepositoryTest {
         }
 
         @Test
+        void shouldReturnCachedResponseOnSecondCall() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+
+            // First call — hits Redis
+            ApiKeyValidationResponse result1 = repository.validate(secret);
+            assertThat(result1.isValid()).isTrue();
+
+            // Second call — should be cached, no additional Redis calls
+            ApiKeyValidationResponse result2 = repository.validate(secret);
+            assertThat(result2.isValid()).isTrue();
+
+            // jedisPool.getResource() should only be called once (for the first call)
+            verify(jedisPool, times(1)).getResource();
+        }
+
+        @Test
         void shouldReturnValidForKeyWithNonNullNonExpiredExpiresAt() throws Exception {
             stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
@@ -384,6 +407,25 @@ class ApiKeyRepositoryTest {
             ApiKeyValidationResponse result = repository.validate(secret);
 
             assertThat(result.isValid()).isTrue();
+        }
+
+        @Test
+        void shouldCacheInvalidResponseAndReplayIt() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null);
+
+            // First call — key not found, cached as invalid
+            ApiKeyValidationResponse result1 = repository.validate(secret);
+            assertThat(result1.isValid()).isFalse();
+            assertThat(result1.getReason()).isEqualTo("KEY_NOT_FOUND");
+
+            // Second call — should return cached invalid response without Redis
+            ApiKeyValidationResponse result2 = repository.validate(secret);
+            assertThat(result2.isValid()).isFalse();
+            assertThat(result2.getReason()).isEqualTo("KEY_NOT_FOUND");
+
+            // getResource() only called once (second is cache hit)
+            verify(jedisPool, times(1)).getResource();
         }
     }
 }

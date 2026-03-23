@@ -12,20 +12,53 @@ import org.springframework.stereotype.Repository;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Repository
 public class ApiKeyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyRepository.class);
+    private static final long CACHE_TTL_MS = 60_000L; // 60 seconds
 
     @Autowired
     private JedisPool jedisPool;
     @Autowired
     private ObjectMapper objectMapper;
 
+    private record CachedValidation(ApiKeyValidationResponse response, long expiresAtMs) {}
+    private final ConcurrentHashMap<String, CachedValidation> validationCache = new ConcurrentHashMap<>();
+
     public ApiKeyValidationResponse validate(String keySecret) {
+        // Check in-memory cache to avoid BCrypt on every request
+        String cacheKey = hashKeyForCache(keySecret);
+        if (cacheKey != null) {
+            CachedValidation cached = validationCache.get(cacheKey);
+            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs()) {
+                LOG.debug("API key cache hit");
+                return cached.response();
+            }
+        }
+
+        ApiKeyValidationResponse result = validateFromRedis(keySecret);
+
+        // Cache the result (both valid and invalid responses)
+        if (cacheKey != null) {
+            validationCache.put(cacheKey, new CachedValidation(result, System.currentTimeMillis() + CACHE_TTL_MS));
+            // Lazy eviction: remove expired entries if cache grows large
+            if (validationCache.size() > 10_000) {
+                evictExpiredEntries();
+            }
+        }
+
+        return result;
+    }
+
+    private ApiKeyValidationResponse validateFromRedis(String keySecret) {
         try (Jedis jedis = jedisPool.getResource()) {
             String prefix = extractPrefix(keySecret);
             String keyId = jedis.get("apikey:lookup:" + prefix);
@@ -74,6 +107,7 @@ public class ApiKeyRepository {
             return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
         }
     }
+
     public boolean verifyKey(String keySecret, String hash) {
         try {
             return BCrypt.checkpw(keySecret, hash);
@@ -81,8 +115,24 @@ public class ApiKeyRepository {
             return false;
         }
     }
+
     private static final int PREFIX_LENGTH = 14; // "cyc_live_" (9) + 5 chars from random part
     public String extractPrefix(String keySecret) {
         return keySecret.substring(0, Math.min(PREFIX_LENGTH, keySecret.length()));
+    }
+
+    private String hashKeyForCache(String keySecret) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(keySecret.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void evictExpiredEntries() {
+        long now = System.currentTimeMillis();
+        validationCache.entrySet().removeIf(e -> now >= e.getValue().expiresAtMs());
     }
 }
