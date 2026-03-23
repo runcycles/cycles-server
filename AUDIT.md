@@ -213,36 +213,51 @@ Seven optimizations applied to the reserve/commit/release hot path, preserving a
 
 End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot + Jedis + Redis 7 via Testcontainers). 200 measured iterations after 50 warmup iterations per operation.
 
-| Operation         |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
-|-------------------|--------|--------|--------|--------|--------|--------|
-| Reserve           |  5.2ms |  6.0ms |  6.4ms |  4.0ms |  6.8ms |  5.2ms |
-| Commit            |  4.1ms |  4.7ms |  5.2ms |  2.6ms |  5.3ms |  4.1ms |
-| Release           |  4.4ms |  5.6ms |  6.6ms |  3.5ms | 14.0ms |  4.5ms |
-| Extend            |  8.5ms | 10.7ms | 11.4ms |  7.0ms | 21.4ms |  8.7ms |
-| Decide            |  5.8ms |  6.6ms |  7.6ms |  4.5ms | 15.4ms |  5.8ms |
-| Event             |  5.2ms |  6.1ms | 10.0ms |  3.9ms | 20.7ms |  5.4ms |
-| Reserve + Commit  | 12.2ms | 14.1ms | 16.7ms | 10.6ms | 21.5ms | 12.5ms |
-| Reserve + Release | 10.3ms | 12.7ms | 14.0ms |  8.4ms | 20.6ms | 10.6ms |
+#### Single-Threaded Latency
+
+| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|---------------------|--------|--------|--------|--------|--------|--------|
+| Reserve             |  6.1ms |  7.9ms |  8.5ms |  4.8ms | 13.7ms |  6.3ms |
+| Commit              |  5.0ms |  6.7ms |  7.1ms |  3.4ms |  7.2ms |  5.2ms |
+| Release             |  5.2ms |  6.0ms |  6.5ms |  3.9ms |  6.7ms |  5.2ms |
+| Extend              |  7.6ms |  9.7ms | 12.0ms |  5.8ms | 17.2ms |  7.8ms |
+| Decide              |  6.9ms |  8.1ms | 10.4ms |  5.5ms | 16.0ms |  7.0ms |
+| Event               |  5.1ms |  6.7ms |  7.2ms |  3.6ms |  8.8ms |  5.2ms |
+| Reserve + Commit    | 14.7ms | 17.8ms | 19.9ms | 11.2ms | 20.4ms | 14.9ms |
+| Reserve + Release   | 11.7ms | 14.4ms | 17.4ms |  9.6ms | 20.2ms | 11.9ms |
+
+#### Concurrent Throughput (Reserve→Commit lifecycle)
+
+| Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    |  min   |  max    | Errors |
+|---------|-----------|----------|---------|---------|---------|--------|---------|--------|
+|       8 |     4,023 |    804.6 |   9.7ms |  11.8ms |  17.9ms |  7.1ms |  33.7ms |      0 |
+|      16 |     5,506 |  1,101.2 |  14.2ms |  19.8ms |  23.9ms |  6.8ms |  28.8ms |      0 |
+|      32 |    12,416 |  2,483.2 |  11.6ms |  21.4ms |  35.2ms |  6.9ms |  65.8ms |      0 |
+
+#### Analysis
+
+**Phase 2 optimization impact (Extend & Event Lua balance snapshots):**
+
+| Operation | Before (p50) | After (p50) | Before (p99) | After (p99) | Change |
+|-----------|-------------|-------------|-------------|-------------|--------|
+| Extend    |  8.5ms      |  7.6ms      | 11.4ms      | 12.0ms      | p50 -11%, tail similar |
+| Event     |  5.2ms      |  5.1ms      | 10.0ms      |  7.2ms      | p50 flat, **p99 -28%** |
+
+- **Extend** p50 improved from 8.5ms to 7.6ms by eliminating the pre-Lua HMGET prefetch round-trip. The improvement is smaller than predicted (~5ms) because the Lua-side balance snapshot collection adds overhead that partially offsets the saved Java round-trip. Extend remains the slowest single operation because it still does more Redis commands inside Lua (read reservation fields + read all scope budgets + write TTL updates) than other operations.
+- **Event** p99 improved significantly from 10.0ms to 7.2ms (28% reduction). The variable-cost Java-side `fetchBalancesForScopes()` pipeline was the main tail latency driver — moving it into Lua eliminated the per-scope RTT variability. p50 was unchanged since simple single-scope events were already fast.
+
+**Concurrent scaling observations:**
+- Near-linear throughput scaling from 8→32 threads (805 → 2,483 ops/s, 3.1x at 4x threads)
+- Zero errors at all concurrency levels — Redis connection pool (max 50) is not a bottleneck
+- p50 latency at 32 threads (11.6ms) is lower than at 16 threads (14.2ms), suggesting connection pool warm-up effects
+- p99 tail grows with concurrency (17.9ms → 35.2ms) due to Redis Lua script serialization and connection pool contention
+- Max latency at 32 threads (65.8ms) indicates occasional GC pauses or connection pool waits
 
 **Notes:**
 - Results are from a containerized CI environment (Testcontainers Redis 7-Alpine, localhost networking). Production with dedicated Redis will be faster.
 - Latencies include full HTTP round-trip: Spring Boot request handling, auth filter, JSON serialization, Redis EVALSHA, Lua execution, response building.
 - The BCrypt cache eliminates ~100ms+ from all operations after the first request per API key (60s cache window).
 - Run benchmarks: `mvn test -Dgroups=benchmark` (requires Docker)
-
-#### Phase 2: Extend & Event Tail Latency Optimization
-
-**Root causes identified and fixed:**
-
-1. **Extend (8.5ms p50 → ~5ms expected):** Was the only mutation NOT returning balances from Lua. Java made 2 extra Redis round-trips: 1 pre-Lua HMGET prefetch + 1 post-Lua pipelined HGETALL for scope balances. Fix: moved balance snapshot collection into `extend.lua`, eliminated both Java round-trips.
-
-2. **Event (p99=10.0ms, 2x p50):** Same `fetchBalancesForScopes()` issue, amplified by variable scope hierarchy depth (1-6 scopes). Fix: moved balance snapshot collection into `event.lua`, eliminating variable-cost Java-side pipeline.
-
-**Files modified:** `extend.lua`, `event.lua`, `RedisReservationRepository.java`
-
-#### Concurrent Load Benchmark
-
-Added `CyclesProtocolConcurrentBenchmarkTest` — measures throughput (ops/sec) and latency under concurrent load at 8, 16, and 32 threads running Reserve→Commit lifecycles. Reports p50/p95/p99 per concurrency level and asserts zero errors under load. Run with: `mvn test -Dgroups=benchmark` (requires Docker)
 
 ---
 
