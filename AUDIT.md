@@ -215,14 +215,14 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 
 | Operation         |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
 |-------------------|--------|--------|--------|--------|--------|--------|
-| Reserve           |  5.2ms |  6.6ms |  7.1ms |  3.4ms | 15.0ms |  5.4ms |
-| Commit            |  3.9ms |  5.1ms |  5.4ms |  2.7ms |  5.7ms |  4.1ms |
-| Release           |  4.7ms |  5.6ms |  6.3ms |  3.5ms | 16.2ms |  4.8ms |
-| Extend            |  7.7ms |  9.8ms | 10.6ms |  6.3ms | 19.4ms |  8.0ms |
-| Decide            |  6.0ms |  7.1ms |  7.7ms |  4.5ms | 13.4ms |  6.0ms |
-| Event             |  5.2ms |  6.0ms |  6.4ms |  3.8ms |  7.9ms |  5.1ms |
-| Reserve + Commit  | 13.4ms | 15.9ms | 19.8ms |  9.0ms | 22.7ms | 13.4ms |
-| Reserve + Release | 11.6ms | 14.1ms | 15.5ms |  8.1ms | 19.5ms | 11.5ms |
+| Reserve           |  5.2ms |  6.0ms |  6.4ms |  4.0ms |  6.8ms |  5.2ms |
+| Commit            |  4.1ms |  4.7ms |  5.2ms |  2.6ms |  5.3ms |  4.1ms |
+| Release           |  4.4ms |  5.6ms |  6.6ms |  3.5ms | 14.0ms |  4.5ms |
+| Extend            |  8.5ms | 10.7ms | 11.4ms |  7.0ms | 21.4ms |  8.7ms |
+| Decide            |  5.8ms |  6.6ms |  7.6ms |  4.5ms | 15.4ms |  5.8ms |
+| Event             |  5.2ms |  6.1ms | 10.0ms |  3.9ms | 20.7ms |  5.4ms |
+| Reserve + Commit  | 12.2ms | 14.1ms | 16.7ms | 10.6ms | 21.5ms | 12.5ms |
+| Reserve + Release | 10.3ms | 12.7ms | 14.0ms |  8.4ms | 20.6ms | 10.6ms |
 
 **Notes:**
 - Results are from a containerized CI environment (Testcontainers Redis 7-Alpine, localhost networking). Production with dedicated Redis will be faster.
@@ -286,4 +286,4 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven performance optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Test coverage expanded to 522 tests across 24 test classes, including 8 performance benchmark tests. Single-operation p50 latency: 3.9-7.7ms. Full reserve-commit lifecycle p50: 13.4ms. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven performance optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Test coverage expanded to 522 tests across 24 test classes, including 8 performance benchmark tests. Single-operation p50 latency: 4.1-8.5ms. Full reserve-commit lifecycle p50: 12.2ms. No remaining spec violations found.
