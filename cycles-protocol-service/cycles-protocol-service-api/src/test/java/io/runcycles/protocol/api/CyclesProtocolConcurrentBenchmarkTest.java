@@ -40,8 +40,8 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
     };
     private static final Map<String, Level> savedLevels = new LinkedHashMap<>();
 
-    @BeforeAll
-    static void quietLogs() {
+    // Static initializer runs before Spring context startup, suppressing all boot noise
+    static {
         for (String name : QUIET_LOGGERS) {
             Logger logger = (Logger) LoggerFactory.getLogger(name);
             savedLevels.put(name, logger.getLevel());
@@ -54,8 +54,6 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     @AfterAll
     static void printSummary() {
-        savedLevels.forEach((name, level) ->
-                ((Logger) LoggerFactory.getLogger(name)).setLevel(level));
         if (ALL_RESULTS.isEmpty()) return;
 
         System.out.println();
