@@ -2989,4 +2989,242 @@ class RedisReservationRepositoryTest {
         fields.put("idempotency_key", "idem-" + id);
         return fields;
     }
+
+    // ---- parseLuaBalances edge case tests ----
+
+    @Nested
+    @DisplayName("parseLuaBalances edge cases")
+    class ParseLuaBalancesEdgeCases {
+
+        @Test
+        void shouldReturnEmptyListWhenBalancesFieldMissing() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Lua response has no "balances" key
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("no-bal");
+
+            CommitResponse response = repository.commitReservation("res-no-bal", request);
+            assertThat(response.getBalances()).isEmpty();
+        }
+
+        @Test
+        void shouldReturnEmptyListWhenBalancesIsNotAList() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Lua response has "balances" as a string, not a list
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            luaMap.put("balances", "not-a-list");
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("bad-bal");
+
+            CommitResponse response = repository.commitReservation("res-bad-bal", request);
+            assertThat(response.getBalances()).isEmpty();
+        }
+
+        @Test
+        void shouldReturnEmptyListWhenBalancesArrayIsEmpty() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            luaMap.put("balances", List.of());
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("empty-bal");
+
+            CommitResponse response = repository.commitReservation("res-empty-bal", request);
+            assertThat(response.getBalances()).isEmpty();
+        }
+
+        @Test
+        void shouldDefaultMissingNumericFieldsToZero() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Balance entry missing most numeric fields
+            Map<String, Object> balEntry = new LinkedHashMap<>();
+            balEntry.put("scope", "tenant:acme");
+            balEntry.put("remaining", 100);
+            // debt, overdraft_limit, reserved, spent, allocated all missing
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            luaMap.put("balances", List.of(balEntry));
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("partial-bal");
+
+            CommitResponse response = repository.commitReservation("res-partial", request);
+            assertThat(response.getBalances()).hasSize(1);
+            Balance b = response.getBalances().get(0);
+            assertThat(b.getRemaining().getAmount()).isEqualTo(100L);
+            assertThat(b.getReserved().getAmount()).isZero();
+            assertThat(b.getSpent().getAmount()).isZero();
+            assertThat(b.getDebt()).isNull();  // debt=0 → null per spec
+        }
+
+        @Test
+        void shouldHandleIsOverLimitBooleanCorrectly() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            luaMap.put("balances", List.of(
+                Map.of("scope", "tenant:acme", "remaining", 100, "reserved", 0, "spent", 0,
+                       "allocated", 1000, "debt", 500, "overdraft_limit", 200, "is_over_limit", true),
+                Map.of("scope", "tenant:acme/app:myapp", "remaining", 50, "reserved", 0, "spent", 0,
+                       "allocated", 500, "debt", 0, "overdraft_limit", 0, "is_over_limit", false)
+            ));
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("over-limit");
+
+            CommitResponse response = repository.commitReservation("res-overlimit", request);
+            assertThat(response.getBalances()).hasSize(2);
+            assertThat(response.getBalances().get(0).getIsOverLimit()).isTrue();
+            assertThat(response.getBalances().get(0).getDebt().getAmount()).isEqualTo(500L);
+            assertThat(response.getBalances().get(1).getIsOverLimit()).isNull();  // false → null
+            assertThat(response.getBalances().get(1).getDebt()).isNull();  // debt=0 → null
+        }
+    }
+
+    // ---- Lua response format edge cases ----
+
+    @Nested
+    @DisplayName("Lua response format edge cases")
+    class LuaResponseFormatEdgeCases {
+
+        @Test
+        void shouldHandleCommitWithEstimateUnitButNoAmount() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            // estimate_amount missing → released should be null
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("no-est-amt");
+
+            CommitResponse response = repository.commitReservation("res-noamt", request);
+            assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
+            assertThat(response.getReleased()).isNull();
+        }
+
+        @Test
+        void shouldHandleReleaseWithEstimateAmountButNoUnit() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-nounit");
+            luaMap.put("state", "RELEASED");
+            luaMap.put("estimate_amount", 5000);
+            // estimate_unit missing → fallback to 0 USD_MICROCENTS
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("no-unit").build();
+            ReleaseResponse response = repository.releaseReservation("res-nounit", request);
+
+            assertThat(response.getReleased().getAmount()).isZero();
+            assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);
+        }
+    }
+
+    // ---- getTenantConfig cache edge cases ----
+
+    @Nested
+    @DisplayName("getTenantConfig cache edge cases")
+    class TenantConfigCacheEdgeCases {
+
+        @Test
+        void shouldReturnNullWhenTenantNotInRedis() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:unknown")).thenReturn(null);
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-notenant");
+            luaMap.put("expires_at", 9999999L);
+            luaMap.put("balances", List.of());
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            ReservationCreateResponse response = repository.createReservation(request, "unknown");
+            // Should succeed with defaults (REJECT policy, 60s TTL)
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+
+        @Test
+        void shouldHandleMalformedTenantJsonGracefully() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn("{invalid json!!!");
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-badjson");
+            luaMap.put("expires_at", 9999999L);
+            luaMap.put("balances", List.of());
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            // Should succeed with defaults despite JSON parse failure
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+    }
 }

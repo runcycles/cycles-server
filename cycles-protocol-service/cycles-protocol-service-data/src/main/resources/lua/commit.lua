@@ -44,9 +44,9 @@ if state == "COMMITTED" then
         return cjson.encode({
             reservation_id = reservation_id,
             state = "COMMITTED",
-            charged = tonumber(idem_vals[1]),
+            charged = tonumber(idem_vals[1] or 0),
             debt_incurred = tonumber(idem_vals[2] or 0),
-            estimate_amount = tonumber(idem_vals[3]),
+            estimate_amount = tonumber(idem_vals[3] or 0),
             estimate_unit = idem_vals[4]
         })
     else
@@ -84,6 +84,9 @@ if now > current_expires_at + grace_ms then
 end
 
 -- Parse scopes: use budgeted_scopes for budget mutations (only scopes with actual budgets)
+if not (budgeted_scopes_json or affected_scopes_json) then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing scope data"})
+end
 local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
 
 -- Calculate delta (actual - estimate)

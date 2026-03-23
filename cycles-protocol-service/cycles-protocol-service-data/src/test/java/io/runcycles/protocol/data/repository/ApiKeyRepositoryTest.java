@@ -408,5 +408,24 @@ class ApiKeyRepositoryTest {
 
             assertThat(result.isValid()).isTrue();
         }
+
+        @Test
+        void shouldCacheInvalidResponseAndReplayIt() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null);
+
+            // First call — key not found, cached as invalid
+            ApiKeyValidationResponse result1 = repository.validate(secret);
+            assertThat(result1.isValid()).isFalse();
+            assertThat(result1.getReason()).isEqualTo("KEY_NOT_FOUND");
+
+            // Second call — should return cached invalid response without Redis
+            ApiKeyValidationResponse result2 = repository.validate(secret);
+            assertThat(result2.isValid()).isFalse();
+            assertThat(result2.getReason()).isEqualTo("KEY_NOT_FOUND");
+
+            // getResource() only called once (second is cache hit)
+            verify(jedisPool, times(1)).getResource();
+        }
     }
 }

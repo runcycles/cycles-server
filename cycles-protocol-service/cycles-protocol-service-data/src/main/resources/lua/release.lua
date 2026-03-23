@@ -62,6 +62,14 @@ local estimate_unit = rvals[2]
 local affected_scopes_json = rvals[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
 local budgeted_scopes_json = rvals[4]
+
+-- Guard against corrupted reservation data
+if not estimate_amount or not estimate_unit then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing estimate data"})
+end
+if not (budgeted_scopes_json or affected_scopes_json) then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing scope data"})
+end
 local affected_scopes = cjson.decode(budgeted_scopes_json or affected_scopes_json)
 
 -- Release from all scopes

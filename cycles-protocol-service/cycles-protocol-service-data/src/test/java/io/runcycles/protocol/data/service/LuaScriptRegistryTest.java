@@ -103,4 +103,44 @@ class LuaScriptRegistryTest {
         Object result = registry.eval(jedis, "commit", "-- commit", "arg1");
         assertThat(result).isEqualTo("OK");
     }
+
+    @Test
+    void shouldPropagateExceptionWhenScriptLoadFailsDuringNoscriptRecovery() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        when(jedis.scriptLoad(anyString())).thenReturn("sha_old");
+        registry.afterPropertiesSet();
+
+        // EVALSHA throws NOSCRIPT, scriptLoad during recovery also fails
+        when(jedis.evalsha(eq("sha_old"), eq(0), any(String[].class)))
+                .thenThrow(new JedisNoScriptException("NOSCRIPT"));
+        when(jedis.scriptLoad("-- reserve")).thenThrow(new RuntimeException("Redis OOM"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                () -> registry.eval(jedis, "reserve", "-- reserve", "arg1"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Redis OOM");
+    }
+
+    @Test
+    void shouldLoadRemainingScriptsEvenIfOneThrows() {
+        when(jedisPool.getResource()).thenReturn(jedis);
+        // First scriptLoad succeeds, rest throw
+        when(jedis.scriptLoad(anyString()))
+                .thenReturn("sha_first")
+                .thenThrow(new RuntimeException("Script compile error"));
+
+        // loadScripts wraps everything in one try-catch, so partial load
+        // means only "reserve" (first) gets loaded before exception kills the rest
+        registry.afterPropertiesSet();
+
+        // "reserve" should have its SHA cached, so EVALSHA works
+        when(jedis.evalsha(eq("sha_first"), eq(0), any(String[].class))).thenReturn("OK");
+        Object result = registry.eval(jedis, "reserve", "-- reserve", "arg1");
+        assertThat(result).isEqualTo("OK");
+
+        // "commit" was never loaded, so falls back to EVAL
+        when(jedis.eval(eq("-- commit"), eq(0), any(String[].class))).thenReturn("OK2");
+        Object result2 = registry.eval(jedis, "commit", "-- commit", "arg1");
+        assertThat(result2).isEqualTo("OK2");
+    }
 }
