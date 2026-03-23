@@ -258,7 +258,7 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 - Results are from a containerized CI environment (Testcontainers Redis 7-Alpine, localhost networking). Production with dedicated Redis will be faster.
 - Latencies include full HTTP round-trip: Spring Boot request handling, auth filter, JSON serialization, Redis EVALSHA, Lua execution, response building.
 - The BCrypt cache eliminates ~100ms+ from all operations after the first request per API key (60s cache window).
-- Run benchmarks: `mvn test -Dgroups=benchmark` (requires Docker)
+- Run benchmarks: `mvn test -Pbenchmark` (requires Docker)
 - Benchmarks are excluded from default `mvn verify` builds via `<excludedGroups>benchmark</excludedGroups>` in surefire config
 
 ### Production Hardening (Phase 2 audit)

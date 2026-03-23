@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Results are CI-environment sensitive — latency and throughput depend on
  * container resources, Redis container networking, and JVM warm-up.
  *
- * Run separately: mvn test -Dgroups=benchmark
+ * Run separately: mvn test -Pbenchmark
  */
 @DisplayName("Concurrent Load Benchmarks")
 @Tag("benchmark")

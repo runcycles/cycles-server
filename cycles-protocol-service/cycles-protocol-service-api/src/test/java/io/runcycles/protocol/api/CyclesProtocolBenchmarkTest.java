@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Results are environment-dependent (CI vs local, container overhead, etc.).
  * Use these numbers as relative guidance, not absolute SLA targets.
  *
- * Run separately: mvn test -Dgroups=benchmark
+ * Run separately: mvn test -Pbenchmark
  */
 @DisplayName("Performance Benchmarks")
 @Tag("benchmark")
