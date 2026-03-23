@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.*;
 import redis.clients.jedis.params.ScanParams;
@@ -977,12 +978,15 @@ public class RedisReservationRepository {
      */
     private record CachedTenantConfig(Map<String, Object> config, long expiresAtMs) {}
     private final java.util.concurrent.ConcurrentHashMap<String, CachedTenantConfig> tenantConfigCache = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final long TENANT_CONFIG_CACHE_TTL_MS = 60_000L;
+    @Value("${cycles.tenant-config.cache-ttl-ms:60000}")
+    private long tenantConfigCacheTtlMs;
 
     private Map<String, Object> getTenantConfig(Jedis jedis, String tenant) {
-        CachedTenantConfig cached = tenantConfigCache.get(tenant);
-        if (cached != null && System.currentTimeMillis() < cached.expiresAtMs()) {
-            return cached.config();
+        if (tenantConfigCacheTtlMs > 0) {
+            CachedTenantConfig cached = tenantConfigCache.get(tenant);
+            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs()) {
+                return cached.config();
+            }
         }
         try {
             String tenantJson = jedis.get("tenant:" + tenant);
@@ -990,7 +994,9 @@ public class RedisReservationRepository {
             if (tenantJson != null) {
                 config = objectMapper.readValue(tenantJson, Map.class);
             }
-            tenantConfigCache.put(tenant, new CachedTenantConfig(config, System.currentTimeMillis() + TENANT_CONFIG_CACHE_TTL_MS));
+            if (tenantConfigCacheTtlMs > 0) {
+                tenantConfigCache.put(tenant, new CachedTenantConfig(config, System.currentTimeMillis() + tenantConfigCacheTtlMs));
+            }
             return config;
         } catch (Exception e) {
             LOG.warn("Failed to read tenant config for tenant: {}", tenant, e);
