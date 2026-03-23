@@ -753,6 +753,34 @@ class RedisReservationRepositoryTest {
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
         }
+
+        @Test
+        void shouldReturnReleasedAmountOnIdempotentCommitReplay() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Lua idempotency hit returns estimate_amount/estimate_unit (no balances)
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-idem");
+            luaMap.put("state", "COMMITTED");
+            luaMap.put("charged", 3000);
+            luaMap.put("debt_incurred", 0);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-replay");
+
+            CommitResponse response = repository.commitReservation("res-idem", request);
+
+            assertThat(response.getStatus()).isEqualTo(Enums.CommitStatus.COMMITTED);
+            assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
+            assertThat(response.getReleased()).isNotNull();
+            assertThat(response.getReleased().getAmount()).isEqualTo(2000L);
+        }
     }
 
     // ---- releaseReservation ----
@@ -818,6 +846,29 @@ class RedisReservationRepositoryTest {
             assertThatThrownBy(() -> repository.releaseReservation("res-gone", request))
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+        }
+
+        @Test
+        void shouldReturnReleasedAmountOnIdempotentReleaseReplay() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Lua idempotency hit returns estimate_amount/estimate_unit
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-idem-rel");
+            luaMap.put("state", "RELEASED");
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-replay").build();
+
+            ReleaseResponse response = repository.releaseReservation("res-idem-rel", request);
+
+            assertThat(response.getStatus()).isEqualTo(Enums.ReleaseStatus.RELEASED);
+            assertThat(response.getReleased().getAmount()).isEqualTo(5000L);
+            assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);
         }
     }
 

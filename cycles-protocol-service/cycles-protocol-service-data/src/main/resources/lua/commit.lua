@@ -39,13 +39,15 @@ if state == "COMMITTED" then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        local charged = tonumber(redis.call('HGET', reservation_key, 'charged_amount'))
-        local debt_incurred = tonumber(redis.call('HGET', reservation_key, 'debt_incurred') or 0)
+        local idem_vals = redis.call('HMGET', reservation_key,
+            'charged_amount', 'debt_incurred', 'estimate_amount', 'estimate_unit')
         return cjson.encode({
             reservation_id = reservation_id,
             state = "COMMITTED",
-            charged = charged,
-            debt_incurred = debt_incurred
+            charged = tonumber(idem_vals[1]),
+            debt_incurred = tonumber(idem_vals[2] or 0),
+            estimate_amount = tonumber(idem_vals[3]),
+            estimate_unit = idem_vals[4]
         })
     else
         -- Different key on already-committed reservation = finalized, not idempotency mismatch

@@ -26,7 +26,13 @@ if state == "RELEASED" then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        return cjson.encode({reservation_id = reservation_id, state = "RELEASED"})
+        local idem_vals = redis.call('HMGET', reservation_key, 'estimate_amount', 'estimate_unit')
+        return cjson.encode({
+            reservation_id = reservation_id,
+            state = "RELEASED",
+            estimate_amount = tonumber(idem_vals[1]),
+            estimate_unit = idem_vals[2]
+        })
     else
         -- Different key on already-released reservation = finalized, not idempotency mismatch
         return cjson.encode({error = "RESERVATION_FINALIZED", state = "RELEASED"})
