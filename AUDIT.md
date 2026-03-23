@@ -153,14 +153,14 @@ Two-pass audit covering:
 ### Test Coverage (above 95%)
 - JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
 - **API module**: **100%** line coverage (278 tests across 15 test classes)
-- **Data module**: **95%+** line coverage, 76%+ branch coverage (223 tests across 8 test classes)
+- **Data module**: **95%+** line coverage, 76%+ branch coverage (235 tests across 8 test classes)
   - Branch gaps: defensive null-check ternaries and unreachable `&&` short-circuit branches in `RedisReservationRepository`
   - Tenant default resolution: 10 unit tests covering all fallback paths, TTL capping, max extensions, malformed JSON recovery
   - LuaScriptRegistry: 5 tests (startup load, EVALSHA, NOSCRIPT fallback, no-SHA fallback, startup failure)
   - Idempotency replay: 2 tests (commit replay returns released amount, release replay returns released amount)
   - API key cache: 1 test (verifies cache hit avoids second Redis call)
 - **Model module**: Coverage skipped (POJOs only, no business logic) — 9 tests
-- Total test count: 278 (API) + 223 (Data) + 9 (Model) = **510 tests** across 24 test classes
+- Total test count: 278 (API) + 235 (Data) + 9 (Model) = **522 tests** across 24 test classes
 - **Integration tests**: 27+ nested test classes covering all 9 endpoints, including:
   - Tenant Defaults (9 tests): overage policy resolution (ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT, REJECT), explicit override vs tenant default, TTL capping, max extensions enforcement, default TTL usage, no-tenant-record fallback
   - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
@@ -286,4 +286,4 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven performance optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Test coverage expanded to 510 tests across 24 test classes, including 8 performance benchmark tests. Single-operation p50 latency: 3.9-7.7ms. Full reserve-commit lifecycle p50: 13.4ms. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven performance optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Test coverage expanded to 522 tests across 24 test classes, including 8 performance benchmark tests. Single-operation p50 latency: 3.9-7.7ms. Full reserve-commit lifecycle p50: 13.4ms. No remaining spec violations found.

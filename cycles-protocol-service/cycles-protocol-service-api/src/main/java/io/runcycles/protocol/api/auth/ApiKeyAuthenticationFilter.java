@@ -41,7 +41,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         String apiKey = request.getHeader("X-Cycles-API-Key");
-        LOG.info("Authorization filter request got: apiKey={}",
+        LOG.debug("Authorization filter: apiKey={}",
                 apiKey != null && apiKey.length() > 8 ? apiKey.substring(0, 8) + "***" : "***");
 
         if (apiKey == null || apiKey.isBlank()) {
