@@ -28,26 +28,31 @@ class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_ITERATIONS = 50;
     private static final int MEASURE_ITERATIONS = 200;
-    private static Level previousRootLevel;
 
     // Collect all results for a summary table at the end
     private static final List<BenchmarkResult> ALL_RESULTS = new ArrayList<>();
 
+    private static final String[] QUIET_LOGGERS = {
+            org.slf4j.Logger.ROOT_LOGGER_NAME, "io.runcycles.protocol", "org.springframework"
+    };
+    private static final Map<String, Level> savedLevels = new LinkedHashMap<>();
+
     @BeforeAll
     static void quietLogs() {
-        Logger root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
-        previousRootLevel = root.getLevel();
-        root.setLevel(Level.WARN);
+        for (String name : QUIET_LOGGERS) {
+            Logger logger = (Logger) LoggerFactory.getLogger(name);
+            savedLevels.put(name, logger.getLevel());
+            logger.setLevel(Level.WARN);
+        }
     }
 
     record BenchmarkResult(String name, long p50, long p95, long p99, long min, long max, long mean) {}
 
     @AfterAll
     static void printSummary() {
-        // Restore log level
-        if (previousRootLevel != null) {
-            ((Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)).setLevel(previousRootLevel);
-        }
+        // Restore log levels
+        savedLevels.forEach((name, level) ->
+                ((Logger) LoggerFactory.getLogger(name)).setLevel(level));
         if (ALL_RESULTS.isEmpty()) return;
 
         System.out.println();
