@@ -400,8 +400,11 @@ public class RedisReservationRepository {
 
             // Parse balances returned atomically from Lua (no extra round-trips)
             String estimateUnitStr = (String) response.get("estimate_unit");
-            Enums.UnitEnum unitForBalances = estimateUnitStr != null
-                ? Enums.UnitEnum.valueOf(estimateUnitStr) : Enums.UnitEnum.USD_MICROCENTS;
+            Enums.UnitEnum unitForBalances = Enums.UnitEnum.USD_MICROCENTS;
+            if (estimateUnitStr != null) {
+                try { unitForBalances = Enums.UnitEnum.valueOf(estimateUnitStr); }
+                catch (IllegalArgumentException ignored) { /* corrupted Redis data, use default */ }
+            }
             List<Balance> balances = parseLuaBalances(response, unitForBalances);
 
             return ReservationExtendResponse.builder()

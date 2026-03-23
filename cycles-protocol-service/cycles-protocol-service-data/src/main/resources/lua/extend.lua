@@ -67,7 +67,8 @@ local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
 local scope_list_json = budgeted_scopes_json or affected_scopes_json
 local balances = {}
 if scope_list_json and estimate_unit then
-    local scopes = cjson.decode(scope_list_json)
+    local ok, scopes = pcall(cjson.decode, scope_list_json)
+    if not ok then scopes = {} end
     for _, scope in ipairs(scopes) do
         local budget_key = "budget:" .. scope .. ":" .. estimate_unit
         local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
