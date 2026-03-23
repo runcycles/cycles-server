@@ -59,10 +59,37 @@ redis.call('HSET', reservation_key, 'expires_at', new_expires_at)
 redis.call('HINCRBY', reservation_key, 'extension_count', 1)
 redis.call('ZADD', 'reservation:ttl', new_expires_at, reservation_id)
 
+-- Collect balance snapshots (avoids post-operation Java round-trips)
+local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scopes')
+local budgeted_scopes_json = redis.call('HGET', reservation_key, 'budgeted_scopes')
+local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
+
+local scope_list_json = budgeted_scopes_json or affected_scopes_json
+local balances = {}
+if scope_list_json and estimate_unit then
+    local scopes = cjson.decode(scope_list_json)
+    for _, scope in ipairs(scopes) do
+        local budget_key = "budget:" .. scope .. ":" .. estimate_unit
+        local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+        table.insert(balances, {
+            scope = scope,
+            remaining = tonumber(b[1] or 0),
+            reserved = tonumber(b[2] or 0),
+            spent = tonumber(b[3] or 0),
+            allocated = tonumber(b[4] or 0),
+            debt = tonumber(b[5] or 0),
+            overdraft_limit = tonumber(b[6] or 0),
+            is_over_limit = (b[7] == "true")
+        })
+    end
+end
+
 local result = cjson.encode({
     reservation_id = reservation_id,
     expires_at_ms = new_expires_at,
-    extended_at = now
+    extended_at = now,
+    estimate_unit = estimate_unit,
+    balances = balances
 })
 
 -- Store extend metadata in reservation hash if provided

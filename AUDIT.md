@@ -230,6 +230,20 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 - The BCrypt cache eliminates ~100ms+ from all operations after the first request per API key (60s cache window).
 - Run benchmarks: `mvn test -Dgroups=benchmark` (requires Docker)
 
+#### Phase 2: Extend & Event Tail Latency Optimization
+
+**Root causes identified and fixed:**
+
+1. **Extend (8.5ms p50 → ~5ms expected):** Was the only mutation NOT returning balances from Lua. Java made 2 extra Redis round-trips: 1 pre-Lua HMGET prefetch + 1 post-Lua pipelined HGETALL for scope balances. Fix: moved balance snapshot collection into `extend.lua`, eliminated both Java round-trips.
+
+2. **Event (p99=10.0ms, 2x p50):** Same `fetchBalancesForScopes()` issue, amplified by variable scope hierarchy depth (1-6 scopes). Fix: moved balance snapshot collection into `event.lua`, eliminating variable-cost Java-side pipeline.
+
+**Files modified:** `extend.lua`, `event.lua`, `RedisReservationRepository.java`
+
+#### Concurrent Load Benchmark
+
+Added `CyclesProtocolConcurrentBenchmarkTest` — measures throughput (ops/sec) and latency under concurrent load at 8, 16, and 32 threads running Reserve→Commit lifecycles. Reports p50/p95/p99 per concurrency level and asserts zero errors under load. Run with: `mvn test -Dgroups=benchmark` (requires Docker)
+
 ---
 
 ## Previously Found Issues (all fixed)
