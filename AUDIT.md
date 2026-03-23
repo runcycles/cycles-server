@@ -263,20 +263,27 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 
 ### Production Hardening (Phase 2 audit)
 
-Code review of all Phase 2 changes identified and fixed three defensive issues:
+Code review of all changes identified and fixed four defensive issues:
 
-1. **extend.lua `cjson.decode` crash on corrupted Redis data** — If `affected_scopes` or `budgeted_scopes` stored in a reservation hash contains malformed JSON, `cjson.decode` would crash the Lua script with an unhandled error. Fixed with `pcall(cjson.decode, ...)` wrapper that returns empty balances on decode failure. Consistent with defensive patterns in commit.lua/release.lua nil guards.
+1. **All Lua scripts: `cjson.decode` crash on corrupted Redis data** — If `affected_scopes` or `budgeted_scopes` stored in a reservation hash contains malformed JSON, `cjson.decode` would crash the Lua script with an unhandled error. Fixed with `pcall(cjson.decode, ...)` wrappers in all five mutation scripts:
+   - `extend.lua`: returns empty balances on decode failure
+   - `commit.lua`: returns `INTERNAL_ERROR` on decode failure
+   - `release.lua`: returns `INTERNAL_ERROR` on decode failure
+   - `expire.lua`: silently skips budget adjustment (background sweep must not get stuck on corrupted data; reservation still expires)
 
 2. **Java `valueOf` crash on invalid `estimate_unit`** — `Enums.UnitEnum.valueOf(estimateUnitStr)` in `extendReservation()` would throw `IllegalArgumentException` if Redis contained a corrupted unit string. Fixed with try-catch fallback to `USD_MICROCENTS`.
 
 3. **Concurrent benchmark thread leak and CI flakiness** — `ExecutorService` wasn't cleaned up on timeout (thread leak risk in CI). Hard `errors == 0` assertion would fail on transient CI issues. Fixed with try/finally + `shutdownNow()`, and replaced zero-error assertion with <1% error rate threshold.
 
 **Items reviewed and confirmed correct (no fix needed):**
+- `luaScripts.eval()` return value — Lua scripts always return via `cjson.encode()`, never nil
 - Event idempotency replay returns empty balances — consistent with commit/release pattern; `parseLuaBalances()` handles gracefully
 - `fetchBalancesForScopes()` still used in reserve idempotency-hit fallback path — not dead code
 - Thread safety: all caches use `ConcurrentHashMap`, `ThreadLocal<MessageDigest>` for digests, Jedis connections scoped to try-with-resources
-- Balance snapshot ordering: collected after mutations in both extend.lua and event.lua
+- Balance snapshot ordering: collected after mutations in all Lua scripts
 - Percentile calculations: mathematically correct with bounds checking
+- Redis pool size (50) / timeout (2s) — deployment tuning, configurable via RedisConfig
+- Cache race conditions in `ApiKeyRepository` and `LuaScriptRegistry` — `ConcurrentHashMap` ops are atomic; duplicate work is harmless
 
 ---
 
