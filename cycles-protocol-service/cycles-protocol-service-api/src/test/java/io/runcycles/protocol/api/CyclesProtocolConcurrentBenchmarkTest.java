@@ -1,6 +1,9 @@
 package io.runcycles.protocol.api;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
 import org.junit.jupiter.api.*;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 
 import java.util.*;
@@ -29,14 +32,25 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_OPS = 50;
     private static final long MEASURE_DURATION_MS = 5_000;
+    private static Level previousRootLevel;
 
     private static final List<ConcurrencyResult> ALL_RESULTS = new ArrayList<>();
+
+    @BeforeAll
+    static void quietLogs() {
+        Logger root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+        previousRootLevel = root.getLevel();
+        root.setLevel(Level.WARN);
+    }
 
     record ConcurrencyResult(int threads, long totalOps, double opsPerSec,
                              long p50, long p95, long p99, long min, long max, int errors) {}
 
     @AfterAll
     static void printSummary() {
+        if (previousRootLevel != null) {
+            ((Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)).setLevel(previousRootLevel);
+        }
         if (ALL_RESULTS.isEmpty()) return;
 
         System.out.println();

@@ -1,6 +1,9 @@
 package io.runcycles.protocol.api;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
 import org.junit.jupiter.api.*;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 
 import java.util.*;
@@ -25,14 +28,26 @@ class CyclesProtocolBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_ITERATIONS = 50;
     private static final int MEASURE_ITERATIONS = 200;
+    private static Level previousRootLevel;
 
     // Collect all results for a summary table at the end
     private static final List<BenchmarkResult> ALL_RESULTS = new ArrayList<>();
+
+    @BeforeAll
+    static void quietLogs() {
+        Logger root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+        previousRootLevel = root.getLevel();
+        root.setLevel(Level.WARN);
+    }
 
     record BenchmarkResult(String name, long p50, long p95, long p99, long min, long max, long mean) {}
 
     @AfterAll
     static void printSummary() {
+        // Restore log level
+        if (previousRootLevel != null) {
+            ((Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME)).setLevel(previousRootLevel);
+        }
         if (ALL_RESULTS.isEmpty()) return;
 
         System.out.println();
