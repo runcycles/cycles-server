@@ -11,7 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-/** Cycles Protocol v0.1.23 - Decision Controller */
+/** Cycles Protocol v0.1.24 - Decision Controller */
 @RestController
 @RequestMapping("/v1/decide")
 @Tag(name = "Decisions")

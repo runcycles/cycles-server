@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.23 - Reserve Lua Script
+-- Cycles Protocol v0.1.24 - Reserve Lua Script
 -- Atomically reserve budget across all affected scopes
 --local cjson = require("cjson")
 
@@ -13,7 +13,7 @@ local grace_ms = tonumber(ARGV[7])
 local idempotency_key = ARGV[8]
 local scope_path = ARGV[9]
 local tenant = ARGV[10]
-local overage_policy = ARGV[11] or "REJECT"
+local overage_policy = ARGV[11] or "ALLOW_IF_AVAILABLE"
 local metadata_json   = ARGV[12] or ""
 local payload_hash    = ARGV[13] or ""
 local max_extensions  = tonumber(ARGV[14]) or 10

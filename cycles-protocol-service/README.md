@@ -1,4 +1,4 @@
-# Cycles Protocol Server v0.1.23
+# Cycles Protocol Server v0.1.24
 
 Reference implementation of the [Cycles Budget Authority API](../cycles-protocol-v0.yaml) — a reservation-based budget control service for AI agents and workflows. All atomic budget operations are executed via Redis Lua scripts; no external database is required.
 
@@ -70,7 +70,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.23.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.24.jar
 ```
 
 The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html

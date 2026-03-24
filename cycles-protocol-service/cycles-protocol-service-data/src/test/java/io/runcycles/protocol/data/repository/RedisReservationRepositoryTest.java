@@ -2803,7 +2803,7 @@ class RedisReservationRepositoryTest {
         }
 
         @Test
-        void shouldFallBackToRejectWhenNoTenantRecord() throws Exception {
+        void shouldFallBackToAllowIfAvailableWhenNoTenantRecord() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
@@ -2824,7 +2824,7 @@ class RedisReservationRepositoryTest {
             repository.createReservation(request, "acme");
 
             String[] args = captureReserveArgs();
-            assertThat(args[10]).isEqualTo("REJECT");
+            assertThat(args[10]).isEqualTo("ALLOW_IF_AVAILABLE");
         }
 
         @Test
@@ -2964,13 +2964,13 @@ class RedisReservationRepositoryTest {
             request.setAction(defaultAction());
             request.setEstimate(defaultEstimate());
 
-            // Should not throw — falls back to REJECT
+            // Should not throw — falls back to ALLOW_IF_AVAILABLE
             ReservationCreateResponse response = repository.createReservation(request, "acme");
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
 
-            // Verify fallback to REJECT
+            // Verify fallback to ALLOW_IF_AVAILABLE
             String[] args = captureReserveArgs();
-            assertThat(args[10]).isEqualTo("REJECT");
+            assertThat(args[10]).isEqualTo("ALLOW_IF_AVAILABLE");
         }
 
         @Test

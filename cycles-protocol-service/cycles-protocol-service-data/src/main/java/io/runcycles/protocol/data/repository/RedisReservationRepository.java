@@ -19,7 +19,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
-/** Cycles Protocol v0.1.23 - Repository with Lua script execution */
+/** Cycles Protocol v0.1.24 - Repository with Lua script execution */
 @Repository
 public class RedisReservationRepository {
     private static final Logger LOG = LoggerFactory.getLogger(RedisReservationRepository.class);
@@ -794,9 +794,17 @@ public class RedisReservationRepository {
             // Parse balances returned atomically from Lua (no extra round-trips)
             List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
 
+            // Lua returns charged amount (may be less than requested with ALLOW_IF_AVAILABLE capping)
+            Amount charged = null;
+            Number chargedNum = (Number) response.get("charged");
+            if (chargedNum != null) {
+                charged = new Amount(request.getActual().getUnit(), chargedNum.longValue());
+            }
+
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
+                .charged(charged)
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
@@ -1044,7 +1052,7 @@ public class RedisReservationRepository {
 
     /**
      * Resolve the effective overage policy: use the request-level policy if provided,
-     * otherwise fall back to the tenant's default_commit_overage_policy, then REJECT.
+     * otherwise fall back to the tenant's default_commit_overage_policy, then ALLOW_IF_AVAILABLE.
      */
     private String resolveOveragePolicy(Enums.CommitOveragePolicy requestPolicy, Map<String, Object> tenantConfig) {
         if (requestPolicy != null) {
@@ -1056,7 +1064,7 @@ public class RedisReservationRepository {
                 return defaultPolicy.toString();
             }
         }
-        return "REJECT";
+        return "ALLOW_IF_AVAILABLE";
     }
 
     /**

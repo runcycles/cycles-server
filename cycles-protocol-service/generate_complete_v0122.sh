@@ -1,12 +1,12 @@
 #!/bin/bash
-# Complete generation script for Cycles Protocol v0.1.23
+# Complete generation script for Cycles Protocol v0.1.24
 
 cd /home/claude/cycles-protocol-server
 
 python3 << 'PYFULL'
 import os
 B = "/home/claude/cycles-protocol-server"
-V = "0.1.23"
+V = "0.1.24"
 
 def w(p, c):
     with open(f"{B}/{p}", 'w') as f:
@@ -172,4 +172,4 @@ public class ScopeDerivationService {{
 print(f"✅ Generated data layer config, exception, and service for v{V}")
 PYFULL
 
-echo "✅ Generation complete for v0.1.23"
+echo "✅ Generation complete for v0.1.24"

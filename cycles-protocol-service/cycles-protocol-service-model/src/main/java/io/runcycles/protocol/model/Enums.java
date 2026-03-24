@@ -1,11 +1,11 @@
 package io.runcycles.protocol.model;
 
 /**
- * Cycles Protocol v0.1.23
+ * Cycles Protocol v0.1.24
  * All enums in one file for convenience
  */
 public class Enums {
-    public static final String PROTOCOL_VERSION = "0.1.23";
+    public static final String PROTOCOL_VERSION = "0.1.24";
 
     public enum UnitEnum {
         USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS

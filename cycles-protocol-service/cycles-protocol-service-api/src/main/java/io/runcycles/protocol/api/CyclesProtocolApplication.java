@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-/** Cycles Protocol v0.1.23 - Main Application */
+/** Cycles Protocol v0.1.24 - Main Application */
 @SpringBootApplication
 @ComponentScan(basePackages = "io.runcycles.protocol")
 @EnableScheduling
@@ -15,7 +15,7 @@ public class CyclesProtocolApplication {
     
     public static void main(String[] args) {
         LOG.info("==========================================================");
-        LOG.info("Cycles Protocol Server v0.1.23");
+        LOG.info("Cycles Protocol Server v0.1.24");
         LOG.info("Budget Authority API with Overdraft/Debt Support");
         LOG.info("==========================================================");
         SpringApplication.run(CyclesProtocolApplication.class, args);

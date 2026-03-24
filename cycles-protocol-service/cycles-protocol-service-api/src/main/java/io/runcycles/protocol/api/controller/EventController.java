@@ -12,7 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-/** Cycles Protocol v0.1.23 - Event Controller */
+/** Cycles Protocol v0.1.24 - Event Controller */
 @RestController
 @RequestMapping("/v1/events")
 @Tag(name = "Events")

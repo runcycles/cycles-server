@@ -8,7 +8,7 @@
     </parent>
     <artifactId>cycles-protocol-service-data</artifactId>
     <name>Cycles Protocol Service Data</name>
-    <description>Data access layer for Cycles Protocol Service v0.1.23</description>
+    <description>Data access layer for Cycles Protocol Service v0.1.24</description>
     <dependencies>
         <dependency>
             <groupId>io.runcycles</groupId>

@@ -6,7 +6,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import java.util.List;
 
-/** Cycles Protocol v0.1.23 */
+/** Cycles Protocol v0.1.24 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class BalanceResponse {

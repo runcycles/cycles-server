@@ -8,7 +8,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /**
- * Cycles Protocol v0.1.23 - Adds X-RateLimit-Remaining and X-RateLimit-Reset
+ * Cycles Protocol v0.1.24 - Adds X-RateLimit-Remaining and X-RateLimit-Reset
  * headers to all /v1/ API responses for spec compliance.
  *
  * Rate limiting is not enforced in v0; headers use sentinel values (-1 / 0)

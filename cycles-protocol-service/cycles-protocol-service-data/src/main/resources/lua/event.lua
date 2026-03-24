@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.23 - Event Lua Script
+-- Cycles Protocol v0.1.24 - Event Lua Script
 -- Atomically records a direct debit event (no reservation required)
 
 local event_id = ARGV[1]
@@ -9,7 +9,7 @@ local unit = ARGV[5]
 local idempotency_key = ARGV[6]
 local scope_path = ARGV[7]
 local tenant = ARGV[8]
-local overage_policy  = ARGV[9] or "REJECT"
+local overage_policy  = ARGV[9] or "ALLOW_IF_AVAILABLE"
 local metrics_json    = ARGV[10] or ""
 local client_time_ms  = ARGV[11] or ""
 local payload_hash    = ARGV[12] or ""
@@ -73,12 +73,10 @@ for _, scope in ipairs(affected_scopes) do
 
         local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
         if remaining < amount then
-            if overage_policy == "REJECT" or overage_policy == "ALLOW_IF_AVAILABLE" then
-                -- Spec: ALLOW_IF_AVAILABLE MUST atomically apply the full actual amount
-                -- only if sufficient remaining exists; otherwise MUST return 409 BUDGET_EXCEEDED.
+            if overage_policy == "REJECT" then
                 return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
             elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-                -- Spec v0.1.23 NORMATIVE (EventCreateRequest.overage_policy):
+                -- Spec v0.1.24 NORMATIVE (EventCreateRequest.overage_policy):
                 -- "check if (current_debt + deficit) <= overdraft_limit across all derived scopes.
                 --  If no: server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED."
                 -- When overdraft_limit=0, no overdraft is permitted (behaves as ALLOW_IF_AVAILABLE).
@@ -101,10 +99,30 @@ if #budgeted_scopes == 0 then
     return cjson.encode({error = "BUDGET_NOT_FOUND", scope = affected_scopes[#affected_scopes]})
 end
 
--- All checks passed - debit full amount across budgeted scopes only
+-- All checks passed - debit amount across budgeted scopes only.
+-- For ALLOW_IF_AVAILABLE, cap effective_amount to available remaining.
 local effective_amount = amount
 local t_now = redis.call('TIME')
 local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
+
+if overage_policy == "ALLOW_IF_AVAILABLE" then
+    -- Cap to minimum available remaining across all scopes (floor 0)
+    local capped = amount
+    for _, scope in ipairs(budgeted_scopes) do
+        local budget_key = "budget:" .. scope .. ":" .. unit
+        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+        capped = math.min(capped, math.max(remaining, 0))
+    end
+    effective_amount = capped
+    -- Mark over-limit if we couldn't cover the full amount
+    if effective_amount < amount then
+        for _, scope in ipairs(budgeted_scopes) do
+            local budget_key = "budget:" .. scope .. ":" .. unit
+            redis.call('HSET', budget_key, 'is_over_limit', 'true')
+        end
+    end
+end
+
 for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
@@ -156,6 +174,7 @@ redis.call('HMSET', event_key,
     'subject_json', subject_json,
     'action_json', action_json,
     'amount', amount,
+    'charged_amount', effective_amount,
     'unit', unit,
     'scope_path', scope_path,
     'affected_scopes', cjson.encode(affected_scopes),
@@ -183,5 +202,6 @@ end
 return cjson.encode({
     event_id = event_id,
     status = "APPLIED",
+    charged = effective_amount,
     balances = balances
 })

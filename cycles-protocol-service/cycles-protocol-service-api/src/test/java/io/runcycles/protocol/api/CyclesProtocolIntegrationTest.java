@@ -24,7 +24,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@DisplayName("Cycles Protocol v0.1.23 Integration Tests")
+@DisplayName("Cycles Protocol v0.1.24 Integration Tests")
 class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
@@ -715,9 +715,10 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectEventWhenBudgetExceeded() {
-            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A,
-                    eventBody(TENANT_A, 99_999_999));
+        void shouldRejectEventWhenBudgetExceededWithRejectPolicy() {
+            Map<String, Object> body = eventBody(TENANT_A, 99_999_999);
+            body.put("overage_policy", "REJECT");
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
 
             assertThat(resp.getStatusCode().value()).isEqualTo(409);
             assertThat(resp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
@@ -1398,7 +1399,7 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectOverageWithAllowIfAvailableWhenBudgetInsufficient() {
+        void shouldCapOverageWithAllowIfAvailableWhenBudgetInsufficient() {
             // Drain budget: commit 999_000 so remaining ≈ 1000
             String drainId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 999_000);
             post("/v1/reservations/" + drainId + "/commit", API_KEY_SECRET_A, commitBody(999_000));
@@ -1412,13 +1413,21 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
 
             // Commit 1500 (delta = 1000) but remaining ≈ 500 after reservation hold
-            // Delta exceeds remaining → BUDGET_EXCEEDED
+            // Delta is capped to available remaining (~500), charged = 500 + 500 = 1000
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
                     API_KEY_SECRET_A, commitBody(1500));
 
-            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
-            assertThat(commitResp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            // Charged = estimate(500) + capped_delta(~500) = ~1000 (not full 1500)
+            assertThat(((Number) charged.get("amount")).longValue()).isLessThan(1500);
+
+            // Scope should be marked is_over_limit since full delta couldn't be covered
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) commitResp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+            assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
         }
     }
 
@@ -1959,7 +1968,7 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectAllowIfAvailableWhenInsufficient() {
+        void shouldCapAllowIfAvailableWhenInsufficient() {
             // Drain most of the budget
             String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 990_000);
             post("/v1/reservations/" + res1 + "/commit", API_KEY_SECRET_A, commitBody(990_000));
@@ -1971,13 +1980,132 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
 
-            // Commit 50_000 → delta=49_000, but remaining ≈ 9_000 → BUDGET_EXCEEDED
+            // Commit 50_000 → delta=49_000, but remaining ≈ 9_000 after reservation hold
+            // Delta capped to ~9_000, charged = 1000 + ~9000 = ~10_000 (not full 50_000)
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
                     API_KEY_SECRET_A, commitBody(50_000));
 
-            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
-            assertThat(commitResp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            // Charged should be much less than 50_000 (estimate + available remaining)
+            assertThat(((Number) charged.get("amount")).longValue()).isLessThan(50_000);
+            assertThat(((Number) charged.get("amount")).longValue()).isGreaterThanOrEqualTo(1000);
+
+            // Scope should be marked is_over_limit
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) commitResp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+            assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
+        }
+
+        @Test
+        void shouldAllowIfAvailableWithExactMatch() {
+            // delta=0: actual == estimate → normal commit, no capping, no is_over_limit
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(1000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(1000);
+        }
+
+        @Test
+        void shouldAllowIfAvailableWithUnderspend() {
+            // actual < estimate → release unused, no capping, no is_over_limit
+            Map<String, Object> body = reservationBody(TENANT_A, 5000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(3000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(3000);
+            // Released = estimate - actual = 2000
+            Map<String, Object> released = (Map<String, Object>) commitResp.getBody().get("released");
+            assertThat(released).isNotNull();
+            assertThat(((Number) released.get("amount")).longValue()).isEqualTo(2000);
+        }
+
+        @Test
+        void shouldAllowIfAvailableWithZeroRemainingChargesEstimateOnly() {
+            // Drain budget so remaining = estimate exactly, then commit > estimate
+            // After reserve: remaining=0, so capped_delta=0, charged=estimate
+            String drainId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 995_000);
+            post("/v1/reservations/" + drainId + "/commit", API_KEY_SECRET_A, commitBody(995_000));
+
+            // remaining ≈ 5000, reserve 5000 → remaining after reserve = 0
+            Map<String, Object> body = reservationBody(TENANT_A, 5000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            assertThat(reserveResp.getStatusCode().value()).isEqualTo(200);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+
+            // Commit 6000 (delta=1000) but remaining=0 → capped_delta=0, charged=5000
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(6000));
+
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            assertThat(((Number) charged.get("amount")).longValue()).isEqualTo(5000);
+
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) commitResp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+            assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
+        }
+
+        @Test
+        void shouldBlockReservationAfterCappedAllowIfAvailableCommit() {
+            // After a capped ALLOW_IF_AVAILABLE commit sets is_over_limit, next reservation should be DENIED
+            String drainId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 999_000);
+            post("/v1/reservations/" + drainId + "/commit", API_KEY_SECRET_A, commitBody(999_000));
+
+            // Reserve last 1000, commit 2000 → capped, is_over_limit=true
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = (String) reserveResp.getBody().get("reservation_id");
+            post("/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody(2000));
+
+            // Now try another reservation — should be blocked by is_over_limit
+            Map<String, Object> body2 = reservationBody(TENANT_A, 100);
+            ResponseEntity<Map> blockedResp = post("/v1/reservations", API_KEY_SECRET_A, body2);
+            assertThat(blockedResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(blockedResp.getBody().get("error")).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
+        }
+
+        @Test
+        void shouldCapEventWithAllowIfAvailableWhenBudgetInsufficient() {
+            // Drain most of budget
+            String drainId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 999_000);
+            post("/v1/reservations/" + drainId + "/commit", API_KEY_SECRET_A, commitBody(999_000));
+
+            // Event with ALLOW_IF_AVAILABLE for amount > remaining
+            Map<String, Object> body = eventBody(TENANT_A, 5000);
+            body.put("overage_policy", "ALLOW_IF_AVAILABLE");
+
+            ResponseEntity<Map> eventResp = post("/v1/events", API_KEY_SECRET_A, body);
+            assertThat(eventResp.getStatusCode().value()).isEqualTo(201);
+            assertThat(eventResp.getBody().get("status")).isEqualTo("APPLIED");
+
+            // Verify is_over_limit is set in balances
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) eventResp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+            assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
         }
 
         @Test
@@ -3102,11 +3230,12 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(reserveResp.getStatusCode().value()).isEqualTo(200);
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
 
-            // Default overage_policy is REJECT — commit with overage should fail
+            // Default overage_policy is ALLOW_IF_AVAILABLE — commit with overage should succeed (capped)
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
                     API_KEY_SECRET_A, commitBody(2000));
-            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
         }
 
         @Test

@@ -1,7 +1,7 @@
-# Cycles Protocol v0.1.23 — Server Implementation Audit
+# Cycles Protocol v0.1.24 — Server Implementation Audit
 
-**Date:** 2026-03-23 (updated), 2026-03-15 (initial)
-**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.23)
+**Date:** 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.24)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
 ---
@@ -138,14 +138,15 @@ Two-pass audit covering:
 - Event endpoint returns 201 (not 200) per spec
 - `include_children` parameter accepted but ignored (spec allows in v0)
 - Over-limit blocking: reservations rejected with OVERDRAFT_LIMIT_EXCEEDED when `is_over_limit=true`
-- `is_over_limit` set to true when `debt > overdraft_limit` after commit
+- `is_over_limit` set to true when `debt > overdraft_limit` after commit OR when ALLOW_IF_AVAILABLE caps the overage delta
 - `GET /v1/reservations/{id}` returns `ReservationDetail` with `status: EXPIRED` for expired reservations
 - All mutation responses (reserve, commit, release, extend, event) populate optional `balances` field
 
 ### Lua Atomicity (correct, optimized)
-- `ALLOW_IF_AVAILABLE` in commit.lua uses fail-fast pattern (all checks before mutations)
+- `ALLOW_IF_AVAILABLE` in commit.lua uses two-phase capped-delta pattern: determine minimum available remaining across all scopes, then charge estimate + capped_delta atomically. Never rejects — sets is_over_limit when capped.
+- `ALLOW_IF_AVAILABLE` in event.lua uses same capped pattern: cap amount to minimum available, charge capped amount, set is_over_limit when capped.
 - `ALLOW_WITH_OVERDRAFT` in commit.lua uses fail-fast pattern with cached scope values (eliminates redundant Redis reads in mutation loop)
-- Event.lua uses same fail-fast atomicity patterns
+- Event.lua uses same fail-fast atomicity patterns for ALLOW_WITH_OVERDRAFT
 - Reserve.lua atomically checks and deducts across all derived scopes using HMGET (1 call per scope instead of 5)
 - All Lua scripts leverage Redis single-threaded execution for atomicity
 - Balance snapshots returned atomically from Lua scripts (reserve, commit, release) — read consistency guaranteed within the same atomic operation
@@ -172,9 +173,9 @@ Two-pass audit covering:
 
 ### Tenant Default Configuration (correct)
 - `default_commit_overage_policy`: resolved at reservation/event creation time
-  - Resolution order: request-level `overage_policy` > tenant `default_commit_overage_policy` > hardcoded `REJECT`
+  - Resolution order: request-level `overage_policy` > tenant `default_commit_overage_policy` > hardcoded `ALLOW_IF_AVAILABLE`
   - Tenant config read from Redis `tenant:{tenant_id}` JSON record (shared with admin service)
-  - Graceful fallback to `REJECT` on tenant read failure or missing record
+  - Graceful fallback to `ALLOW_IF_AVAILABLE` on tenant read failure or missing record
 - `default_reservation_ttl_ms`: used when request omits `ttl_ms` (was hardcoded to 60000ms)
   - Resolution order: request `ttl_ms` > tenant `default_reservation_ttl_ms` > hardcoded 60000ms
 - `max_reservation_ttl_ms`: caps requested TTL to tenant maximum (default 3600000ms)
@@ -188,10 +189,10 @@ Two-pass audit covering:
 
 ### Overdraft/Debt Model (correct)
 - `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event
-- Debt tracked per-scope, `is_over_limit` flag set when `debt > overdraft_limit`
+- Debt tracked per-scope, `is_over_limit` flag set when `debt > overdraft_limit` or when ALLOW_IF_AVAILABLE caps the overage
 - Over-limit scopes block new reservations with OVERDRAFT_LIMIT_EXCEEDED
 - Concurrent commit/event behavior matches spec (per-operation check, not cross-operation atomic)
-- Event overage_policy defaults to REJECT, supports all three policies
+- Event overage_policy defaults to ALLOW_IF_AVAILABLE, supports all three policies
 
 ### Performance Optimizations (all applied)
 
@@ -218,44 +219,44 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 
 | Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
 |---------------------|--------|--------|--------|--------|--------|--------|
-| Reserve             |  5.6ms |  6.2ms |  6.6ms |  4.6ms |  6.9ms |  5.6ms |
-| Commit              |  4.5ms |  5.8ms | 15.8ms |  2.9ms | 22.1ms |  4.8ms |
-| Release             |  4.8ms |  5.5ms |  5.8ms |  3.5ms | 12.9ms |  4.8ms |
-| Extend              |  7.3ms |  8.7ms |  9.6ms |  6.0ms | 17.0ms |  7.4ms |
-| Decide              |  5.8ms |  6.9ms |  7.4ms |  4.5ms | 13.8ms |  5.9ms |
-| Event               |  4.9ms |  5.6ms |  6.0ms |  3.9ms | 15.2ms |  5.0ms |
-| Reserve + Commit    | 14.3ms | 16.2ms | 18.0ms | 11.5ms | 28.6ms | 14.3ms |
-| Reserve + Release   | 12.0ms | 15.1ms | 19.5ms |  9.7ms | 23.9ms | 12.3ms |
+| Reserve             |  5.1ms |  6.1ms |  6.8ms |  4.1ms | 12.9ms |  5.1ms |
+| Commit              |  4.3ms |  5.5ms | 12.1ms |  2.8ms | 24.1ms |  4.5ms |
+| Release             |  4.4ms |  5.3ms |  5.8ms |  3.2ms |  6.2ms |  4.5ms |
+| Extend              |  7.4ms |  9.1ms | 10.7ms |  5.9ms | 17.7ms |  7.6ms |
+| Decide              |  5.4ms |  6.2ms |  6.7ms |  4.2ms |  6.9ms |  5.5ms |
+| Event               |  4.6ms |  5.7ms |  6.4ms |  3.4ms |  8.3ms |  4.7ms |
+| Reserve + Commit    | 12.9ms | 15.6ms | 17.9ms | 10.2ms | 21.8ms | 13.2ms |
+| Reserve + Release   | 10.4ms | 12.1ms | 13.9ms |  9.0ms | 20.3ms | 10.6ms |
 
 #### Single-Threaded Read-Path Latency (Phase 3 — pipelined)
 
 | Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
 |---------------------|--------|--------|--------|--------|--------|--------|
-| GET reservation     |  3.2ms |  4.3ms |  4.4ms |  1.9ms |  5.4ms |  3.3ms |
-| GET balances        |  3.2ms |  4.1ms |  4.5ms |  1.7ms |  5.5ms |  3.2ms |
-| LIST reservations   |  3.9ms |  4.7ms |  5.2ms |  2.3ms |  5.4ms |  3.8ms |
-| Decide (pipelined)  |  4.6ms |  5.6ms |  6.1ms |  3.4ms |  6.5ms |  4.6ms |
+| GET reservation     |  2.5ms |  3.3ms |  3.7ms |  1.5ms |  9.2ms |  2.5ms |
+| GET balances        |  2.8ms |  4.0ms |  4.6ms |  1.6ms |  4.8ms |  2.8ms |
+| LIST reservations   |  3.2ms |  4.2ms |  4.6ms |  2.0ms |  5.3ms |  3.2ms |
+| Decide (pipelined)  |  4.6ms |  5.8ms |  6.5ms |  2.7ms |  7.7ms |  4.7ms |
 
 #### Concurrent Throughput (Reserve→Commit lifecycle)
 
 | Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    |  min   |  max    | Errors |
 |---------|-----------|----------|---------|---------|---------|--------|---------|--------|
-|       8 |     3,883 |    776.6 |  10.1ms |  12.2ms |  17.9ms |  7.2ms |  28.2ms |      0 |
-|      16 |     5,482 |  1,096.4 |  14.3ms |  19.7ms |  24.1ms |  7.3ms |  52.0ms |      0 |
-|      32 |    12,170 |  2,434.0 |  12.1ms |  20.1ms |  30.9ms |  7.1ms |  68.7ms |      0 |
+|       8 |     3,993 |    798.6 |   9.8ms |  11.9ms |  16.9ms |  6.7ms |  30.9ms |      0 |
+|      16 |     5,737 |  1,147.4 |  13.9ms |  19.1ms |  22.6ms |  6.8ms |  32.1ms |      0 |
+|      32 |    12,775 |  2,555.0 |  11.7ms |  18.9ms |  27.9ms |  6.8ms |  51.0ms |      0 |
 
 #### Analysis
 
 **Phase 3 optimization impact (read-path pipelining, response compression, terminal hash TTLs):**
 
-| Operation | Phase 2 (p50) | Phase 3 (p50) | Phase 2 (p99) | Phase 3 (p99) | Change |
-|-----------|--------------|--------------|--------------|--------------|--------|
-| Reserve   |  6.1ms       |  5.6ms       |  8.5ms       |  6.6ms       | **p50 -8%, p99 -22%** |
-| Commit    |  5.0ms       |  4.5ms       |  7.1ms       | 15.8ms       | p50 -10%, p99 tail spike |
-| Release   |  5.2ms       |  4.8ms       |  6.5ms       |  5.8ms       | **p50 -8%, p99 -11%** |
-| Extend    |  7.6ms       |  7.3ms       | 12.0ms       |  9.6ms       | p50 -4%, **p99 -20%** |
-| Decide    |  6.9ms       |  5.8ms       | 10.4ms       |  7.4ms       | **p50 -16%, p99 -29%** |
-| Event     |  5.1ms       |  4.9ms       |  7.2ms       |  6.0ms       | p50 -4%, **p99 -17%** |
+| Operation | Phase 2 (p50) | Phase 3 (p50) | v0.1.24 (p50) | Phase 2 (p99) | v0.1.24 (p99) | Change (Phase 2→v0.1.24) |
+|-----------|--------------|--------------|---------------|--------------|---------------|--------------------------|
+| Reserve   |  6.1ms       |  5.6ms       |  5.1ms        |  8.5ms       |  6.8ms        | **p50 -16%, p99 -20%** |
+| Commit    |  5.0ms       |  4.5ms       |  4.3ms        |  7.1ms       | 12.1ms        | p50 -14%, p99 tail spike |
+| Release   |  5.2ms       |  4.8ms       |  4.4ms        |  6.5ms       |  5.8ms        | **p50 -15%, p99 -11%** |
+| Extend    |  7.6ms       |  7.3ms       |  7.4ms        | 12.0ms       | 10.7ms        | p50 -3%, **p99 -11%** |
+| Decide    |  6.9ms       |  5.8ms       |  5.4ms        | 10.4ms       |  6.7ms        | **p50 -22%, p99 -36%** |
+| Event     |  5.1ms       |  4.9ms       |  4.6ms        |  7.2ms       |  6.4ms        | **p50 -10%, p99 -11%** |
 
 - **Decide** benefited most from pipelining: p50 dropped from 6.9ms to 5.8ms (16%) and p99 from 10.4ms to 7.4ms (29%). The sequential N+1 budget lookups + caps fetch were consolidated into a single pipeline round-trip.
 - **Reserve** p99 improved 22% (8.5ms → 6.6ms) — the tighter max (6.9ms vs 13.7ms) suggests reduced variance from fewer round-trips.
@@ -263,11 +264,11 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 - **Read paths** are the fastest operations: GET single reservation at 3.2ms p50, GET balances at 3.2ms p50. These benefit from no Lua script overhead — just direct Redis hash reads (pipelined for multi-scope queries).
 
 **Concurrent scaling observations:**
-- Near-linear throughput scaling from 8→32 threads (777 → 2,434 ops/s, 3.1x at 4x threads)
+- Near-linear throughput scaling from 8→32 threads (799 → 2,555 ops/s, 3.2x at 4x threads)
 - Zero errors at all concurrency levels — Redis connection pool (max 50) is not a bottleneck
-- p50 latency at 32 threads (12.1ms) is lower than at 16 threads (14.3ms), suggesting connection pool warm-up effects
-- p99 tail grows with concurrency (17.9ms → 30.9ms) due to Redis Lua script serialization and connection pool contention
-- Max latency at 32 threads (68.7ms) indicates occasional GC pauses or connection pool waits
+- p50 latency at 32 threads (11.7ms) is lower than at 16 threads (13.9ms), suggesting connection pool warm-up effects
+- p99 tail grows with concurrency (16.9ms → 27.9ms) due to Redis Lua script serialization and connection pool contention
+- Max latency at 32 threads (51.0ms) indicates occasional GC pauses or connection pool waits
 
 **Notes:**
 - Results are from a containerized CI environment (Testcontainers Redis 7-Alpine, localhost networking). Production with dedicated Redis will be faster.
@@ -388,4 +389,4 @@ Code review of all changes identified and fixed four defensive issues:
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 522 tests across 24 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 4.5-7.3ms. Read-path p50 latency: 3.2-4.6ms. Full reserve-commit lifecycle p50: 14.3ms. Concurrent throughput: 2,434 ops/s at 32 threads with zero errors. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.24) and **performance optimized**. v0.1.24 changes: default overage policy changed from REJECT to ALLOW_IF_AVAILABLE; ALLOW_IF_AVAILABLE commits/events now always succeed with capped charge instead of 409 BUDGET_EXCEEDED; is_over_limit extended to also cover capped ALLOW_IF_AVAILABLE scenarios; event.lua updated with same capped-delta logic; EventCreateResponse includes charged field. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 522 tests across 24 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 4.3-7.4ms. Read-path p50 latency: 2.5-4.6ms. Full reserve-commit lifecycle p50: 12.9ms. Concurrent throughput: 2,555 ops/s at 32 threads with zero errors. No remaining spec violations found.

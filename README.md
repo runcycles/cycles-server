@@ -3,7 +3,7 @@
 
 # Runcycles Server
 
-Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.23) — a reservation-based budget control service for AI agents and workflows.
+Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.24) — a reservation-based budget control service for AI agents and workflows.
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ cd cycles-protocol-service
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.23.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.24.jar
 ```
 
 Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -108,7 +108,7 @@ mvn clean install
 ./build-all.sh
 ```
 
-The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.23.jar`.
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.24.jar`.
 
 ## Docker Deployment
 

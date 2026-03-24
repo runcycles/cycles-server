@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-/** Cycles Protocol v0.1.23 - Exception Handler */
+/** Cycles Protocol v0.1.24 - Exception Handler */
 @RestControllerAdvice
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class GlobalExceptionHandler {
