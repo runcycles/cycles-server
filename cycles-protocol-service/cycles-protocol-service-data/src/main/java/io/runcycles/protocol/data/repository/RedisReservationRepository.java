@@ -442,9 +442,13 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.reservationExpired();
             }
             if (detail.getStatus() == Enums.ReservationStatus.ACTIVE
-                    && detail.getExpiresAtMs() != null
-                    && System.currentTimeMillis() > detail.getExpiresAtMs()) {
-                throw CyclesProtocolException.reservationExpired();
+                    && detail.getExpiresAtMs() != null) {
+                // Use Redis server time (matches Lua scripts) to avoid JVM clock skew
+                List<String> time = jedis.time();
+                long nowMs = Long.parseLong(time.get(0)) * 1000 + Long.parseLong(time.get(1)) / 1000;
+                if (nowMs > detail.getExpiresAtMs()) {
+                    throw CyclesProtocolException.reservationExpired();
+                }
             }
             return detail;
         } catch (CyclesProtocolException e) {
