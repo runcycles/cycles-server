@@ -256,7 +256,8 @@ public class RedisReservationRepository {
         // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
         Enums.DecisionEnum dryRunDecision = Enums.DecisionEnum.ALLOW;
         Caps dryRunCaps = null;
-        String capsJson = capsResponse.get().get(0);
+        List<String> capsList = capsResponse.get();
+        String capsJson = (capsList != null && !capsList.isEmpty()) ? capsList.get(0) : null;
         if (capsJson != null && !capsJson.isEmpty()) {
             dryRunCaps = objectMapper.readValue(capsJson, Caps.class);
             dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
@@ -535,6 +536,7 @@ public class RedisReservationRepository {
                 ScanResult<String> scan = jedis.scan(cursor, params);
                 List<String> keys = scan.getResult();
 
+                if (!keys.isEmpty()) {
                 // Pipeline all hgetAll calls for this SCAN batch
                 Pipeline pipeline = jedis.pipelined();
                 Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
@@ -601,6 +603,7 @@ public class RedisReservationRepository {
                     } catch (Exception e) {
                         LOG.warn("Failed to parse budget: {}", key, e);
                     }
+                }
                 }
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor));
@@ -710,7 +713,8 @@ public class RedisReservationRepository {
 
             if (response == null) {
                 // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
-                String capsJson = capsResponse.get().get(0);
+                List<String> capsList = capsResponse.get();
+                String capsJson = (capsList != null && !capsList.isEmpty()) ? capsList.get(0) : null;
                 if (capsJson != null && !capsJson.isEmpty()) {
                     Caps caps = objectMapper.readValue(capsJson, Caps.class);
                     response = DecisionResponse.builder()
