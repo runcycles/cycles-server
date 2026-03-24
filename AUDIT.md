@@ -1,7 +1,7 @@
-# Cycles Protocol v0.1.23 — Server Implementation Audit
+# Cycles Protocol v0.1.24 — Server Implementation Audit
 
-**Date:** 2026-03-23 (updated), 2026-03-15 (initial)
-**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.23)
+**Date:** 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.24)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
 ---
@@ -138,14 +138,15 @@ Two-pass audit covering:
 - Event endpoint returns 201 (not 200) per spec
 - `include_children` parameter accepted but ignored (spec allows in v0)
 - Over-limit blocking: reservations rejected with OVERDRAFT_LIMIT_EXCEEDED when `is_over_limit=true`
-- `is_over_limit` set to true when `debt > overdraft_limit` after commit
+- `is_over_limit` set to true when `debt > overdraft_limit` after commit OR when ALLOW_IF_AVAILABLE caps the overage delta
 - `GET /v1/reservations/{id}` returns `ReservationDetail` with `status: EXPIRED` for expired reservations
 - All mutation responses (reserve, commit, release, extend, event) populate optional `balances` field
 
 ### Lua Atomicity (correct, optimized)
-- `ALLOW_IF_AVAILABLE` in commit.lua uses fail-fast pattern (all checks before mutations)
+- `ALLOW_IF_AVAILABLE` in commit.lua uses two-phase capped-delta pattern: determine minimum available remaining across all scopes, then charge estimate + capped_delta atomically. Never rejects — sets is_over_limit when capped.
+- `ALLOW_IF_AVAILABLE` in event.lua uses same capped pattern: cap amount to minimum available, charge capped amount, set is_over_limit when capped.
 - `ALLOW_WITH_OVERDRAFT` in commit.lua uses fail-fast pattern with cached scope values (eliminates redundant Redis reads in mutation loop)
-- Event.lua uses same fail-fast atomicity patterns
+- Event.lua uses same fail-fast atomicity patterns for ALLOW_WITH_OVERDRAFT
 - Reserve.lua atomically checks and deducts across all derived scopes using HMGET (1 call per scope instead of 5)
 - All Lua scripts leverage Redis single-threaded execution for atomicity
 - Balance snapshots returned atomically from Lua scripts (reserve, commit, release) — read consistency guaranteed within the same atomic operation
@@ -172,9 +173,9 @@ Two-pass audit covering:
 
 ### Tenant Default Configuration (correct)
 - `default_commit_overage_policy`: resolved at reservation/event creation time
-  - Resolution order: request-level `overage_policy` > tenant `default_commit_overage_policy` > hardcoded `REJECT`
+  - Resolution order: request-level `overage_policy` > tenant `default_commit_overage_policy` > hardcoded `ALLOW_IF_AVAILABLE`
   - Tenant config read from Redis `tenant:{tenant_id}` JSON record (shared with admin service)
-  - Graceful fallback to `REJECT` on tenant read failure or missing record
+  - Graceful fallback to `ALLOW_IF_AVAILABLE` on tenant read failure or missing record
 - `default_reservation_ttl_ms`: used when request omits `ttl_ms` (was hardcoded to 60000ms)
   - Resolution order: request `ttl_ms` > tenant `default_reservation_ttl_ms` > hardcoded 60000ms
 - `max_reservation_ttl_ms`: caps requested TTL to tenant maximum (default 3600000ms)
@@ -188,10 +189,10 @@ Two-pass audit covering:
 
 ### Overdraft/Debt Model (correct)
 - `ALLOW_WITH_OVERDRAFT` policy supported on both commit and event
-- Debt tracked per-scope, `is_over_limit` flag set when `debt > overdraft_limit`
+- Debt tracked per-scope, `is_over_limit` flag set when `debt > overdraft_limit` or when ALLOW_IF_AVAILABLE caps the overage
 - Over-limit scopes block new reservations with OVERDRAFT_LIMIT_EXCEEDED
 - Concurrent commit/event behavior matches spec (per-operation check, not cross-operation atomic)
-- Event overage_policy defaults to REJECT, supports all three policies
+- Event overage_policy defaults to ALLOW_IF_AVAILABLE, supports all three policies
 
 ### Performance Optimizations (all applied)
 
@@ -388,4 +389,4 @@ Code review of all changes identified and fixed four defensive issues:
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 522 tests across 24 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 4.5-7.3ms. Read-path p50 latency: 3.2-4.6ms. Full reserve-commit lifecycle p50: 14.3ms. Concurrent throughput: 2,434 ops/s at 32 threads with zero errors. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.24) and **performance optimized**. v0.1.24 changes: default overage policy changed from REJECT to ALLOW_IF_AVAILABLE; ALLOW_IF_AVAILABLE commits/events now always succeed with capped charge instead of 409 BUDGET_EXCEEDED; is_over_limit extended to also cover capped ALLOW_IF_AVAILABLE scenarios; event.lua updated with same capped-delta logic; EventCreateResponse includes charged field. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 522 tests across 24 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 4.5-7.3ms. Read-path p50 latency: 3.2-4.6ms. Full reserve-commit lifecycle p50: 14.3ms. Concurrent throughput: 2,434 ops/s at 32 threads with zero errors. No remaining spec violations found.
