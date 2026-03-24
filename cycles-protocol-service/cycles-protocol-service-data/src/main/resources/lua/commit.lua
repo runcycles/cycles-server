@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.23 - Commit Lua Script
+-- Cycles Protocol v0.1.24 - Commit Lua Script
 -- Atomically commit actual spend with overdraft support
 --local cjson = require("cjson")
 
@@ -26,7 +26,7 @@ local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scope
 -- fall back to affected_scopes for backward compatibility with pre-existing reservations.
 local budgeted_scopes_json = redis.call('HGET', reservation_key, 'budgeted_scopes')
 local stored_idempotency_key = redis.call('HGET', reservation_key, 'committed_idempotency_key')
-local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or "REJECT"
+local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or "ALLOW_IF_AVAILABLE"
 
 -- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
@@ -102,19 +102,34 @@ if delta > 0 then
     if overage_policy == "REJECT" then
         return cjson.encode({error = "BUDGET_EXCEEDED", message = "Actual exceeds estimate and policy is REJECT"})
     elseif overage_policy == "ALLOW_IF_AVAILABLE" then
-        -- Check if delta available in all scopes
+        -- Two-phase: determine capped delta across all scopes, then mutate.
+        -- Cap delta to the minimum available remaining across all scopes (floor 0).
+        -- This ensures commits always succeed — the action already happened.
+        local capped_delta = delta
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-            if remaining < delta then
-                return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope})
+            capped_delta = math.min(capped_delta, math.max(remaining, 0))
+        end
+
+        -- Charge the capped delta from remaining
+        if capped_delta > 0 then
+            for _, scope in ipairs(affected_scopes) do
+                local budget_key = "budget:" .. scope .. ":" .. actual_unit
+                redis.call('HINCRBY', budget_key, 'remaining', -capped_delta)
+                redis.call('HINCRBY', budget_key, 'spent', capped_delta)
             end
         end
-        -- Charge delta from remaining
-        for _, scope in ipairs(affected_scopes) do
-            local budget_key = "budget:" .. scope .. ":" .. actual_unit
-            redis.call('HINCRBY', budget_key, 'remaining', -delta)
-            redis.call('HINCRBY', budget_key, 'spent', delta)
+
+        -- Adjust charged_amount: estimate + whatever overage we could cover
+        charged_amount = estimate_amount + capped_delta
+
+        -- Mark over-limit if we couldn't cover the full delta — blocks future reservations
+        if capped_delta < delta then
+            for _, scope in ipairs(affected_scopes) do
+                local budget_key = "budget:" .. scope .. ":" .. actual_unit
+                redis.call('HSET', budget_key, 'is_over_limit', 'true')
+            end
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
         -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption.
@@ -187,9 +202,11 @@ end
 --     Net spent = actual_amount. ✓
 --
 --   delta > 0  (actual > estimate):
---     Overage block already ran: spent += delta (the extra portion beyond estimate).
+--     Overage block already ran: spent += overage_charged (delta or capped_delta).
 --     This loop: spent += estimate_amount (the base portion).
---     Net spent = delta + estimate_amount = (actual - estimate) + estimate = actual_amount. ✓
+--     Net spent = overage_charged + estimate_amount = charged_amount. ✓
+--     For ALLOW_IF_AVAILABLE with capped delta: charged_amount = estimate + capped_delta ≤ actual.
+--     For full delta (ALLOW_WITH_OVERDRAFT or uncapped): charged_amount = actual_amount.
 --
 -- Do NOT consolidate this into a single "spent += actual_amount" here — the overage
 -- block has already modified `spent` for the delta > 0 cases.

@@ -1044,7 +1044,7 @@ public class RedisReservationRepository {
 
     /**
      * Resolve the effective overage policy: use the request-level policy if provided,
-     * otherwise fall back to the tenant's default_commit_overage_policy, then REJECT.
+     * otherwise fall back to the tenant's default_commit_overage_policy, then ALLOW_IF_AVAILABLE.
      */
     private String resolveOveragePolicy(Enums.CommitOveragePolicy requestPolicy, Map<String, Object> tenantConfig) {
         if (requestPolicy != null) {
@@ -1056,7 +1056,7 @@ public class RedisReservationRepository {
                 return defaultPolicy.toString();
             }
         }
-        return "REJECT";
+        return "ALLOW_IF_AVAILABLE";
     }
 
     /**

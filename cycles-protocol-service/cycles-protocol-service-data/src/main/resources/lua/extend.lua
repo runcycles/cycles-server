@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.23 - Extend TTL Lua Script
+-- Cycles Protocol v0.1.24 - Extend TTL Lua Script
 --local cjson = require("cjson")
 
 local reservation_id = ARGV[1]

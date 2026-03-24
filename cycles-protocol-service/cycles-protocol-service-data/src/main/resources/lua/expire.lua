@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.23 - Expire Reservation Lua Script
+-- Cycles Protocol v0.1.24 - Expire Reservation Lua Script
 -- Atomically marks an ACTIVE reservation as EXPIRED and releases its reserved budget.
 -- Only fires if the reservation is past expires_at + grace_ms.
 -- Called by the background expiry job per reservation_id.

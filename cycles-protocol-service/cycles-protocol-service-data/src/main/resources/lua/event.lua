@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.23 - Event Lua Script
+-- Cycles Protocol v0.1.24 - Event Lua Script
 -- Atomically records a direct debit event (no reservation required)
 
 local event_id = ARGV[1]

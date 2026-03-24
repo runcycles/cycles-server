@@ -1398,7 +1398,7 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectOverageWithAllowIfAvailableWhenBudgetInsufficient() {
+        void shouldCapOverageWithAllowIfAvailableWhenBudgetInsufficient() {
             // Drain budget: commit 999_000 so remaining ≈ 1000
             String drainId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 999_000);
             post("/v1/reservations/" + drainId + "/commit", API_KEY_SECRET_A, commitBody(999_000));
@@ -1412,13 +1412,21 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
 
             // Commit 1500 (delta = 1000) but remaining ≈ 500 after reservation hold
-            // Delta exceeds remaining → BUDGET_EXCEEDED
+            // Delta is capped to available remaining (~500), charged = 500 + 500 = 1000
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
                     API_KEY_SECRET_A, commitBody(1500));
 
-            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
-            assertThat(commitResp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            // Charged = estimate(500) + capped_delta(~500) = ~1000 (not full 1500)
+            assertThat(((Number) charged.get("amount")).longValue()).isLessThan(1500);
+
+            // Scope should be marked is_over_limit since full delta couldn't be covered
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) commitResp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+            assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
         }
     }
 
@@ -1959,7 +1967,7 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectAllowIfAvailableWhenInsufficient() {
+        void shouldCapAllowIfAvailableWhenInsufficient() {
             // Drain most of the budget
             String res1 = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 990_000);
             post("/v1/reservations/" + res1 + "/commit", API_KEY_SECRET_A, commitBody(990_000));
@@ -1971,13 +1979,23 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
 
-            // Commit 50_000 → delta=49_000, but remaining ≈ 9_000 → BUDGET_EXCEEDED
+            // Commit 50_000 → delta=49_000, but remaining ≈ 9_000 after reservation hold
+            // Delta capped to ~9_000, charged = 1000 + ~9000 = ~10_000 (not full 50_000)
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
                     API_KEY_SECRET_A, commitBody(50_000));
 
-            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
-            assertThat(commitResp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            // Charged should be much less than 50_000 (estimate + available remaining)
+            assertThat(((Number) charged.get("amount")).longValue()).isLessThan(50_000);
+            assertThat(((Number) charged.get("amount")).longValue()).isGreaterThanOrEqualTo(1000);
+
+            // Scope should be marked is_over_limit
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) commitResp.getBody().get("balances");
+            assertThat(balances).isNotEmpty();
+            assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
         }
 
         @Test
@@ -3102,11 +3120,12 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             assertThat(reserveResp.getStatusCode().value()).isEqualTo(200);
             String reservationId = (String) reserveResp.getBody().get("reservation_id");
 
-            // Default overage_policy is REJECT — commit with overage should fail
+            // Default overage_policy is ALLOW_IF_AVAILABLE — commit with overage should succeed (capped)
             ResponseEntity<Map> commitResp = post(
                     "/v1/reservations/" + reservationId + "/commit",
                     API_KEY_SECRET_A, commitBody(2000));
-            assertThat(commitResp.getStatusCode().value()).isEqualTo(409);
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(commitResp.getBody().get("status")).isEqualTo("COMMITTED");
         }
 
         @Test

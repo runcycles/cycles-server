@@ -1,7 +1,7 @@
 #!/bin/bash
-# Initialize sample budgets for Cycles Protocol v0.1.23
+# Initialize sample budgets for Cycles Protocol v0.1.24
 CLI="redis-cli"
-echo "Initializing budgets for Cycles Protocol v0.1.23..."
+echo "Initializing budgets for Cycles Protocol v0.1.24..."
 
 # Create tenant budget
 $CLI HMSET "budget:tenant:demo-corp:TOKENS" \
