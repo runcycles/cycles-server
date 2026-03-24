@@ -55,8 +55,34 @@ class RedisReservationRepositoryTest {
         setField("extendScript", "EXTEND_SCRIPT");
         setField("eventScript", "EVENT_SCRIPT");
 
-        // Default pipeline mock for fetchBalancesForScopes (pipelined HGETALL)
+        // Default pipeline mock for pipelined HGETALL and HMGET calls.
+        // Returns a Response that yields an empty map/list by default.
+        // Tests that need specific budget data should override pipeline.hgetAll(key) explicitly.
         lenient().when(jedis.pipelined()).thenReturn(pipeline);
+        Response<Map<String, String>> defaultBudgetResp = mock(Response.class);
+        lenient().when(defaultBudgetResp.get()).thenReturn(Map.of());
+        lenient().when(pipeline.hgetAll(anyString())).thenReturn(defaultBudgetResp);
+        Response<List<String>> defaultHmgetResp = mock(Response.class);
+        lenient().when(defaultHmgetResp.get()).thenReturn(Collections.singletonList(null));
+        lenient().when(pipeline.hmget(anyString(), any(String[].class))).thenReturn(defaultHmgetResp);
+    }
+
+    /** Mock a budget key so it is visible via both jedis.hgetAll and pipeline.hgetAll */
+    @SuppressWarnings("unchecked")
+    private void mockBudget(String key, Map<String, String> data) {
+        lenient().when(jedis.hgetAll(key)).thenReturn(data);
+        Response<Map<String, String>> resp = mock(Response.class);
+        lenient().when(resp.get()).thenReturn(data);
+        lenient().when(pipeline.hgetAll(key)).thenReturn(resp);
+    }
+
+    /** Mock caps_json via pipeline.hmget for evaluateDryRun/decide which use pipeline */
+    @SuppressWarnings("unchecked")
+    private void mockCaps(String budgetKey, String capsJson) {
+        lenient().when(jedis.hget(budgetKey, "caps_json")).thenReturn(capsJson);
+        Response<List<String>> resp = mock(Response.class);
+        lenient().when(resp.get()).thenReturn(Collections.singletonList(capsJson));
+        lenient().when(pipeline.hmget(eq(budgetKey), eq("caps_json"))).thenReturn(resp);
     }
 
     private void setField(String name, Object value) throws Exception {
@@ -414,7 +440,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "new-res-id", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -443,7 +469,7 @@ class RedisReservationRepositoryTest {
             luaMap.put("balances", List.of(Map.of("scope", "tenant:acme/app:myapp", "remaining", 5000, "reserved", 0, "spent", 5000, "allocated", 10000, "debt", 0, "overdraft_limit", 0, "is_over_limit", false)));
             String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json"))
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json"))
                     .thenReturn("{\"max_tokens\":100}");
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -519,9 +545,9 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-1");
@@ -543,7 +569,7 @@ class RedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> lowBudget = budgetMap(10000, 100, 0, 9900);
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(lowBudget);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", lowBudget);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-exceed");
@@ -565,7 +591,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> frozen = budgetMap(10000, 8000, 0, 2000);
             frozen.put("status", "FROZEN");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(frozen);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", frozen);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-frozen");
@@ -585,7 +611,7 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll(startsWith("budget:"))).thenReturn(Map.of());
+            // Pipeline default already returns empty map — no budget mocking needed
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-none");
@@ -607,7 +633,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> debtBudget = budgetMap(10000, 8000, 0, 2000);
             debtBudget.put("debt", "500");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(debtBudget);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", debtBudget);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-debt");
@@ -629,7 +655,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> overlimit = budgetMap(10000, 8000, 0, 2000);
             overlimit.put("is_over_limit", "true");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(overlimit);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", overlimit);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-overlimit");
@@ -971,9 +997,9 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-1");
@@ -993,7 +1019,7 @@ class RedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> low = budgetMap(10000, 100, 0, 9900);
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(low);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", low);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-deny");
@@ -1014,7 +1040,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> closed = budgetMap(10000, 8000, 0, 2000);
             closed.put("status", "CLOSED");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(closed);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", closed);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-closed");
@@ -1033,7 +1059,7 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll(startsWith("budget:"))).thenReturn(Map.of());
+            // Pipeline default already returns empty map — no budget mocking needed
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-nobudget");
@@ -1052,10 +1078,9 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json"))
-                    .thenReturn("{\"max_tokens\":50}");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockCaps("budget:tenant:acme/app:myapp:USD_MICROCENTS", "{\"max_tokens\":50}");
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-caps");
@@ -1100,7 +1125,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> frozen = budgetMap(10000, 8000, 0, 2000);
             frozen.put("status", "FROZEN");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(frozen);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", frozen);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-frozen");
@@ -1121,7 +1146,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> overLimit = budgetMap(10000, 8000, 0, 2000);
             overLimit.put("is_over_limit", "true");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(overLimit);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", overLimit);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-overlimit");
@@ -1142,7 +1167,7 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
             Map<String, String> debtBudget = budgetMap(10000, 8000, 0, 2000);
             debtBudget.put("debt", "1000");
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(debtBudget);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", debtBudget);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-debt");
@@ -1183,9 +1208,9 @@ class RedisReservationRepositoryTest {
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
 
             // First scope has no budget, second has sufficient budget
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(Map.of());
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", Map.of());
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-skip");
@@ -1203,9 +1228,9 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-store");
@@ -1359,7 +1384,7 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budget);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -1383,7 +1408,7 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:other/app:myapp:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:other/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+            mockBudget("budget:tenant:other/app:myapp:USD_MICROCENTS", budget);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -1425,8 +1450,8 @@ class RedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
 
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(myappBudget);
-            when(jedis.hgetAll("budget:tenant:acme/app:otherapp:USD_MICROCENTS")).thenReturn(otherappBudget);
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", myappBudget);
+            mockBudget("budget:tenant:acme/app:otherapp:USD_MICROCENTS", otherappBudget);
 
             BalanceResponse response = repository.getBalances("acme", null, "myapp", null, null, null, false, 100, null);
 
@@ -1449,7 +1474,7 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budget);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -1480,7 +1505,7 @@ class RedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("55");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
 
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(b1);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", b1);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 1, null);
 
@@ -1499,7 +1524,7 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(Map.of());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", Map.of());
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -1519,7 +1544,7 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budget);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -1847,10 +1872,9 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json"))
-                    .thenReturn("{\"max_tokens\":200,\"max_steps_remaining\":5}");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockCaps("budget:tenant:acme/app:myapp:USD_MICROCENTS", "{\"max_tokens\":200,\"max_steps_remaining\":5}");
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-caps");
@@ -1871,9 +1895,9 @@ class RedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetMap(10000, 8000, 0, 2000));
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-store");
@@ -1972,7 +1996,9 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/workspace:prod/app:myapp:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/workspace:prod/app:myapp:USD_MICROCENTS")).thenReturn(budget);
+            Response<Map<String, String>> budgetResp = mock(Response.class);
+            when(budgetResp.get()).thenReturn(budget);
+            when(pipeline.hgetAll("budget:tenant:acme/workspace:prod/app:myapp:USD_MICROCENTS")).thenReturn(budgetResp);
 
             BalanceResponse response = repository.getBalances("acme", "prod", null, null, null, null, false, 100, null);
             assertThat(response.getBalances()).hasSize(1);
@@ -1994,7 +2020,9 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/workflow:onboarding:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/workflow:onboarding:USD_MICROCENTS")).thenReturn(budget);
+            Response<Map<String, String>> budgetResp = mock(Response.class);
+            when(budgetResp.get()).thenReturn(budget);
+            when(pipeline.hgetAll("budget:tenant:acme/workflow:onboarding:USD_MICROCENTS")).thenReturn(budgetResp);
 
             BalanceResponse response = repository.getBalances("acme", null, null, "onboarding", null, null, false, 100, null);
             assertThat(response.getBalances()).hasSize(1);
@@ -2012,7 +2040,9 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/agent:summarizer:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/agent:summarizer:USD_MICROCENTS")).thenReturn(budget);
+            Response<Map<String, String>> budgetResp = mock(Response.class);
+            when(budgetResp.get()).thenReturn(budget);
+            when(pipeline.hgetAll("budget:tenant:acme/agent:summarizer:USD_MICROCENTS")).thenReturn(budgetResp);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, "summarizer", null, false, 100, null);
             assertThat(response.getBalances()).hasSize(1);
@@ -2030,7 +2060,9 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/toolset:search:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/toolset:search:USD_MICROCENTS")).thenReturn(budget);
+            Response<Map<String, String>> budgetResp = mock(Response.class);
+            when(budgetResp.get()).thenReturn(budget);
+            when(pipeline.hgetAll("budget:tenant:acme/toolset:search:USD_MICROCENTS")).thenReturn(budgetResp);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, "search", false, 100, null);
             assertThat(response.getBalances()).hasSize(1);
@@ -2251,8 +2283,12 @@ class RedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
 
-            when(jedis.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(parentBudget);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(childBudget);
+            Response<Map<String, String>> parentResp = mock(Response.class);
+            when(parentResp.get()).thenReturn(parentBudget);
+            Response<Map<String, String>> childResp = mock(Response.class);
+            when(childResp.get()).thenReturn(childBudget);
+            when(pipeline.hgetAll("budget:tenant:acme:USD_MICROCENTS")).thenReturn(parentResp);
+            when(pipeline.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(childResp);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, true, 100, null);
 
@@ -2349,7 +2385,7 @@ class RedisReservationRepositoryTest {
 
             // Budget with caps_json
             String capsJson = "{\"max_tokens\":1000}";
-            when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(capsJson);
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(capsJson);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setSubject(defaultSubject());
@@ -2546,7 +2582,7 @@ class RedisReservationRepositoryTest {
             luaMap.put("balances", List.of(Map.of("scope", "tenant:acme", "remaining", 5000, "reserved", 0, "spent", 5000, "allocated", 10000, "debt", 0, "overdraft_limit", 0, "is_over_limit", false)));
             String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("idem-def");
@@ -2574,7 +2610,7 @@ class RedisReservationRepositoryTest {
             luaMap.put("balances", List.of(Map.of("scope", "tenant:acme", "remaining", 5000, "reserved", 0, "spent", 5000, "allocated", 10000, "debt", 0, "overdraft_limit", 0, "is_over_limit", false)));
             String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("idem-pol");
@@ -2647,7 +2683,9 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:INVALID_UNIT"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:INVALID_UNIT")).thenReturn(invalidBudget);
+            Response<Map<String, String>> budgetResp = mock(Response.class);
+            when(budgetResp.get()).thenReturn(invalidBudget);
+            when(pipeline.hgetAll("budget:tenant:acme/app:myapp:INVALID_UNIT")).thenReturn(budgetResp);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -2668,7 +2706,9 @@ class RedisReservationRepositoryTest {
             when(scanResult.getResult()).thenReturn(List.of("budget:tenant:acme/app:myapp:USD_MICROCENTS"));
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
-            when(jedis.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(malformedBudget);
+            Response<Map<String, String>> budgetResp = mock(Response.class);
+            when(budgetResp.get()).thenReturn(malformedBudget);
+            when(pipeline.hgetAll("budget:tenant:acme/app:myapp:USD_MICROCENTS")).thenReturn(budgetResp);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 100, null);
 
@@ -2718,7 +2758,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-tenant-pol", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2746,7 +2786,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-explicit-pol", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2772,7 +2812,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-no-tenant", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2798,7 +2838,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-ttl", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2826,7 +2866,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-cap-ttl", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2853,7 +2893,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-maxext", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2915,7 +2955,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-bad-tenant", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -2944,7 +2984,7 @@ class RedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "res-ttl-explicit", "expires_at", 9999999L));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
             // balances now come from Lua response (no separate hgetAll needed)
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -3181,7 +3221,7 @@ class RedisReservationRepositoryTest {
             luaMap.put("balances", List.of());
             String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setSubject(defaultSubject());
@@ -3206,7 +3246,7 @@ class RedisReservationRepositoryTest {
             luaMap.put("balances", List.of());
             String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setSubject(defaultSubject());

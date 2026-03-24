@@ -261,6 +261,38 @@ End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot
 - Run benchmarks: `mvn test -Pbenchmark` (requires Docker)
 - Benchmarks are excluded from default `mvn verify` builds via `<excludedGroups>benchmark</excludedGroups>` in surefire config
 
+### Read-Path Pipelines & Operational Fixes (Phase 3)
+
+1. **Pipeline `evaluateDryRun()`** — Replaced 2N+1 sequential `jedis.hgetAll()` calls with a single pipelined round-trip. With 6 scope levels, this reduces 13 Redis round-trips to 1.
+
+2. **Pipeline `decide()`** — Same pattern: N+1 sequential budget lookups + caps fetch consolidated into 1 pipeline call.
+
+3. **Pipeline `getBalances()` SCAN loop** — Replaced per-key `jedis.hgetAll()` inside SCAN loop with batched pipeline per SCAN batch. Up to 100 round-trips per batch reduced to 1. Also pre-lowercased filter parameters once at method entry (scope paths already lowercased at creation by `ScopeDerivationService`).
+
+4. **Pre-lowercased `listReservations()` filters** — Same `.toLowerCase()` optimization applied to `listReservations()`.
+
+5. **INFO → DEBUG logging in `BaseController.authorizeTenant()`** — Two `LOG.info` calls fired on every authenticated request; changed to `LOG.debug`.
+
+6. **HTTP response compression** — Enabled `server.compression` for JSON responses > 1KB.
+
+7. **30-day TTL on terminal reservation hashes** — `commit.lua`, `release.lua`, and `expire.lua` now set `PEXPIRE 2592000000` on reservation hashes after state transition to COMMITTED/RELEASED/EXPIRED. Active reservations keep no TTL (cleaned by expiry sweep).
+
+8. **30-day TTL on event hashes** — `event.lua` now sets `PEXPIRE 2592000000` on event hashes after creation.
+
+9. **GET endpoint benchmarks** — New `CyclesProtocolReadBenchmarkTest.java` benchmarks GET /v1/reservations/{id}, GET /v1/reservations (list), GET /v1/balances, and POST /v1/decide.
+
+**Items reviewed and confirmed correct (no fix needed):**
+- `luaScripts.eval()` return value — Lua scripts always return via `cjson.encode()`, never nil
+- Event idempotency replay returns empty balances — consistent with commit/release pattern; `parseLuaBalances()` handles gracefully
+- `fetchBalancesForScopes()` still used in reserve idempotency-hit fallback path — not dead code
+- Thread safety: all caches use `ConcurrentHashMap`, `ThreadLocal<MessageDigest>` for digests, Jedis connections scoped to try-with-resources
+- Balance snapshot ordering: collected after mutations in all Lua scripts
+- Percentile calculations: mathematically correct with bounds checking
+- Redis pool size (50) / timeout (2s) — deployment tuning, configurable via RedisConfig
+- Cache race conditions in `ApiKeyRepository` and `LuaScriptRegistry` — `ConcurrentHashMap` ops are atomic; duplicate work is harmless
+
+---
+
 ### Production Hardening (Phase 2 audit)
 
 Code review of all changes identified and fixed four defensive issues:

@@ -163,12 +163,20 @@ public class RedisReservationRepository {
             }
         }
 
+        // Pipeline all budget fetches (validation + balance collection + caps) in one round-trip
+        Pipeline pipeline = jedis.pipelined();
+        Map<String, Response<Map<String, String>>> budgetResponses = new LinkedHashMap<>();
+        for (String scope : affectedScopes) {
+            budgetResponses.put(scope, pipeline.hgetAll("budget:" + scope + ":" + unit));
+        }
+        Response<List<String>> capsResponse = pipeline.hmget("budget:" + scopePath + ":" + unit, "caps_json");
+        pipeline.sync();
+
         // Skip scopes without budgets — operators may only define budgets at certain levels.
         // At least one scope must have a budget (consistent with reserve.lua).
         boolean foundBudget = false;
-        for (String scope : affectedScopes) {
-            String budgetKey = "budget:" + scope + ":" + unit;
-            Map<String, String> budget = jedis.hgetAll(budgetKey);
+        for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
+            Map<String, String> budget = entry.getValue().get();
 
             if (budget == null || budget.isEmpty()) {
                 continue; // Skip scopes without budgets
@@ -222,19 +230,18 @@ public class RedisReservationRepository {
                 .build();
         }
 
-        // Collect current balances for all affected scopes
+        // Collect current balances from the already-fetched pipeline results
+        Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
         List<Balance> balances = new ArrayList<>();
-        for (String scope : affectedScopes) {
-            String budgetKey = "budget:" + scope + ":" + unit;
-            Map<String, String> budget = jedis.hgetAll(budgetKey);
+        for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
+            Map<String, String> budget = entry.getValue().get();
             if (budget != null && !budget.isEmpty()) {
-                Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
                 long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
                 long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
                 boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
                 balances.add(Balance.builder()
-                    .scope(leafScope(scope))
-                    .scopePath(scope)
+                    .scope(leafScope(entry.getKey()))
+                    .scopePath(entry.getKey())
                     .remaining(new SignedAmount(unitEnum, Long.parseLong(budget.getOrDefault("remaining", "0"))))
                     .reserved(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("reserved", "0"))))
                     .spent(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("spent", "0"))))
@@ -249,8 +256,7 @@ public class RedisReservationRepository {
         // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
         Enums.DecisionEnum dryRunDecision = Enums.DecisionEnum.ALLOW;
         Caps dryRunCaps = null;
-        String deepestBudgetKey = "budget:" + scopePath + ":" + unit;
-        String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+        String capsJson = capsResponse.get().get(0);
         if (capsJson != null && !capsJson.isEmpty()) {
             dryRunCaps = objectMapper.readValue(capsJson, Caps.class);
             dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
@@ -447,6 +453,13 @@ public class RedisReservationRepository {
             List<ReservationSummary> result = new ArrayList<>();
             String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
 
+            // Pre-lowercase filter params once (scope paths are already lowercased at creation)
+            String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
+            String appSegment = app != null ? "app:" + app.toLowerCase() : null;
+            String workflowSegment = workflow != null ? "workflow:" + workflow.toLowerCase() : null;
+            String agentSegment = agent != null ? "agent:" + agent.toLowerCase() : null;
+            String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
+
             do {
                 ScanResult<String> scan = jedis.scan(cursor, params);
                 List<String> keys = scan.getResult();
@@ -467,11 +480,11 @@ public class RedisReservationRepository {
                             if (status != null && !status.equals(fields.get("state"))) continue;
                             if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) continue;
                             String scopePath = fields.getOrDefault("scope_path", "");
-                            if (workspace != null && !scopeHasSegment(scopePath, "workspace:" + workspace.toLowerCase())) continue;
-                            if (app != null && !scopeHasSegment(scopePath, "app:" + app.toLowerCase())) continue;
-                            if (workflow != null && !scopeHasSegment(scopePath, "workflow:" + workflow.toLowerCase())) continue;
-                            if (agent != null && !scopeHasSegment(scopePath, "agent:" + agent.toLowerCase())) continue;
-                            if (toolset != null && !scopeHasSegment(scopePath, "toolset:" + toolset.toLowerCase())) continue;
+                            if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) continue;
+                            if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) continue;
+                            if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
+                            if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
+                            if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
 
                             result.add(toSummary(buildReservationSummary(fields)));
 
@@ -510,11 +523,29 @@ public class RedisReservationRepository {
             List<Balance> balances = new ArrayList<>();
             String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
 
+            // Pre-lowercase filter params once (scope paths are already lowercased at creation)
+            String tenantSegment = "tenant:" + tenant.toLowerCase();
+            String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
+            String appSegment = app != null ? "app:" + app.toLowerCase() : null;
+            String workflowSegment = workflow != null ? "workflow:" + workflow.toLowerCase() : null;
+            String agentSegment = agent != null ? "agent:" + agent.toLowerCase() : null;
+            String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
+
             do {
                 ScanResult<String> scan = jedis.scan(cursor, params);
-                for (String key : scan.getResult()) {
+                List<String> keys = scan.getResult();
+
+                // Pipeline all hgetAll calls for this SCAN batch
+                Pipeline pipeline = jedis.pipelined();
+                Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
+                for (String key : keys) {
+                    responses.put(key, pipeline.hgetAll(key));
+                }
+                pipeline.sync();
+
+                for (String key : keys) {
                     try {
-                        Map<String, String> budget = jedis.hgetAll(key);
+                        Map<String, String> budget = responses.get(key).get();
                         if (budget.isEmpty()) continue;
 
                         String trueScope = budget.get("scope");
@@ -523,13 +554,12 @@ public class RedisReservationRepository {
                         // Filter by tenant and optional subject fields.
                         // Use exact segment boundary checks to avoid prefix false-positives
                         // (e.g. tenant "acme" must not match "tenant:acme-corp").
-                        // Scope paths are lowercased; filter values are lowercased for comparison.
-                        if (!scopeHasSegment(trueScope, "tenant:" + tenant.toLowerCase())) continue;
-                        if (workspace != null && !scopeHasSegment(trueScope, "workspace:" + workspace.toLowerCase())) continue;
-                        if (app != null && !scopeHasSegment(trueScope, "app:" + app.toLowerCase())) continue;
-                        if (workflow != null && !scopeHasSegment(trueScope, "workflow:" + workflow.toLowerCase())) continue;
-                        if (agent != null && !scopeHasSegment(trueScope, "agent:" + agent.toLowerCase())) continue;
-                        if (toolset != null && !scopeHasSegment(trueScope, "toolset:" + toolset.toLowerCase())) continue;
+                        if (!scopeHasSegment(trueScope, tenantSegment)) continue;
+                        if (workspaceSegment != null && !scopeHasSegment(trueScope, workspaceSegment)) continue;
+                        if (appSegment != null && !scopeHasSegment(trueScope, appSegment)) continue;
+                        if (workflowSegment != null && !scopeHasSegment(trueScope, workflowSegment)) continue;
+                        if (agentSegment != null && !scopeHasSegment(trueScope, agentSegment)) continue;
+                        if (toolsetSegment != null && !scopeHasSegment(trueScope, toolsetSegment)) continue;
 
                         String trueUnitsStr = budget.get("unit");
                         Enums.UnitEnum unit = Enums.UnitEnum.valueOf(trueUnitsStr);
@@ -611,12 +641,21 @@ public class RedisReservationRepository {
 
             DecisionResponse response = null;
             String deepestScope = affectedScopes.get(affectedScopes.size() - 1);
+
+            // Pipeline all budget fetches + caps in one round-trip
+            Pipeline pipeline = jedis.pipelined();
+            Map<String, Response<Map<String, String>>> budgetResponses = new LinkedHashMap<>();
+            for (String scope : affectedScopes) {
+                budgetResponses.put(scope, pipeline.hgetAll("budget:" + scope + ":" + unit));
+            }
+            Response<List<String>> capsResponse = pipeline.hmget("budget:" + deepestScope + ":" + unit, "caps_json");
+            pipeline.sync();
+
             // Skip scopes without budgets — operators may only define budgets at certain levels.
             // At least one scope must have a budget (consistent with reserve.lua).
             boolean foundBudgetDecide = false;
-            for (String scope : affectedScopes) {
-                String budgetKey = "budget:" + scope + ":" + unit;
-                Map<String, String> budget = jedis.hgetAll(budgetKey);
+            for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
+                Map<String, String> budget = entry.getValue().get();
 
                 if (budget == null || budget.isEmpty()) {
                     continue; // Skip scopes without budgets
@@ -671,8 +710,7 @@ public class RedisReservationRepository {
 
             if (response == null) {
                 // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
-                String deepestBudgetKey = "budget:" + deepestScope + ":" + unit;
-                String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+                String capsJson = capsResponse.get().get(0);
                 if (capsJson != null && !capsJson.isEmpty()) {
                     Caps caps = objectMapper.readValue(capsJson, Caps.class);
                     response = DecisionResponse.builder()
