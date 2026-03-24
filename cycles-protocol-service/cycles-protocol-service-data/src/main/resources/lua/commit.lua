@@ -223,6 +223,9 @@ redis.call('HMSET', reservation_key,
 -- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
+-- Set 30-day TTL on terminal reservation hash (audit trail, then auto-cleanup)
+redis.call('PEXPIRE', reservation_key, 2592000000)
+
 -- Collect balance snapshots for all budgeted scopes (avoids post-operation Java round-trips)
 local balances = {}
 for _, scope in ipairs(affected_scopes) do

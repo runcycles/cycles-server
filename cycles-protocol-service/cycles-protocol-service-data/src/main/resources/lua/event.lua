@@ -167,6 +167,9 @@ redis.call('HMSET', event_key,
     'metadata_json', metadata_json
 )
 
+-- Set 30-day TTL on event hash (audit trail, then auto-cleanup)
+redis.call('PEXPIRE', event_key, 2592000000)
+
 -- Store idempotency mapping (expire after 7 days)
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key

@@ -54,4 +54,7 @@ local expired_at = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 redis.call('HMSET', key, 'state', 'EXPIRED', 'expired_at', expired_at)
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
+-- Set 30-day TTL on expired reservation hash (audit trail, then auto-cleanup)
+redis.call('PEXPIRE', key, 2592000000)
+
 return cjson.encode({status = "EXPIRED"})
