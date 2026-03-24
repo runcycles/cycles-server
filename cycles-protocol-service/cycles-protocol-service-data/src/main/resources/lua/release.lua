@@ -26,12 +26,33 @@ if state == "RELEASED" then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        local idem_vals = redis.call('HMGET', reservation_key, 'estimate_amount', 'estimate_unit')
+        local idem_vals = redis.call('HMGET', reservation_key,
+            'estimate_amount', 'estimate_unit', 'affected_scopes')
+        -- Spec MUST: replay returns original successful response payload including balances.
+        local replay_balances = {}
+        if idem_vals[3] then
+            local scopes = cjson.decode(idem_vals[3])
+            for _, scope in ipairs(scopes) do
+                local budget_key = "budget:" .. scope .. ":" .. idem_vals[2]
+                local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+                table.insert(replay_balances, {
+                    scope = scope,
+                    remaining = tonumber(b[1] or 0),
+                    reserved = tonumber(b[2] or 0),
+                    spent = tonumber(b[3] or 0),
+                    allocated = tonumber(b[4] or 0),
+                    debt = tonumber(b[5] or 0),
+                    overdraft_limit = tonumber(b[6] or 0),
+                    is_over_limit = (b[7] == "true")
+                })
+            end
+        end
         return cjson.encode({
             reservation_id = reservation_id,
             state = "RELEASED",
             estimate_amount = tonumber(idem_vals[1]),
-            estimate_unit = idem_vals[2]
+            estimate_unit = idem_vals[2],
+            balances = replay_balances
         })
     else
         -- Different key on already-released reservation = finalized, not idempotency mismatch

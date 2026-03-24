@@ -406,6 +406,27 @@ Full audit of all changes against the authoritative YAML spec (`cycles-protocol-
 - **Fix:** Added `status == EXPIRED` check in `getReservationById()` that throws `CyclesProtocolException.reservationExpired()` (410). Updated integration tests `shouldExpireReservationAndReleaseBudget`, `shouldReturnExpiredStatusOnGetAfterSweep` to assert 410. Updated unit test to assert 410.
 - **Location:** `RedisReservationRepository.java:438-443`, `CyclesProtocolIntegrationTest.java`, `ReservationControllerTest.java`
 
+### Issue 11 [FIXED]: event.lua idempotency replay missing `charged` and `balances`
+
+- **Spec:** "On replay with the same idempotency_key, the server MUST return the original successful response payload." (IDEMPOTENCY NORMATIVE)
+- **Was:** Replay returned `{event_id, idempotency_key, status}` — missing `charged` (when capping occurred) and `balances`.
+- **Fix:** Replay now reads stored event hash (`charged_amount`, `amount`, `unit`, `budgeted_scopes`), reconstructs balance snapshots from current budget state, and includes `charged` when `charged_amount < amount` (capping occurred).
+- **Location:** `event.lua:30-63`
+
+### Issue 12 [FIXED]: commit.lua idempotency replay missing `balances` and `affected_scopes_json`
+
+- **Spec:** Same idempotency normative requirement.
+- **Was:** Replay returned `{reservation_id, state, charged, debt_incurred, estimate_amount, estimate_unit}` — missing `balances` and `affected_scopes_json`.
+- **Fix:** Replay now reads `affected_scopes` from reservation hash, reconstructs balance snapshots, and includes both in response.
+- **Location:** `commit.lua:42-72`
+
+### Issue 13 [FIXED]: release.lua idempotency replay missing `balances`
+
+- **Spec:** Same idempotency normative requirement.
+- **Was:** Replay returned `{reservation_id, state, estimate_amount, estimate_unit}` — missing `balances`.
+- **Fix:** Replay now reads `affected_scopes` from reservation hash, reconstructs balance snapshots, and includes in response.
+- **Location:** `release.lua:29-52`
+
 ### Confirmed non-issues (validated against YAML spec)
 
 The following were investigated during the audit and confirmed **not to be spec violations**:
