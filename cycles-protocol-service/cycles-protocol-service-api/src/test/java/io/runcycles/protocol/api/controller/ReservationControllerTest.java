@@ -222,14 +222,16 @@ class ReservationControllerTest {
         }
 
         @Test
-        void shouldReturn410ForExpiredReservation() throws Exception {
+        void shouldReturn200WithExpiredStatusForExpiredReservation() throws Exception {
             when(repository.findReservationTenantById("res_expired")).thenReturn(TENANT);
-            when(repository.getReservationById("res_expired"))
-                    .thenThrow(CyclesProtocolException.reservationExpired());
+            ReservationDetail detail = new ReservationDetail();
+            detail.setStatus(Enums.ReservationStatus.EXPIRED);
+            detail.setReservationId("res_expired");
+            when(repository.getReservationById("res_expired")).thenReturn(detail);
 
             mockMvc.perform(get("/v1/reservations/res_expired"))
-                    .andExpect(status().isGone())
-                    .andExpect(jsonPath("$.error").value("RESERVATION_EXPIRED"));
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("EXPIRED"));
         }
     }
 
