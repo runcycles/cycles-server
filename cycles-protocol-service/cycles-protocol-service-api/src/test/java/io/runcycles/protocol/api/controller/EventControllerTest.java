@@ -95,4 +95,36 @@ class EventControllerTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error").value("FORBIDDEN"));
     }
+
+    @Test
+    void shouldIncludeChargedWhenCapped() throws Exception {
+        EventCreateResponse resp = EventCreateResponse.builder()
+                .status(Enums.EventStatus.APPLIED)
+                .eventId("evt_456")
+                .charged(new Amount(Enums.UnitEnum.TOKENS, 200L))
+                .build();
+        when(repository.createEvent(any(), eq(TENANT))).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(eventJson(TENANT)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.charged.amount").value(200))
+                .andExpect(jsonPath("$.charged.unit").value("TOKENS"));
+    }
+
+    @Test
+    void shouldOmitChargedWhenNotCapped() throws Exception {
+        EventCreateResponse resp = EventCreateResponse.builder()
+                .status(Enums.EventStatus.APPLIED)
+                .eventId("evt_789")
+                .build();
+        when(repository.createEvent(any(), eq(TENANT))).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(eventJson(TENANT)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.charged").doesNotExist());
+    }
 }

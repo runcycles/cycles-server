@@ -40,14 +40,35 @@ if state == "COMMITTED" then
             end
         end
         local idem_vals = redis.call('HMGET', reservation_key,
-            'charged_amount', 'debt_incurred', 'estimate_amount', 'estimate_unit')
+            'charged_amount', 'debt_incurred', 'estimate_amount', 'estimate_unit', 'affected_scopes')
+        -- Spec MUST: replay returns original successful response payload including balances.
+        local replay_balances = {}
+        if idem_vals[5] then
+            local scopes = cjson.decode(idem_vals[5])
+            for _, scope in ipairs(scopes) do
+                local budget_key = "budget:" .. scope .. ":" .. idem_vals[4]
+                local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+                table.insert(replay_balances, {
+                    scope = scope,
+                    remaining = tonumber(b[1] or 0),
+                    reserved = tonumber(b[2] or 0),
+                    spent = tonumber(b[3] or 0),
+                    allocated = tonumber(b[4] or 0),
+                    debt = tonumber(b[5] or 0),
+                    overdraft_limit = tonumber(b[6] or 0),
+                    is_over_limit = (b[7] == "true")
+                })
+            end
+        end
         return cjson.encode({
             reservation_id = reservation_id,
             state = "COMMITTED",
             charged = tonumber(idem_vals[1] or 0),
             debt_incurred = tonumber(idem_vals[2] or 0),
             estimate_amount = tonumber(idem_vals[3] or 0),
-            estimate_unit = idem_vals[4]
+            estimate_unit = idem_vals[4],
+            affected_scopes_json = idem_vals[5],
+            balances = replay_balances
         })
     else
         -- Different key on already-committed reservation = finalized, not idempotency mismatch

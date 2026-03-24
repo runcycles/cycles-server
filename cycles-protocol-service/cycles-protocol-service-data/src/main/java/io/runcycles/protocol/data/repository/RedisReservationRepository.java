@@ -436,6 +436,11 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.notFound(reservationId);
             }
             ReservationDetail detail = buildReservationSummary(fields);
+            // Spec normative (line 52): "Expired reservations MUST return HTTP 410
+            // with error=RESERVATION_EXPIRED." GET endpoint lists 410 (line 1212).
+            if (detail.getStatus() == Enums.ReservationStatus.EXPIRED) {
+                throw CyclesProtocolException.reservationExpired();
+            }
             return detail;
         } catch (CyclesProtocolException e) {
             throw e;

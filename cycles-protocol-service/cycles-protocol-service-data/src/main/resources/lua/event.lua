@@ -27,11 +27,41 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        return cjson.encode({
+        -- Spec MUST: replay returns original successful response payload.
+        -- Reconstruct charged + balances from stored event data.
+        local event_key = "event:evt_" .. existing_event_id
+        local evt = redis.call('HMGET', event_key,
+            'charged_amount', 'amount', 'unit', 'budgeted_scopes')
+        local replay = {
             event_id = existing_event_id,
-            idempotency_key = idempotency_key,
             status = "APPLIED"
-        })
+        }
+        if evt[4] then
+            local bscopes = cjson.decode(evt[4])
+            local replay_balances = {}
+            for _, scope in ipairs(bscopes) do
+                local budget_key = "budget:" .. scope .. ":" .. evt[3]
+                local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+                table.insert(replay_balances, {
+                    scope = scope,
+                    remaining = tonumber(b[1] or 0),
+                    reserved = tonumber(b[2] or 0),
+                    spent = tonumber(b[3] or 0),
+                    allocated = tonumber(b[4] or 0),
+                    debt = tonumber(b[5] or 0),
+                    overdraft_limit = tonumber(b[6] or 0),
+                    is_over_limit = (b[7] == "true")
+                })
+            end
+            replay.balances = replay_balances
+        end
+        -- charged present only when capping occurred
+        local ca = tonumber(evt[1] or 0)
+        local oa = tonumber(evt[2] or 0)
+        if ca < oa then
+            replay.charged = ca
+        end
+        return cjson.encode(replay)
     end
 end
 
@@ -199,9 +229,13 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     end
 end
 
-return cjson.encode({
+-- Spec: charged is only present when overage_policy=ALLOW_IF_AVAILABLE and capping occurred
+local result = {
     event_id = event_id,
     status = "APPLIED",
-    charged = effective_amount,
     balances = balances
-})
+}
+if overage_policy == "ALLOW_IF_AVAILABLE" and effective_amount < amount then
+    result.charged = effective_amount
+end
+return cjson.encode(result)
