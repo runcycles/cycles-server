@@ -20,8 +20,12 @@ LABEL org.opencontainers.image.title="cycles-server" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
+RUN addgroup -g 1000 appuser && adduser -D -u 1000 -G appuser appuser
+
 WORKDIR /app
 COPY --from=build /app/cycles-protocol-service/cycles-protocol-service-api/target/cycles-protocol-service-api-*.jar app.jar
+RUN chown appuser:appuser app.jar
 
+USER appuser
 EXPOSE 7878
 ENTRYPOINT ["java", "-jar", "app.jar"]
