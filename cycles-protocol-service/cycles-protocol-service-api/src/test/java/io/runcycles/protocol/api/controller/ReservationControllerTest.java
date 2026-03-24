@@ -220,6 +220,17 @@ class ReservationControllerTest {
                     .andExpect(status().isNotFound())
                     .andExpect(jsonPath("$.error").value("NOT_FOUND"));
         }
+
+        @Test
+        void shouldReturn410ForExpiredReservation() throws Exception {
+            when(repository.findReservationTenantById("res_expired")).thenReturn(TENANT);
+            when(repository.getReservationById("res_expired"))
+                    .thenThrow(CyclesProtocolException.reservationExpired());
+
+            mockMvc.perform(get("/v1/reservations/res_expired"))
+                    .andExpect(status().isGone())
+                    .andExpect(jsonPath("$.error").value("RESERVATION_EXPIRED"));
+        }
     }
 
     // ---- POST commit/release/extend ----
