@@ -8,7 +8,7 @@ import org.springframework.context.annotation.*;
 import redis.clients.jedis.*;
 import java.io.*;
 
-/** Cycles Protocol v0.1.23 */
+/** Cycles Protocol v0.1.24 */
 @Configuration
 public class RedisConfig {
     private static final Logger LOG = LoggerFactory.getLogger(RedisConfig.class);
@@ -19,7 +19,7 @@ public class RedisConfig {
     
     @Bean
     public JedisPool jedisPool() {
-        LOG.info("Cycles Protocol v0.1.23 - Initializing Redis: {}:{}", host, port);
+        LOG.info("Cycles Protocol v0.1.24 - Initializing Redis: {}:{}", host, port);
         JedisPoolConfig config = new JedisPoolConfig();
         config.setMaxTotal(50);
         config.setMaxIdle(10);

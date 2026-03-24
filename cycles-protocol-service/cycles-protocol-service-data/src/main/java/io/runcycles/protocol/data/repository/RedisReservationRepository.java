@@ -19,7 +19,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
-/** Cycles Protocol v0.1.23 - Repository with Lua script execution */
+/** Cycles Protocol v0.1.24 - Repository with Lua script execution */
 @Repository
 public class RedisReservationRepository {
     private static final Logger LOG = LoggerFactory.getLogger(RedisReservationRepository.class);

@@ -12,7 +12,7 @@ import redis.clients.jedis.JedisPool;
 import java.util.List;
 
 /**
- * Cycles Protocol v0.1.23 - Background job that marks expired reservations.
+ * Cycles Protocol v0.1.24 - Background job that marks expired reservations.
  *
  * Scans the reservation:ttl sorted set for candidates whose score (expires_at_ms)
  * is in the past, then invokes expire.lua per reservation, which:

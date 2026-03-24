@@ -24,7 +24,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@DisplayName("Cycles Protocol v0.1.23 Integration Tests")
+@DisplayName("Cycles Protocol v0.1.24 Integration Tests")
 class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
