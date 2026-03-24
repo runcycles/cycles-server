@@ -794,9 +794,17 @@ public class RedisReservationRepository {
             // Parse balances returned atomically from Lua (no extra round-trips)
             List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
 
+            // Lua returns charged amount (may be less than requested with ALLOW_IF_AVAILABLE capping)
+            Amount charged = null;
+            Number chargedNum = (Number) response.get("charged");
+            if (chargedNum != null) {
+                charged = new Amount(request.getActual().getUnit(), chargedNum.longValue());
+            }
+
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
+                .charged(charged)
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e) {
