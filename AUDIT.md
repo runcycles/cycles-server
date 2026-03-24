@@ -1,6 +1,6 @@
 # Cycles Protocol v0.1.24 — Server Implementation Audit
 
-**Date:** 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.24)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
@@ -384,6 +384,31 @@ Code review of all changes identified and fixed four defensive issues:
 - **Was:** Java `System.currentTimeMillis()` used for the `zrangeByScore` query; all Lua scripts use `redis.call('TIME')` — clock drift could cause missed or premature candidate selection
 - **Fix:** Replaced with `jedis.time()` to use Redis server clock, consistent with reserve/commit/release/extend/expire Lua scripts
 - **Location:** `ReservationExpiryService.java:39-41`
+
+---
+
+## Round 6 — Spec Compliance Audit (2026-03-24)
+
+Full audit of all changes against the authoritative YAML spec (`cycles-protocol-v0.yaml` v0.1.24).
+
+### Issue 9 [FIXED]: `event.lua` always returned `charged` field in `EventCreateResponse`
+
+- **Spec:** `EventCreateResponse.charged` description: "Present when overage_policy is ALLOW_IF_AVAILABLE and the actual was capped to the remaining budget, so the client can see the effective charge." Field is NOT in `required: [status, event_id]`.
+- **Was:** `event.lua` always returned `charged = effective_amount` in the response JSON, so every event response included the `charged` field regardless of overage policy or capping.
+- **Fix:** Made `charged` conditional in `event.lua`: only set `result.charged = effective_amount` when `overage_policy == "ALLOW_IF_AVAILABLE" and effective_amount < amount` (capping occurred). Lua's `cjson.encode` omits unset keys; Java's `@JsonInclude(NON_NULL)` on `EventCreateResponse.charged` provides redundant safety.
+- **Location:** `event.lua:202-211`
+- **Tests:** `EventControllerTest.shouldIncludeChargedWhenCapped()`, `EventControllerTest.shouldOmitChargedWhenNotCapped()`
+
+### Confirmed non-issues (validated against YAML spec)
+
+The following were investigated during the audit and confirmed **not to be spec violations**:
+
+| Item | YAML Spec Evidence | Verdict |
+|------|-------------------|---------|
+| `ErrorResponse.details` field optional | `required: [error, message, request_id]` — `details` not in required array | NOT A VIOLATION |
+| `Balance.debt/overdraft_limit/is_over_limit` optional | `required: [scope, scope_path, remaining]` — these fields not in required array | NOT A VIOLATION |
+| `CommitResponse.released` optional | `required: [status, charged]` — `released` not in required array | NOT A VIOLATION |
+| GET `/v1/reservations/{id}` returns 200 for EXPIRED | GET is read-only for debugging; 410 applies to mutating operations (commit/release/extend) which enforce expiry in Lua. Integration tests confirm `shouldReturnExpiredStatusOnGetAfterSweep` expects 200 with `status: EXPIRED` in body. | CORRECT BY DESIGN |
 
 ---
 
