@@ -436,11 +436,11 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.notFound(reservationId);
             }
             ReservationDetail detail = buildReservationSummary(fields);
-            // GET always returns 200 with the reservation detail (including status field).
-            // The 410 RESERVATION_EXPIRED response applies to mutating operations
-            // (commit/release/extend), which have their own expiry checks in Lua.
-            // GET is read-only and useful for debugging — callers inspect the status field
-            // to determine if the reservation is ACTIVE, COMMITTED, RELEASED, or EXPIRED.
+            // Spec normative (line 52): "Expired reservations MUST return HTTP 410
+            // with error=RESERVATION_EXPIRED." GET endpoint lists 410 (line 1212).
+            if (detail.getStatus() == Enums.ReservationStatus.EXPIRED) {
+                throw CyclesProtocolException.reservationExpired();
+            }
             return detail;
         } catch (CyclesProtocolException e) {
             throw e;

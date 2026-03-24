@@ -2867,10 +2867,10 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
             // Manually trigger the sweep
             expiryService.expireReservations();
 
-            // Verify reservation is now EXPIRED
+            // Spec normative: expired reservations MUST return 410 RESERVATION_EXPIRED
             ResponseEntity<Map> resp = get("/v1/reservations/" + reservationId, API_KEY_SECRET_A);
-            assertThat(resp.getStatusCode().value()).isEqualTo(200);
-            assertThat(resp.getBody().get("status")).isEqualTo("EXPIRED");
+            assertThat(resp.getStatusCode().value()).isEqualTo(410);
+            assertThat(resp.getBody().get("error")).isEqualTo("RESERVATION_EXPIRED");
 
             // Verify budget was released (remaining restored)
             ResponseEntity<Map> balanceAfter = get("/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
@@ -2975,10 +2975,10 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
 
             expiryService.expireReservations();
 
-            // GET should return 200 with status=EXPIRED (not 410)
+            // Spec normative: expired reservations MUST return 410 RESERVATION_EXPIRED
             ResponseEntity<Map> resp = get("/v1/reservations/" + reservationId, API_KEY_SECRET_A);
-            assertThat(resp.getStatusCode().value()).isEqualTo(200);
-            assertThat(resp.getBody().get("status")).isEqualTo("EXPIRED");
+            assertThat(resp.getStatusCode().value()).isEqualTo(410);
+            assertThat(resp.getBody().get("error")).isEqualTo("RESERVATION_EXPIRED");
         }
 
         @Test

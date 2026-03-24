@@ -399,6 +399,13 @@ Full audit of all changes against the authoritative YAML spec (`cycles-protocol-
 - **Location:** `event.lua:202-211`
 - **Tests:** `EventControllerTest.shouldIncludeChargedWhenCapped()`, `EventControllerTest.shouldOmitChargedWhenNotCapped()`
 
+### Issue 10 [FIXED]: GET `/v1/reservations/{id}` returned 200 for EXPIRED reservations instead of 410
+
+- **Spec:** Line 52: "Expired reservations MUST return HTTP 410 with error=RESERVATION_EXPIRED." Line 1212: GET endpoint explicitly lists `"410"` as a response.
+- **Was:** `getReservationById()` returned 200 with `status: EXPIRED` in the body. Integration tests asserted 200. This contradicted the spec.
+- **Fix:** Added `status == EXPIRED` check in `getReservationById()` that throws `CyclesProtocolException.reservationExpired()` (410). Updated integration tests `shouldExpireReservationAndReleaseBudget`, `shouldReturnExpiredStatusOnGetAfterSweep` to assert 410. Updated unit test to assert 410.
+- **Location:** `RedisReservationRepository.java:438-443`, `CyclesProtocolIntegrationTest.java`, `ReservationControllerTest.java`
+
 ### Confirmed non-issues (validated against YAML spec)
 
 The following were investigated during the audit and confirmed **not to be spec violations**:
@@ -408,7 +415,6 @@ The following were investigated during the audit and confirmed **not to be spec 
 | `ErrorResponse.details` field optional | `required: [error, message, request_id]` — `details` not in required array | NOT A VIOLATION |
 | `Balance.debt/overdraft_limit/is_over_limit` optional | `required: [scope, scope_path, remaining]` — these fields not in required array | NOT A VIOLATION |
 | `CommitResponse.released` optional | `required: [status, charged]` — `released` not in required array | NOT A VIOLATION |
-| GET `/v1/reservations/{id}` returns 200 for EXPIRED | GET is read-only for debugging; 410 applies to mutating operations (commit/release/extend) which enforce expiry in Lua. Integration tests confirm `shouldReturnExpiredStatusOnGetAfterSweep` expects 200 with `status: EXPIRED` in body. | CORRECT BY DESIGN |
 
 ---
 
