@@ -715,9 +715,10 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectEventWhenBudgetExceeded() {
-            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A,
-                    eventBody(TENANT_A, 99_999_999));
+        void shouldRejectEventWhenBudgetExceededWithRejectPolicy() {
+            Map<String, Object> body = eventBody(TENANT_A, 99_999_999);
+            body.put("overage_policy", "REJECT");
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
 
             assertThat(resp.getStatusCode().value()).isEqualTo(409);
             assertThat(resp.getBody().get("error")).isEqualTo("BUDGET_EXCEEDED");
