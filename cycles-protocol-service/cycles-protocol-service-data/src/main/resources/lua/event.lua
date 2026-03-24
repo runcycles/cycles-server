@@ -199,9 +199,13 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     end
 end
 
-return cjson.encode({
+-- Spec: charged is only present when overage_policy=ALLOW_IF_AVAILABLE and capping occurred
+local result = {
     event_id = event_id,
     status = "APPLIED",
-    charged = effective_amount,
     balances = balances
-})
+}
+if overage_policy == "ALLOW_IF_AVAILABLE" and effective_amount < amount then
+    result.charged = effective_amount
+end
+return cjson.encode(result)

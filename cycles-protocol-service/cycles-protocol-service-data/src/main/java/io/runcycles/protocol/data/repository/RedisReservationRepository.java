@@ -436,6 +436,9 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.notFound(reservationId);
             }
             ReservationDetail detail = buildReservationSummary(fields);
+            if (detail.getStatus() == Enums.ReservationStatus.EXPIRED) {
+                throw CyclesProtocolException.reservationExpired();
+            }
             return detail;
         } catch (CyclesProtocolException e) {
             throw e;
