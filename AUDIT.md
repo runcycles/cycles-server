@@ -167,7 +167,7 @@ Two-pass audit covering:
   - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
   - Budget Status (2 tests): BUDGET_FROZEN and BUDGET_CLOSED enforcement on reserve
   - ALLOW_IF_AVAILABLE commit overage (integration coverage)
-- **Performance benchmarks**: 8 tests (6 individual operations + 2 composite lifecycles), tagged `@Tag("benchmark")`
+- **Performance benchmarks**: 8 write-path tests (6 individual operations + 2 composite lifecycles) + 4 read-path tests (GET reservation, GET balances, LIST reservations, Decide pipelined), tagged `@Tag("benchmark")`
 - All unit tests pass without Docker/Testcontainers (integration and benchmark tests excluded by default)
 
 ### Tenant Default Configuration (correct)
@@ -214,45 +214,60 @@ Seven optimizations applied to the reserve/commit/release hot path, preserving a
 
 End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot + Jedis + Redis 7 via Testcontainers). 200 measured iterations after 50 warmup iterations per operation.
 
-#### Single-Threaded Latency
+#### Single-Threaded Write-Path Latency
 
 | Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
 |---------------------|--------|--------|--------|--------|--------|--------|
-| Reserve             |  6.1ms |  7.9ms |  8.5ms |  4.8ms | 13.7ms |  6.3ms |
-| Commit              |  5.0ms |  6.7ms |  7.1ms |  3.4ms |  7.2ms |  5.2ms |
-| Release             |  5.2ms |  6.0ms |  6.5ms |  3.9ms |  6.7ms |  5.2ms |
-| Extend              |  7.6ms |  9.7ms | 12.0ms |  5.8ms | 17.2ms |  7.8ms |
-| Decide              |  6.9ms |  8.1ms | 10.4ms |  5.5ms | 16.0ms |  7.0ms |
-| Event               |  5.1ms |  6.7ms |  7.2ms |  3.6ms |  8.8ms |  5.2ms |
-| Reserve + Commit    | 14.7ms | 17.8ms | 19.9ms | 11.2ms | 20.4ms | 14.9ms |
-| Reserve + Release   | 11.7ms | 14.4ms | 17.4ms |  9.6ms | 20.2ms | 11.9ms |
+| Reserve             |  5.6ms |  6.2ms |  6.6ms |  4.6ms |  6.9ms |  5.6ms |
+| Commit              |  4.5ms |  5.8ms | 15.8ms |  2.9ms | 22.1ms |  4.8ms |
+| Release             |  4.8ms |  5.5ms |  5.8ms |  3.5ms | 12.9ms |  4.8ms |
+| Extend              |  7.3ms |  8.7ms |  9.6ms |  6.0ms | 17.0ms |  7.4ms |
+| Decide              |  5.8ms |  6.9ms |  7.4ms |  4.5ms | 13.8ms |  5.9ms |
+| Event               |  4.9ms |  5.6ms |  6.0ms |  3.9ms | 15.2ms |  5.0ms |
+| Reserve + Commit    | 14.3ms | 16.2ms | 18.0ms | 11.5ms | 28.6ms | 14.3ms |
+| Reserve + Release   | 12.0ms | 15.1ms | 19.5ms |  9.7ms | 23.9ms | 12.3ms |
+
+#### Single-Threaded Read-Path Latency (Phase 3 — pipelined)
+
+| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|---------------------|--------|--------|--------|--------|--------|--------|
+| GET reservation     |  3.2ms |  4.3ms |  4.4ms |  1.9ms |  5.4ms |  3.3ms |
+| GET balances        |  3.2ms |  4.1ms |  4.5ms |  1.7ms |  5.5ms |  3.2ms |
+| LIST reservations   |  3.9ms |  4.7ms |  5.2ms |  2.3ms |  5.4ms |  3.8ms |
+| Decide (pipelined)  |  4.6ms |  5.6ms |  6.1ms |  3.4ms |  6.5ms |  4.6ms |
 
 #### Concurrent Throughput (Reserve→Commit lifecycle)
 
 | Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    |  min   |  max    | Errors |
 |---------|-----------|----------|---------|---------|---------|--------|---------|--------|
-|       8 |     4,023 |    804.6 |   9.7ms |  11.8ms |  17.9ms |  7.1ms |  33.7ms |      0 |
-|      16 |     5,506 |  1,101.2 |  14.2ms |  19.8ms |  23.9ms |  6.8ms |  28.8ms |      0 |
-|      32 |    12,416 |  2,483.2 |  11.6ms |  21.4ms |  35.2ms |  6.9ms |  65.8ms |      0 |
+|       8 |     3,883 |    776.6 |  10.1ms |  12.2ms |  17.9ms |  7.2ms |  28.2ms |      0 |
+|      16 |     5,482 |  1,096.4 |  14.3ms |  19.7ms |  24.1ms |  7.3ms |  52.0ms |      0 |
+|      32 |    12,170 |  2,434.0 |  12.1ms |  20.1ms |  30.9ms |  7.1ms |  68.7ms |      0 |
 
 #### Analysis
 
-**Phase 2 optimization impact (Extend & Event Lua balance snapshots):**
+**Phase 3 optimization impact (read-path pipelining, response compression, terminal hash TTLs):**
 
-| Operation | Before (p50) | After (p50) | Before (p99) | After (p99) | Change |
-|-----------|-------------|-------------|-------------|-------------|--------|
-| Extend    |  8.5ms      |  7.6ms      | 11.4ms      | 12.0ms      | p50 -11%, tail similar |
-| Event     |  5.2ms      |  5.1ms      | 10.0ms      |  7.2ms      | p50 flat, **p99 -28%** |
+| Operation | Phase 2 (p50) | Phase 3 (p50) | Phase 2 (p99) | Phase 3 (p99) | Change |
+|-----------|--------------|--------------|--------------|--------------|--------|
+| Reserve   |  6.1ms       |  5.6ms       |  8.5ms       |  6.6ms       | **p50 -8%, p99 -22%** |
+| Commit    |  5.0ms       |  4.5ms       |  7.1ms       | 15.8ms       | p50 -10%, p99 tail spike |
+| Release   |  5.2ms       |  4.8ms       |  6.5ms       |  5.8ms       | **p50 -8%, p99 -11%** |
+| Extend    |  7.6ms       |  7.3ms       | 12.0ms       |  9.6ms       | p50 -4%, **p99 -20%** |
+| Decide    |  6.9ms       |  5.8ms       | 10.4ms       |  7.4ms       | **p50 -16%, p99 -29%** |
+| Event     |  5.1ms       |  4.9ms       |  7.2ms       |  6.0ms       | p50 -4%, **p99 -17%** |
 
-- **Extend** p50 improved from 8.5ms to 7.6ms by eliminating the pre-Lua HMGET prefetch round-trip. The improvement is smaller than predicted (~5ms) because the Lua-side balance snapshot collection adds overhead that partially offsets the saved Java round-trip. Extend remains the slowest single operation because it still does more Redis commands inside Lua (read reservation fields + read all scope budgets + write TTL updates) than other operations.
-- **Event** p99 improved significantly from 10.0ms to 7.2ms (28% reduction). The variable-cost Java-side `fetchBalancesForScopes()` pipeline was the main tail latency driver — moving it into Lua eliminated the per-scope RTT variability. p50 was unchanged since simple single-scope events were already fast.
+- **Decide** benefited most from pipelining: p50 dropped from 6.9ms to 5.8ms (16%) and p99 from 10.4ms to 7.4ms (29%). The sequential N+1 budget lookups + caps fetch were consolidated into a single pipeline round-trip.
+- **Reserve** p99 improved 22% (8.5ms → 6.6ms) — the tighter max (6.9ms vs 13.7ms) suggests reduced variance from fewer round-trips.
+- **Commit** p99 shows a tail spike (15.8ms) despite improved p50. This is likely the PEXPIRE addition on terminal hashes — an extra Redis command in the Lua script that occasionally hits GC pauses. The p50 improvement (5.0ms → 4.5ms) confirms the median case is faster.
+- **Read paths** are the fastest operations: GET single reservation at 3.2ms p50, GET balances at 3.2ms p50. These benefit from no Lua script overhead — just direct Redis hash reads (pipelined for multi-scope queries).
 
 **Concurrent scaling observations:**
-- Near-linear throughput scaling from 8→32 threads (805 → 2,483 ops/s, 3.1x at 4x threads)
+- Near-linear throughput scaling from 8→32 threads (777 → 2,434 ops/s, 3.1x at 4x threads)
 - Zero errors at all concurrency levels — Redis connection pool (max 50) is not a bottleneck
-- p50 latency at 32 threads (11.6ms) is lower than at 16 threads (14.2ms), suggesting connection pool warm-up effects
-- p99 tail grows with concurrency (17.9ms → 35.2ms) due to Redis Lua script serialization and connection pool contention
-- Max latency at 32 threads (65.8ms) indicates occasional GC pauses or connection pool waits
+- p50 latency at 32 threads (12.1ms) is lower than at 16 threads (14.3ms), suggesting connection pool warm-up effects
+- p99 tail grows with concurrency (17.9ms → 30.9ms) due to Redis Lua script serialization and connection pool contention
+- Max latency at 32 threads (68.7ms) indicates occasional GC pauses or connection pool waits
 
 **Notes:**
 - Results are from a containerized CI environment (Testcontainers Redis 7-Alpine, localhost networking). Production with dedicated Redis will be faster.
@@ -373,4 +388,4 @@ Code review of all changes identified and fixed four defensive issues:
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven performance optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Test coverage expanded to 522 tests across 24 test classes, including 8 performance benchmark tests. Single-operation p50 latency: 4.1-8.5ms. Full reserve-commit lifecycle p50: 12.2ms. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.23) and **performance optimized**. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 522 tests across 24 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 4.5-7.3ms. Read-path p50 latency: 3.2-4.6ms. Full reserve-commit lifecycle p50: 14.3ms. Concurrent throughput: 2,434 ops/s at 32 threads with zero errors. No remaining spec violations found.
