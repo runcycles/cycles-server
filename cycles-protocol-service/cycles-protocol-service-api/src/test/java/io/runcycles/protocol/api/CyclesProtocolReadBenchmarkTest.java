@@ -82,7 +82,7 @@ class CyclesProtocolReadBenchmarkTest extends BaseIntegrationTest {
     @DisplayName("GET /v1/balances")
     void benchmarkGetBalances() {
         long[] timings = runBenchmark("GET balances", () -> {
-            ResponseEntity<Map> resp = get("/v1/balances", API_KEY_SECRET_A);
+            ResponseEntity<Map> resp = get("/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
             assertThat(resp.getStatusCode().value()).isEqualTo(200);
         });
         record(new BenchmarkResult("GET balances", p(timings, 50), p(timings, 95), p(timings, 99),
