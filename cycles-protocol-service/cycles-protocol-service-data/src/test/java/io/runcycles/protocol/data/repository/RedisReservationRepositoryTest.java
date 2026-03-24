@@ -55,6 +55,10 @@ class RedisReservationRepositoryTest {
         setField("extendScript", "EXTEND_SCRIPT");
         setField("eventScript", "EVENT_SCRIPT");
 
+        // Default jedis.time() mock — returns a time BEFORE test reservation expiry (1700060000000ms)
+        // so ACTIVE reservations are not treated as expired in getReservationById().
+        lenient().when(jedis.time()).thenReturn(List.of("1700000000", "0"));
+
         // Default pipeline mock for pipelined HGETALL and HMGET calls.
         // Returns a Response that yields an empty map/list by default.
         // Tests that need specific budget data should override pipeline.hgetAll(key) explicitly.
