@@ -1886,6 +1886,64 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void shouldFallbackToAllowIfAvailableWhenOverdraftLimitZeroOnCommit() {
+            // Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
+            // Set overdraft_limit=0 to force fallback behavior.
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+            }
+
+            // Drain most budget: allocated=1_000_000, remaining after drain=50_000
+            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
+            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+
+            // Reserve 1000, then commit 100_000 (overage delta=99_000 > remaining ~49_000)
+            // With overdraft_limit=0, should cap like ALLOW_IF_AVAILABLE, not reject.
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String resId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + resId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+
+            // Should succeed (not 409), with charged amount capped
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            long chargedAmount = ((Number) charged.get("amount")).longValue();
+            // Charged should be less than actual (100_000) because delta was capped
+            assertThat(chargedAmount).isLessThan(100_000);
+            assertThat(chargedAmount).isGreaterThan(0);
+        }
+
+        @Test
+        void shouldFallbackToAllowIfAvailableWhenOverdraftLimitZeroOnEvent() {
+            // Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+            }
+
+            // Drain budget: remaining=50_000
+            post("/v1/events", API_KEY_SECRET_A, eventBody(TENANT_A, 950_000));
+
+            // Event with ALLOW_WITH_OVERDRAFT for 500_000 (exceeds remaining 50_000)
+            // With overdraft_limit=0, should cap like ALLOW_IF_AVAILABLE, not reject.
+            Map<String, Object> body = eventBody(TENANT_A, 500_000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            // Should succeed (not 409)
+            assertThat(resp.getStatusCode().value()).isEqualTo(201);
+            // Charged should be capped to remaining (50_000)
+            assertThat(resp.getBody().get("charged")).isNotNull();
+            Map<String, Object> charged = (Map<String, Object>) resp.getBody().get("charged");
+            long chargedAmount = ((Number) charged.get("amount")).longValue();
+            assertThat(chargedAmount).isEqualTo(50_000);
+        }
+
+        @Test
         void shouldMaintainLedgerInvariantAfterCommit() {
             // allocated = remaining + spent + reserved + debt (spec invariant)
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 5000);

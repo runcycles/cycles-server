@@ -106,16 +106,14 @@ for _, scope in ipairs(affected_scopes) do
             if overage_policy == "REJECT" then
                 return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
             elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-                -- Spec v0.1.24 NORMATIVE (EventCreateRequest.overage_policy):
-                -- "check if (current_debt + deficit) <= overdraft_limit across all derived scopes.
-                --  If no: server MUST return 409 OVERDRAFT_LIMIT_EXCEEDED."
-                -- When overdraft_limit=0, no overdraft is permitted (behaves as ALLOW_IF_AVAILABLE).
-                -- Use math.max(remaining, 0) so deficit matches the mutation pass.
+                -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
+                -- Only reject when overdraft_limit > 0 and debt would exceed it.
+                -- When overdraft_limit=0, skip rejection — capping is applied in the mutation phase.
                 local funded = math.max(remaining, 0)
                 local deficit = amount - funded
                 local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
                 local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-                if current_debt + deficit > overdraft_limit then
+                if overdraft_limit > 0 and current_debt + deficit > overdraft_limit then
                     return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
                         current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
                 end
@@ -149,6 +147,27 @@ if overage_policy == "ALLOW_IF_AVAILABLE" then
         for _, scope in ipairs(budgeted_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. unit
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
+        end
+    end
+elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
+    -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
+    -- Cap effective_amount for scopes with overdraft_limit=0 (floor 0).
+    for _, scope in ipairs(budgeted_scopes) do
+        local budget_key = "budget:" .. scope .. ":" .. unit
+        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+        local ol = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
+        if ol == 0 and remaining < effective_amount then
+            effective_amount = math.min(effective_amount, math.max(remaining, 0))
+        end
+    end
+    -- Mark over-limit on zero-limit scopes if full amount couldn't be covered
+    if effective_amount < amount then
+        for _, scope in ipairs(budgeted_scopes) do
+            local budget_key = "budget:" .. scope .. ":" .. unit
+            local ol = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
+            if ol == 0 then
+                redis.call('HSET', budget_key, 'is_over_limit', 'true')
+            end
         end
     end
 end

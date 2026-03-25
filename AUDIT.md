@@ -45,7 +45,7 @@ Two-pass audit covering:
 - Response headers (X-Request-Id, X-Cycles-Tenant, X-RateLimit-*)
 - Lua script atomicity for reserve, commit, release, extend, event, expire
 - Dry-run response rules (reservation_id/expires_at_ms absent, affected_scopes populated)
-- Overdraft/debt model (ALLOW_WITH_OVERDRAFT, is_over_limit, DEBT_OUTSTANDING — only blocks when overdraft_limit=0)
+- Overdraft/debt model (ALLOW_WITH_OVERDRAFT, is_over_limit, DEBT_OUTSTANDING — only blocks when overdraft_limit=0; ALLOW_WITH_OVERDRAFT falls back to ALLOW_IF_AVAILABLE when overdraft_limit=0)
 - Grace period semantics (commits accepted through expires_at_ms + grace_period_ms)
 - Subject.dimensions round-tripping
 - Unit mismatch detection on commit and event
