@@ -202,7 +202,8 @@ public class RedisReservationRepository {
                     .build();
             }
             long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
-            if (debt > 0) {
+            long overdraftLimit = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+            if (debt > 0 && overdraftLimit == 0) {
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
                     .reasonCode("DEBT_OUTSTANDING")
@@ -689,7 +690,8 @@ public class RedisReservationRepository {
                     break;
                 }
                 long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
-                if (debt > 0) {
+                long overdraftLimit = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+                if (debt > 0 && overdraftLimit == 0) {
                     response = DecisionResponse.builder()
                         .decision(Enums.DecisionEnum.DENY)
                         .reasonCode("DEBT_OUTSTANDING")
