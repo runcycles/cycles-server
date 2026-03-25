@@ -649,6 +649,30 @@ class RedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldAllowDryRunWhenDebtWithinOverdraftLimit() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> debtBudget = budgetMap(10000, 8000, 0, 2000);
+            debtBudget.put("debt", "500");
+            debtBudget.put("overdraft_limit", "1000");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", debtBudget);
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", debtBudget);
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-debt-within-limit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+        }
+
+        @Test
         void shouldDenyDryRunWhenOverdraftLimitExceeded() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
@@ -1179,6 +1203,27 @@ class RedisReservationRepositoryTest {
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
             assertThat(response.getReasonCode()).isEqualTo("DEBT_OUTSTANDING");
+        }
+
+        @Test
+        void shouldAllowDecideWhenDebtWithinOverdraftLimit() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> debtBudget = budgetMap(10000, 8000, 0, 2000);
+            debtBudget.put("debt", "500");
+            debtBudget.put("overdraft_limit", "1000");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", debtBudget);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-debt-within-limit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
         }
 
         @Test

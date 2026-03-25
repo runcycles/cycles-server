@@ -662,27 +662,38 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldReturnDenyWithReasonCodeWhenDebtOutstanding() {
-            // Spec: /decide SHOULD return decision=DENY with reason_code=DEBT_OUTSTANDING when debt > 0
-            // Create debt: drain budget then overdraft commit
-            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
-            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
+        void shouldReturnDenyWithReasonCodeWhenDebtOutstandingAndNoOverdraftLimit() {
+            // Spec (decide): "If the subject scope has debt > 0 ... server SHOULD return
+            // decision=DENY with reason_code=DEBT_OUTSTANDING"
+            // This applies when overdraft_limit=0 (no policy allowing debt).
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "debt", "5000");
+            }
 
-            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
-            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
-            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
-            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
-            post("/v1/reservations/" + overdraftResId + "/commit",
-                    API_KEY_SECRET_A, commitBody(100_000));
-            // debt > 0 now
-
-            // /decide MUST NOT return 409, SHOULD return 200 with decision=DENY
+            // /decide MUST NOT return 409 — returns 200 with decision=DENY
             ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A,
                     decisionBody(TENANT_A, 100));
 
             assertThat(resp.getStatusCode().value()).isEqualTo(200);
             assertThat(resp.getBody().get("decision")).isEqualTo("DENY");
             assertThat(resp.getBody().get("reason_code")).isEqualTo("DEBT_OUTSTANDING");
+        }
+
+        @Test
+        void shouldReturnAllowWhenDebtWithinOverdraftLimit() {
+            // Spec: "When debt > 0, new reservations MUST be rejected ... (unless explicitly
+            // allowed by policy)." — overdraft_limit > 0 is the explicit policy.
+            // /decide mirrors this: debt within limit → ALLOW.
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "debt", "5000");
+            }
+
+            ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A,
+                    decisionBody(TENANT_A, 100));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("ALLOW");
         }
 
         @Test
@@ -1877,6 +1888,90 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void shouldFallbackToAllowIfAvailableWhenOverdraftLimitZeroOnCommit() {
+            // Spec: "If overdraft_limit is absent or 0, no overdraft is permitted
+            // (behaves as ALLOW_IF_AVAILABLE)."
+            // ALLOW_IF_AVAILABLE: "cap delta to available remaining (minimum across
+            // all affected scopes, floor 0), charge estimate + capped_delta, and set
+            // is_over_limit=true on scopes where the full delta could not be covered."
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "remaining", "50000");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "spent", "950000");
+            }
+
+            // Reserve 1000, then commit 100_000 (overage delta=99_000 > remaining=49_000)
+            // With overdraft_limit=0, should cap like ALLOW_IF_AVAILABLE, not reject.
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String resId = (String) reserveResp.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commitResp = post(
+                    "/v1/reservations/" + resId + "/commit",
+                    API_KEY_SECRET_A, commitBody(100_000));
+
+            // Spec: commit always succeeds with ALLOW_IF_AVAILABLE fallback (never rejects)
+            assertThat(commitResp.getStatusCode().value()).isEqualTo(200);
+            // Spec: "charged = estimate + capped_delta" — must be less than actual
+            Map<String, Object> charged = (Map<String, Object>) commitResp.getBody().get("charged");
+            long chargedAmount = ((Number) charged.get("amount")).longValue();
+            assertThat(chargedAmount).isLessThan(100_000);
+            assertThat(chargedAmount).isGreaterThan(0);
+
+            // Spec: "set is_over_limit=true on scopes where full delta could not be covered"
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+            assertThat(bal.get("is_over_limit")).isEqualTo(true);
+
+            // Spec: ALLOW_IF_AVAILABLE "never creates debt"
+            Map<String, Object> debt = (Map<String, Object>) bal.get("debt");
+            long debtAmount = debt != null ? ((Number) debt.get("amount")).longValue() : 0;
+            assertThat(debtAmount).isEqualTo(0);
+        }
+
+        @Test
+        void shouldFallbackToAllowIfAvailableWhenOverdraftLimitZeroOnEvent() {
+            // Spec: "If overdraft_limit is absent or 0, no overdraft is permitted
+            // (behaves as ALLOW_IF_AVAILABLE)."
+            // ALLOW_IF_AVAILABLE for events: "cap the charge to available remaining ...
+            // and set is_over_limit=true on scopes where the full amount could not be covered."
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "remaining", "50000");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "spent", "950000");
+            }
+
+            // Event for 500_000 (exceeds remaining 50_000)
+            Map<String, Object> body = eventBody(TENANT_A, 500_000);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            // Spec: event always succeeds (never rejects with ALLOW_IF_AVAILABLE)
+            assertThat(resp.getStatusCode().value()).isEqualTo(201);
+            // Spec: "charged field present when ... caps the event charge to remaining budget"
+            assertThat(resp.getBody().get("charged")).isNotNull();
+            Map<String, Object> charged = (Map<String, Object>) resp.getBody().get("charged");
+            long chargedAmount = ((Number) charged.get("amount")).longValue();
+            assertThat(chargedAmount).isEqualTo(50_000);
+
+            // Spec: "set is_over_limit=true on scopes where full amount could not be covered"
+            ResponseEntity<Map> balanceResp = get(
+                    "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            var balances = (java.util.List<Map<String, Object>>) balanceResp.getBody().get("balances");
+            Map<String, Object> bal = balances.get(0);
+            assertThat(bal.get("is_over_limit")).isEqualTo(true);
+
+            // Spec: ALLOW_IF_AVAILABLE "never creates debt"
+            Map<String, Object> debt = (Map<String, Object>) bal.get("debt");
+            long debtAmount = debt != null ? ((Number) debt.get("amount")).longValue() : 0;
+            assertThat(debtAmount).isEqualTo(0);
+        }
+
+        @Test
         void shouldMaintainLedgerInvariantAfterCommit() {
             // allocated = remaining + spent + reserved + debt (spec invariant)
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 5000);
@@ -2378,32 +2473,37 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
     class DebtOutstanding {
 
         @Test
-        void shouldRejectNewReservationWhenDebtOutstanding() {
-            // Drain budget so overdraft commit creates debt.
-            // Budget: allocated=1_000_000, overdraft_limit=100_000
-            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
-            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
-            // remaining=50_000
+        void shouldRejectNewReservationWhenDebtOutstandingAndNoOverdraftLimit() {
+            // Spec: "When debt > 0, new reservations MUST be rejected with 409
+            // DEBT_OUTSTANDING (unless explicitly allowed by policy)."
+            // overdraft_limit=0 means no policy allowing debt → MUST reject.
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "debt", "1000");
+            }
 
-            // Create overdraft reservation and commit to create debt
-            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
-            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
-            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
-            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
-            // remaining=49_000
-
-            // Commit with overage that creates debt: delta=99_000, remaining=49_000
-            // funded=49_000, deficit=50_000 ≤ 100_000 → allowed
-            post("/v1/reservations/" + overdraftResId + "/commit",
-                    API_KEY_SECRET_A, commitBody(100_000));
-            // Now debt=50_000 > 0
-
-            // New reservation should be blocked with DEBT_OUTSTANDING
             ResponseEntity<Map> newResp = post("/v1/reservations", API_KEY_SECRET_A,
                     reservationBody(TENANT_A, 100));
 
             assertThat(newResp.getStatusCode().value()).isEqualTo(409);
             assertThat(newResp.getBody().get("error")).isEqualTo("DEBT_OUTSTANDING");
+        }
+
+        @Test
+        void shouldAllowNewReservationWhenDebtWithinOverdraftLimit() {
+            // Spec: "When debt > 0, new reservations MUST be rejected ... (unless
+            // explicitly allowed by policy)." — overdraft_limit > 0 is the explicit
+            // policy that tolerates debt up to the limit.
+            // Budget: allocated=1_000_000, overdraft_limit=100_000, debt=5_000.
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "debt", "5000");
+            }
+
+            ResponseEntity<Map> newResp = post("/v1/reservations", API_KEY_SECRET_A,
+                    reservationBody(TENANT_A, 100));
+
+            assertThat(newResp.getStatusCode().value()).isEqualTo(200);
+            assertThat(newResp.getBody().get("decision")).isEqualTo("ALLOW");
         }
 
         @Test
@@ -2483,18 +2583,15 @@ class CyclesProtocolIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldReturnDebtOutstandingWhenNotOverLimit() {
-            // When debt > 0 but is_over_limit=false, should return DEBT_OUTSTANDING
-            String drain = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 950_000);
-            post("/v1/reservations/" + drain + "/commit", API_KEY_SECRET_A, commitBody(950_000));
-
-            Map<String, Object> overdraftBody = reservationBody(TENANT_A, 1000);
-            overdraftBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
-            ResponseEntity<Map> reserveResp = post("/v1/reservations", API_KEY_SECRET_A, overdraftBody);
-            String overdraftResId = (String) reserveResp.getBody().get("reservation_id");
-            post("/v1/reservations/" + overdraftResId + "/commit",
-                    API_KEY_SECRET_A, commitBody(100_000));
-            // debt=50_000 > 0, is_over_limit=false
+        void shouldReturnDebtOutstandingWhenNotOverLimitAndNoOverdraftLimit() {
+            // Spec precedence: is_over_limit check → DEBT_OUTSTANDING check → BUDGET_EXCEEDED.
+            // "When is_over_limit=true, server MUST return OVERDRAFT_LIMIT_EXCEEDED ...
+            //  This takes precedence over DEBT_OUTSTANDING."
+            // Here is_over_limit=false, overdraft_limit=0, debt>0 → DEBT_OUTSTANDING.
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "overdraft_limit", "0");
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "debt", "5000");
+            }
 
             ResponseEntity<Map> newResp = post("/v1/reservations", API_KEY_SECRET_A,
                     reservationBody(TENANT_A, 100));

@@ -153,9 +153,13 @@ if delta > 0 then
             end
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
-        -- Check all scopes first (fail fast, no mutations yet) to avoid partial-state corruption.
-        -- Cache values from fail-fast loop for reuse in mutation loop.
+        -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
+        -- Three-phase: (1) cache + cap from zero-limit scopes, (2) check non-zero
+        -- scopes against capped_delta, (3) mutate.
         local scope_budget_cache = {}
+        local capped_delta = delta
+
+        -- Phase 1: cache all scopes, cap delta from zero-limit scopes
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local vals = redis.call('HMGET', budget_key, 'remaining', 'debt', 'overdraft_limit')
@@ -164,43 +168,60 @@ if delta > 0 then
             local overdraft_limit = tonumber(vals[3] or 0)
             scope_budget_cache[scope] = {remaining = remaining, debt = current_debt, overdraft_limit = overdraft_limit}
 
-            if remaining < delta then
-                local funded = math.max(remaining, 0)
-                local deficit = delta - funded
-                if current_debt + deficit > overdraft_limit then
+            if overdraft_limit == 0 and remaining < delta then
+                -- Spec: behaves as ALLOW_IF_AVAILABLE — cap delta to available (floor 0)
+                capped_delta = math.min(capped_delta, math.max(remaining, 0))
+            end
+        end
+
+        -- Phase 2: check non-zero scopes against capped_delta (fail fast, no mutations)
+        for _, scope in ipairs(affected_scopes) do
+            local cached = scope_budget_cache[scope]
+            if cached.overdraft_limit > 0 and cached.remaining < capped_delta then
+                local funded = math.max(cached.remaining, 0)
+                local deficit = capped_delta - funded
+                if cached.debt + deficit > cached.overdraft_limit then
                     return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
-                        current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
+                        current_debt = cached.debt, deficit = deficit, overdraft_limit = cached.overdraft_limit})
                 end
             end
         end
-        -- All checks passed - apply mutations using cached values
+        -- Apply mutations using cached values and capped_delta as effective overage.
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local cached = scope_budget_cache[scope]
-            local remaining = cached.remaining
-            local current_debt = cached.debt
-            local overdraft_limit = cached.overdraft_limit
 
-            if remaining >= delta then
+            if cached.remaining >= capped_delta then
                 -- Sufficient remaining - charge normally
-                redis.call('HINCRBY', budget_key, 'remaining', -delta)
-                redis.call('HINCRBY', budget_key, 'spent', delta)
+                redis.call('HINCRBY', budget_key, 'remaining', -capped_delta)
+                redis.call('HINCRBY', budget_key, 'spent', capped_delta)
             else
                 -- Create debt for the shortfall
                 -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
                 -- spent tracks only the funded portion; debt tracks the unfunded portion.
                 -- When remaining is already negative (prior overdraft), the funded portion is 0,
                 -- not negative — otherwise spent would decrease and debt would over-count.
-                local funded = math.max(remaining, 0)
-                local deficit = delta - funded
-                redis.call('HINCRBY', budget_key, 'remaining', -delta)
+                local funded = math.max(cached.remaining, 0)
+                local deficit = capped_delta - funded
+                redis.call('HINCRBY', budget_key, 'remaining', -capped_delta)
                 redis.call('HINCRBY', budget_key, 'spent', funded)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
 
                 -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
-                local new_debt = current_debt + deficit
-                if overdraft_limit > 0 and new_debt > overdraft_limit then
+                local new_debt = cached.debt + deficit
+                if cached.overdraft_limit > 0 and new_debt > cached.overdraft_limit then
+                    redis.call('HSET', budget_key, 'is_over_limit', 'true')
+                end
+            end
+        end
+        -- Adjust charged_amount: estimate + effective overage
+        charged_amount = estimate_amount + capped_delta
+        -- Mark over-limit on zero-limit scopes if full delta couldn't be covered
+        if capped_delta < delta then
+            for _, scope in ipairs(affected_scopes) do
+                if scope_budget_cache[scope].overdraft_limit == 0 then
+                    local budget_key = "budget:" .. scope .. ":" .. actual_unit
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end
             end

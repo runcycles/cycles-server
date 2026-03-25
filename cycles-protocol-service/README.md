@@ -160,8 +160,8 @@ When `overage_policy` is omitted from the request, the server resolves it from t
 
 - If `overdraft_limit` is absent or `0`, no overdraft is permitted (`ALLOW_WITH_OVERDRAFT` behaves as `ALLOW_IF_AVAILABLE`).
 - **`debt`** is created when `overage_policy=ALLOW_WITH_OVERDRAFT` and the commit delta exceeds remaining budget.
-- When `debt > 0`, **new reservations** against that scope are blocked with `409 DEBT_OUTSTANDING`.
-- When `debt > overdraft_limit`, the scope enters **over-limit** state (`is_over_limit=true`). New reservations are then blocked with `409 OVERDRAFT_LIMIT_EXCEEDED` (takes precedence over `DEBT_OUTSTANDING`).
+- When `debt > 0` and no `overdraft_limit` is configured (absent or `0`), **new reservations** against that scope are blocked with `409 DEBT_OUTSTANDING`. When an `overdraft_limit > 0` is set, debt within the limit does **not** block new reservations.
+- When `debt > overdraft_limit`, the scope enters **over-limit** state (`is_over_limit=true`). New reservations are then blocked with `409 OVERDRAFT_LIMIT_EXCEEDED`.
 - Debt does **not** block direct events (`/v1/events`); events always apply their own `overage_policy`.
 - Existing active reservations MAY be committed or released normally while a scope is over-limit.
 - Overdraft limit checks are per-commit and are **not** atomic across concurrent commits — concurrent commits may independently pass the check, causing total debt to temporarily exceed `overdraft_limit`. This is by design; the `is_over_limit` flag prevents further damage.
@@ -593,7 +593,7 @@ All errors use this envelope:
 | `RESERVATION_FINALIZED` | 409 | Reservation already committed or released |
 | `IDEMPOTENCY_MISMATCH` | 409 | Idempotency key reused with different parameters |
 | `OVERDRAFT_LIMIT_EXCEEDED` | 409 | `debt + delta > overdraft_limit`; or scope is over-limit |
-| `DEBT_OUTSTANDING` | 409 | Scope has unresolved debt; new reservations blocked |
+| `DEBT_OUTSTANDING` | 409 | Scope has unresolved debt with no overdraft limit; new reservations blocked |
 | `RESERVATION_EXPIRED` | 410 | Operation attempted after expiry window |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 

@@ -51,7 +51,7 @@ local expires_at = now + ttl_ms
 local budgeted_scopes = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
-    local vals = redis.call('HMGET', budget_key, 'status', 'remaining', 'debt', 'is_over_limit')
+    local vals = redis.call('HMGET', budget_key, 'status', 'remaining', 'debt', 'is_over_limit', 'overdraft_limit')
 
     -- Skip scopes without a budget (all fields nil means key doesn't exist)
     if vals[1] ~= false or vals[2] ~= false or vals[3] ~= false or vals[4] ~= false then
@@ -71,7 +71,8 @@ for _, scope in ipairs(affected_scopes) do
         if is_over_limit == "true" then
             return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope, message = "Scope is over-limit, no new reservations allowed"})
         end
-        if debt > 0 then
+        local overdraft_limit = tonumber(vals[5] or 0)
+        if debt > 0 and overdraft_limit == 0 then
             return cjson.encode({error = "DEBT_OUTSTANDING", scope = scope, debt = debt})
         end
         if remaining < estimate_amount then
