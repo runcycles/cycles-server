@@ -154,11 +154,12 @@ if delta > 0 then
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
         -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
-        -- Two-phase: check all scopes first (fail fast), then mutate.
-        -- For scopes with overdraft_limit=0, cap delta like ALLOW_IF_AVAILABLE.
-        -- For scopes with overdraft_limit>0, check debt + deficit <= limit.
+        -- Three-phase: (1) cache + cap from zero-limit scopes, (2) check non-zero
+        -- scopes against capped_delta, (3) mutate.
         local scope_budget_cache = {}
         local capped_delta = delta
+
+        -- Phase 1: cache all scopes, cap delta from zero-limit scopes
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local vals = redis.call('HMGET', budget_key, 'remaining', 'debt', 'overdraft_limit')
@@ -167,17 +168,21 @@ if delta > 0 then
             local overdraft_limit = tonumber(vals[3] or 0)
             scope_budget_cache[scope] = {remaining = remaining, debt = current_debt, overdraft_limit = overdraft_limit}
 
-            if remaining < delta then
-                if overdraft_limit == 0 then
-                    -- Spec: behaves as ALLOW_IF_AVAILABLE — cap delta to available (floor 0)
-                    capped_delta = math.min(capped_delta, math.max(remaining, 0))
-                else
-                    local funded = math.max(remaining, 0)
-                    local deficit = delta - funded
-                    if current_debt + deficit > overdraft_limit then
-                        return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
-                            current_debt = current_debt, deficit = deficit, overdraft_limit = overdraft_limit})
-                    end
+            if overdraft_limit == 0 and remaining < delta then
+                -- Spec: behaves as ALLOW_IF_AVAILABLE — cap delta to available (floor 0)
+                capped_delta = math.min(capped_delta, math.max(remaining, 0))
+            end
+        end
+
+        -- Phase 2: check non-zero scopes against capped_delta (fail fast, no mutations)
+        for _, scope in ipairs(affected_scopes) do
+            local cached = scope_budget_cache[scope]
+            if cached.overdraft_limit > 0 and cached.remaining < capped_delta then
+                local funded = math.max(cached.remaining, 0)
+                local deficit = capped_delta - funded
+                if cached.debt + deficit > cached.overdraft_limit then
+                    return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
+                        current_debt = cached.debt, deficit = deficit, overdraft_limit = cached.overdraft_limit})
                 end
             end
         end
