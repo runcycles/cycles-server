@@ -1,37 +1,40 @@
 {
-    "$schema": "https://json.schemastore.org/claude-code-settings.json",
-    "hooks": {
-        "SessionStart": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": ".claude/session-start-maven-proxy.sh"
-                    }
-                ]
-            }
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)",
+      "Bash(git diff:*)",
+      "Bash(git fetch:*)",
+      "Bash(git log:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git status:*)",
+      "Bash(mvn-proxy:*)"
+    ],
+    "deny": [
+      "mcp__github__create_or_update_file",
+      "mcp__github__push_files",
+      "mcp__github__delete_file"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/session-start-maven-proxy.sh"
+          }
         ]
-    },
-    "attribution": {
-        "commit": "",
-        "pr": ""
-    },
-    "permissions": {
-        "allow": [
-            "Bash(git add:*)",
-            "Bash(git commit:*)",
-            "Bash(git push:*)",
-            "Bash(git pull:*)",
-            "Bash(git status:*)",
-            "Bash(git diff:*)",
-            "Bash(git log:*)"
-        ],
-        "deny": [
-            "mcp__github__create_or_update_file",
-            "mcp__github__push_files",
-            "mcp__github__create_or_update_files",
-            "mcp__github__delete_file"
-        ]
-    }
+      }
+    ]
+  }
 }
