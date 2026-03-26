@@ -31,6 +31,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": ".claude/session-start-global-deny.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": ".claude/session-start-maven-proxy.sh"
           }
         ]
