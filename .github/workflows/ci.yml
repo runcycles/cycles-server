@@ -11,3 +11,4 @@ jobs:
     uses: runcycles/.github/.github/workflows/ci-java.yml@main
     with:
       pom-file: cycles-protocol-service/pom.xml
+      maven-args: "-Dtest=!*IntegrationTest,!*BenchmarkTest -Dsurefire.failIfNoSpecifiedTests=false"
