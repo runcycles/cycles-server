@@ -27,7 +27,7 @@
 | Test Coverage | — | 0 |
 | Tenant Default Config | — | 0 |
 | Performance Optimizations | 13/13 | 0 |
-| Production Hardening | 3/3 | 0 |
+| Production Hardening | 8/8 | 0 |
 
 **All previously identified issues have been fixed. No remaining spec violations found. Performance optimized, hardened, and benchmarked.**
 
@@ -254,6 +254,21 @@ Run benchmarks: `mvn test -Pbenchmark` (requires Docker). Excluded from default 
 - Cache race conditions in `ApiKeyRepository` and `LuaScriptRegistry` — `ConcurrentHashMap` ops are atomic; duplicate work is harmless
 
 ---
+
+### Production Hardening (v0.1.24.3)
+
+Operational readiness improvements added in v0.1.24.3:
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | **Prometheus metrics** — Micrometer + Prometheus registry, `/actuator/prometheus` endpoint (unauthenticated) | Done |
+| 2 | **Structured JSON logging** — Spring Boot 3.4+ native structured logging; set `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` for ECS JSON in production | Done |
+| 3 | **Graceful shutdown** — `server.shutdown=graceful` with 30s drain timeout | Done |
+| 4 | **Docker HEALTHCHECK** — `/actuator/health` probe with 15s interval | Done |
+| 5 | **JVM production flags** — `JAVA_OPTS` entrypoint with G1GC, 75% RAM, string deduplication | Done |
+| 6 | **Input sanitization** — `@Pattern` on Subject scope fields prevents Redis key path injection | Done |
+| 7 | **Error logging** — ApiKeyRepository catch blocks now log errors instead of silently swallowing | Done |
+| 8 | **Connection pool tuning** — 128/32/16 pool sizing, testWhileIdle, idle eviction; all configurable via properties | Done |
 
 ### Production Hardening (Phase 2 audit)
 
