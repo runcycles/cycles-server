@@ -12,21 +12,25 @@ local metadata_json   = ARGV[7] or ""
 
 local reservation_key = "reservation:res_" .. reservation_id
 
--- Check reservation exists
-if redis.call('EXISTS', reservation_key) == 0 then
+-- Fetch all reservation data in one round-trip (also serves as existence check)
+local rdata = redis.call('HMGET', reservation_key,
+    'state', 'estimate_amount', 'estimate_unit', 'affected_scopes',
+    'budgeted_scopes', 'committed_idempotency_key', 'overage_policy',
+    'expires_at', 'grace_ms')
+
+local state = rdata[1]
+if not state then
     return cjson.encode({error = "NOT_FOUND"})
 end
 
--- Get reservation data
-local state = redis.call('HGET', reservation_key, 'state')
-local estimate_amount = tonumber(redis.call('HGET', reservation_key, 'estimate_amount'))
-local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
-local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scopes')
+local estimate_amount = tonumber(rdata[2])
+local estimate_unit = rdata[3]
+local affected_scopes_json = rdata[4]
 -- Use budgeted_scopes (scopes that actually had budgets at reserve time) for mutations;
 -- fall back to affected_scopes for backward compatibility with pre-existing reservations.
-local budgeted_scopes_json = redis.call('HGET', reservation_key, 'budgeted_scopes')
-local stored_idempotency_key = redis.call('HGET', reservation_key, 'committed_idempotency_key')
-local overage_policy = redis.call('HGET', reservation_key, 'overage_policy') or "ALLOW_IF_AVAILABLE"
+local budgeted_scopes_json = rdata[5]
+local stored_idempotency_key = rdata[6]
+local overage_policy = rdata[7] or "ALLOW_IF_AVAILABLE"
 
 -- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
@@ -89,12 +93,13 @@ if actual_unit ~= estimate_unit then
 end
 
 --expiration verify logic--
-local current_expires_at = redis.call('HGET', reservation_key, 'expires_at')
+-- Use expires_at and grace_ms already fetched in the initial HMGET
+local current_expires_at = rdata[8]
 if not current_expires_at then
     return cjson.encode({error = "RESERVATION_EXPIRATION_NOT_FOUND"})
 end
 current_expires_at = tonumber(current_expires_at)
-local grace_ms = tonumber(redis.call('HGET', reservation_key, 'grace_ms') or 0)
+local grace_ms = tonumber(rdata[9] or 0)
 
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)

@@ -5,6 +5,7 @@ import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import redis.clients.jedis.Response;
 
 import java.util.*;
 
@@ -132,7 +133,10 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
                     .decision(Enums.DecisionEnum.ALLOW)
                     .affectedScopes(defaultScopes())
                     .build();
-            when(jedis.get("idem:acme:decide:cached-key")).thenReturn(objectMapper.writeValueAsString(cached));
+            // Mock pipeline.get() for idempotency check (pipelined in decide)
+            Response<String> cachedResp = mock(Response.class);
+            when(cachedResp.get()).thenReturn(objectMapper.writeValueAsString(cached));
+            when(pipeline.get("idem:acme:decide:cached-key")).thenReturn(cachedResp);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("cached-key");
@@ -237,8 +241,13 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             doNothing().when(jedis).close();
 
             String cachedJson = "{\"decision\":\"ALLOW\",\"affected_scopes\":[\"tenant:acme\"]}";
-            when(jedis.get("idem:acme:decide:decide-mismatch")).thenReturn(cachedJson);
-            when(jedis.get("idem:acme:decide:decide-mismatch:hash")).thenReturn("different-hash-value");
+            // Mock pipeline.get() for idempotency check (pipelined in decide)
+            Response<String> cachedResp = mock(Response.class);
+            when(cachedResp.get()).thenReturn(cachedJson);
+            when(pipeline.get("idem:acme:decide:decide-mismatch")).thenReturn(cachedResp);
+            Response<String> hashResp = mock(Response.class);
+            when(hashResp.get()).thenReturn("different-hash-value");
+            when(pipeline.get("idem:acme:decide:decide-mismatch:hash")).thenReturn(hashResp);
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-mismatch");
@@ -290,8 +299,8 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             repository.decide(request, "acme");
 
-            // Verify idempotency key was stored
-            verify(jedis).psetex(eq("idem:acme:decide:decide-store"), eq(86400000L), anyString());
+            // Verify idempotency key was stored (pipelined write)
+            verify(pipeline).psetex(eq("idem:acme:decide:decide-store"), eq(86400000L), anyString());
         }
     }
 

@@ -56,6 +56,10 @@ abstract class BaseRedisReservationRepositoryTest {
         Response<List<String>> defaultHmgetResp = mock(Response.class);
         lenient().when(defaultHmgetResp.get()).thenReturn(Collections.singletonList(null));
         lenient().when(pipeline.hmget(anyString(), any(String[].class))).thenReturn(defaultHmgetResp);
+        // Default pipeline.get() returns null (no cached idempotency key)
+        Response<String> defaultGetResp = mock(Response.class);
+        lenient().when(defaultGetResp.get()).thenReturn(null);
+        lenient().when(pipeline.get(anyString())).thenReturn(defaultGetResp);
     }
 
     /** Mock a budget key so it is visible via both jedis.hgetAll and pipeline.hgetAll */

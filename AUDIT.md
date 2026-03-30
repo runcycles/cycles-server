@@ -26,7 +26,7 @@
 | Grace Period Handling | — | 0 |
 | Test Coverage | — | 0 |
 | Tenant Default Config | — | 0 |
-| Performance Optimizations | 7/7 | 0 |
+| Performance Optimizations | 13/13 | 0 |
 | Production Hardening | 3/3 | 0 |
 
 **All previously identified issues have been fixed. No remaining spec violations found. Performance optimized, hardened, and benchmarked.**
@@ -196,86 +196,32 @@ Two-pass audit covering:
 
 ### Performance Optimizations (all applied)
 
-Seven optimizations applied to the reserve/commit/release hot path, preserving all protocol correctness guarantees (atomicity, idempotency, ledger invariant `remaining = allocated - spent - reserved - debt`).
+Thirteen optimizations applied to the reserve/commit/release hot path, preserving all protocol correctness guarantees (atomicity, idempotency, ledger invariant `remaining = allocated - spent - reserved - debt`).
 
 | # | Optimization | Impact | Location |
 |---|-------------|--------|----------|
-| 1 | **BCrypt API key cache** — ConcurrentHashMap keyed by SHA-256(key), 60s TTL | Eliminates ~100ms+ BCrypt per request on cache hit | `ApiKeyRepository.java` |
+| 1 | **BCrypt API key cache** — Caffeine cache keyed by SHA-256(key), 60s TTL, max 5000 entries | Eliminates ~100ms+ BCrypt per request on cache hit | `ApiKeyRepository.java` |
 | 2 | **EVALSHA** — Script SHA loaded at startup, 40-char hash sent instead of full script | Saves ~1-5KB network per call; auto-fallback to EVAL on NOSCRIPT | `LuaScriptRegistry.java` (new), all `eval()` callers |
 | 3 | **Pipelined balance fetch** — N HGETALL calls batched into single round-trip | Saves (N-1) round-trips for fallback paths (extend, events, idempotency hits) | `RedisReservationRepository.fetchBalancesForScopes()` |
 | 4 | **Lua returns balances** — Balance snapshots collected atomically at end of reserve/commit/release scripts | Eliminates post-operation Java balance fetch entirely for primary paths | `reserve.lua`, `commit.lua`, `release.lua` |
-| 5 | **Lua HMGET** — Single HMGET per scope instead of EXISTS + 4 HGET; cached fail-fast values in ALLOW_WITH_OVERDRAFT; TIME reuse | Fewer Redis commands inside Lua scripts | `reserve.lua`, `commit.lua`, `release.lua` |
-| 6 | **Tenant config cache** — ConcurrentHashMap with configurable TTL (default 60s, `cycles.tenant-config.cache-ttl-ms`) | Saves 1 Redis GET per reserve/event | `RedisReservationRepository.getTenantConfig()` |
-| 7 | **Minor** — Static AntPathMatcher, ThreadLocal MessageDigest, debug-level hot-path logs | Reduces per-request allocations and log volume | Various |
+| 5 | **Lua HMGET consolidation** — Replaced scattered HGET calls with batched HMGET in all scripts; eliminated redundant EXISTS + HGET patterns; reused TIME call results | Fewer Redis commands inside Lua scripts | `expire.lua`, `extend.lua`, `commit.lua`, `event.lua` |
+| 6 | **Tenant config cache** — Caffeine cache with configurable TTL (default 60s, `cycles.tenant-config.cache-ttl-ms`), max 1000 entries | Saves 1 Redis GET per reserve/event | `RedisReservationRepository.getTenantConfig()` |
+| 7 | **ThreadLocal MessageDigest** — SHA-256 instance reused per thread in both ApiKeyRepository and RedisReservationRepository | Reduces per-request allocations | `ApiKeyRepository.java`, `RedisReservationRepository.java` |
+| 8 | **Pipelined idempotency checks** — Idempotency key + hash fetched/stored via Redis Pipeline (2 ops in 1 round-trip) | Saves 1 round-trip per dry_run/decide request | `RedisReservationRepository.evaluateDryRun()`, `decide()` |
+| 9 | **Caffeine caches** — Replaced manual ConcurrentHashMap + lazy eviction with Caffeine (automatic TTL expiry, LRU eviction, bounded size) | Eliminates O(n) on-request-path eviction; prevents memory leaks | `ApiKeyRepository.java`, `RedisReservationRepository.java` |
+| 10 | **Connection pool tuning** — MaxTotal=128, MaxIdle=32, MinIdle=16, testOnBorrow, testWhileIdle, idle eviction; all configurable via properties | Prevents pool exhaustion under load; validates connections | `RedisConfig.java` |
+| 11 | **expire.lua double TIME elimination** — Reuses `now` from initial TIME call instead of calling TIME twice | 1 fewer Redis command per expiry | `expire.lua` |
+| 12 | **event.lua scope budget caching** — Budget fields cached during validation phase and reused in capping/mutation phases | Eliminates redundant HGET/HMGET calls per scope across 3 phases | `event.lua` |
+| 13 | **Lua script loading** — Replaced O(n²) string concatenation with readAllBytes | Faster startup (startup-only) | `RedisConfig.java` |
 
-**Thread safety**: All caches use `ConcurrentHashMap` with immutable record values. No locking required.
+**Thread safety**: All caches use Caffeine (thread-safe by design). ThreadLocal MessageDigest avoids contention.
 **Backward compatibility**: Old reservations without `budgeted_scopes` field handled via `budgeted_scopes_json or affected_scopes_json` fallback in all Lua scripts.
 
 ### Performance Benchmarks
 
-End-to-end HTTP latency measured with `CyclesProtocolBenchmarkTest` (Spring Boot + Jedis + Redis 7 via Testcontainers). 200 measured iterations after 50 warmup iterations per operation.
+See [BENCHMARKS.md](BENCHMARKS.md) for full benchmark history across versions.
 
-#### Single-Threaded Write-Path Latency
-
-| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
-|---------------------|--------|--------|--------|--------|--------|--------|
-| Reserve             |  5.1ms |  6.1ms |  6.8ms |  4.1ms | 12.9ms |  5.1ms |
-| Commit              |  4.3ms |  5.5ms | 12.1ms |  2.8ms | 24.1ms |  4.5ms |
-| Release             |  4.4ms |  5.3ms |  5.8ms |  3.2ms |  6.2ms |  4.5ms |
-| Extend              |  7.4ms |  9.1ms | 10.7ms |  5.9ms | 17.7ms |  7.6ms |
-| Decide              |  5.4ms |  6.2ms |  6.7ms |  4.2ms |  6.9ms |  5.5ms |
-| Event               |  4.6ms |  5.7ms |  6.4ms |  3.4ms |  8.3ms |  4.7ms |
-| Reserve + Commit    | 12.9ms | 15.6ms | 17.9ms | 10.2ms | 21.8ms | 13.2ms |
-| Reserve + Release   | 10.4ms | 12.1ms | 13.9ms |  9.0ms | 20.3ms | 10.6ms |
-
-#### Single-Threaded Read-Path Latency (Phase 3 — pipelined)
-
-| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
-|---------------------|--------|--------|--------|--------|--------|--------|
-| GET reservation     |  2.5ms |  3.3ms |  3.7ms |  1.5ms |  9.2ms |  2.5ms |
-| GET balances        |  2.8ms |  4.0ms |  4.6ms |  1.6ms |  4.8ms |  2.8ms |
-| LIST reservations   |  3.2ms |  4.2ms |  4.6ms |  2.0ms |  5.3ms |  3.2ms |
-| Decide (pipelined)  |  4.6ms |  5.8ms |  6.5ms |  2.7ms |  7.7ms |  4.7ms |
-
-#### Concurrent Throughput (Reserve→Commit lifecycle)
-
-| Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    |  min   |  max    | Errors |
-|---------|-----------|----------|---------|---------|---------|--------|---------|--------|
-|       8 |     3,993 |    798.6 |   9.8ms |  11.9ms |  16.9ms |  6.7ms |  30.9ms |      0 |
-|      16 |     5,737 |  1,147.4 |  13.9ms |  19.1ms |  22.6ms |  6.8ms |  32.1ms |      0 |
-|      32 |    12,775 |  2,555.0 |  11.7ms |  18.9ms |  27.9ms |  6.8ms |  51.0ms |      0 |
-
-#### Analysis
-
-**Phase 3 optimization impact (read-path pipelining, response compression, terminal hash TTLs):**
-
-| Operation | Phase 2 (p50) | Phase 3 (p50) | v0.1.24 (p50) | Phase 2 (p99) | v0.1.24 (p99) | Change (Phase 2→v0.1.24) |
-|-----------|--------------|--------------|---------------|--------------|---------------|--------------------------|
-| Reserve   |  6.1ms       |  5.6ms       |  5.1ms        |  8.5ms       |  6.8ms        | **p50 -16%, p99 -20%** |
-| Commit    |  5.0ms       |  4.5ms       |  4.3ms        |  7.1ms       | 12.1ms        | p50 -14%, p99 tail spike |
-| Release   |  5.2ms       |  4.8ms       |  4.4ms        |  6.5ms       |  5.8ms        | **p50 -15%, p99 -11%** |
-| Extend    |  7.6ms       |  7.3ms       |  7.4ms        | 12.0ms       | 10.7ms        | p50 -3%, **p99 -11%** |
-| Decide    |  6.9ms       |  5.8ms       |  5.4ms        | 10.4ms       |  6.7ms        | **p50 -22%, p99 -36%** |
-| Event     |  5.1ms       |  4.9ms       |  4.6ms        |  7.2ms       |  6.4ms        | **p50 -10%, p99 -11%** |
-
-- **Decide** benefited most from pipelining: p50 dropped from 6.9ms to 5.8ms (16%) and p99 from 10.4ms to 7.4ms (29%). The sequential N+1 budget lookups + caps fetch were consolidated into a single pipeline round-trip.
-- **Reserve** p99 improved 22% (8.5ms → 6.6ms) — the tighter max (6.9ms vs 13.7ms) suggests reduced variance from fewer round-trips.
-- **Commit** p99 shows a tail spike (15.8ms) despite improved p50. This is likely the PEXPIRE addition on terminal hashes — an extra Redis command in the Lua script that occasionally hits GC pauses. The p50 improvement (5.0ms → 4.5ms) confirms the median case is faster.
-- **Read paths** are the fastest operations: GET single reservation at 3.2ms p50, GET balances at 3.2ms p50. These benefit from no Lua script overhead — just direct Redis hash reads (pipelined for multi-scope queries).
-
-**Concurrent scaling observations:**
-- Near-linear throughput scaling from 8→32 threads (799 → 2,555 ops/s, 3.2x at 4x threads)
-- Zero errors at all concurrency levels — Redis connection pool (max 50) is not a bottleneck
-- p50 latency at 32 threads (11.7ms) is lower than at 16 threads (13.9ms), suggesting connection pool warm-up effects
-- p99 tail grows with concurrency (16.9ms → 27.9ms) due to Redis Lua script serialization and connection pool contention
-- Max latency at 32 threads (51.0ms) indicates occasional GC pauses or connection pool waits
-
-**Notes:**
-- Results are from a containerized CI environment (Testcontainers Redis 7-Alpine, localhost networking). Production with dedicated Redis will be faster.
-- Latencies include full HTTP round-trip: Spring Boot request handling, auth filter, JSON serialization, Redis EVALSHA, Lua execution, response building.
-- The BCrypt cache eliminates ~100ms+ from all operations after the first request per API key (60s cache window).
-- Run benchmarks: `mvn test -Pbenchmark` (requires Docker)
-- Benchmarks are excluded from default `mvn verify` builds via `<excludedGroups>benchmark</excludedGroups>` in surefire config
+Run benchmarks: `mvn test -Pbenchmark` (requires Docker). Excluded from default `mvn verify` builds via `<excludedGroups>benchmark</excludedGroups>` in surefire config.
 
 ### Read-Path Pipelines & Operational Fixes (Phase 3)
 

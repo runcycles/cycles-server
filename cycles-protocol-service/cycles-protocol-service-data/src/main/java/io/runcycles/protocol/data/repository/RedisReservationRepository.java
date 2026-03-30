@@ -150,11 +150,16 @@ public class RedisReservationRepository {
         String payloadHash = computePayloadHash(request);
         if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
             String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
-            String cached = jedis.get(idemKey);
+            // Pipeline both GETs in a single round-trip
+            Pipeline idemPipe = jedis.pipelined();
+            Response<String> cachedResp = idemPipe.get(idemKey);
+            Response<String> hashResp = idemPipe.get(idemKey + ":hash");
+            idemPipe.sync();
+            String cached = cachedResp.get();
             if (cached != null) {
                 // Spec MUST: detect payload mismatch on idempotent replay
                 if (!payloadHash.isEmpty()) {
-                    String storedHash = jedis.get(idemKey + ":hash");
+                    String storedHash = hashResp.get();
                     if (storedHash != null && !storedHash.equals(payloadHash)) {
                         throw CyclesProtocolException.idempotencyMismatch();
                     }
@@ -273,13 +278,15 @@ public class RedisReservationRepository {
             .balances(balances)
             .build();
 
-        // Cache dry_run result (24 h TTL)
+        // Cache dry_run result (24 h TTL) - pipeline both writes
         if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
             String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
-            jedis.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(dryRunResponse));
+            Pipeline idemWritePipe = jedis.pipelined();
+            idemWritePipe.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(dryRunResponse));
             if (!payloadHash.isEmpty()) {
-                jedis.psetex(idemKey + ":hash", 86400000L, payloadHash);
+                idemWritePipe.psetex(idemKey + ":hash", 86400000L, payloadHash);
             }
+            idemWritePipe.sync();
         }
 
         return dryRunResponse;
@@ -631,11 +638,16 @@ public class RedisReservationRepository {
             String payloadHash = computePayloadHash(request);
             if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
                 String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
-                String cached = jedis.get(idemKey);
+                // Pipeline both GETs in a single round-trip
+                Pipeline idemPipe = jedis.pipelined();
+                Response<String> cachedResp = idemPipe.get(idemKey);
+                Response<String> hashResp = idemPipe.get(idemKey + ":hash");
+                idemPipe.sync();
+                String cached = cachedResp.get();
                 if (cached != null) {
                     // Spec MUST: detect payload mismatch on idempotent replay
                     if (!payloadHash.isEmpty()) {
-                        String storedHash = jedis.get(idemKey + ":hash");
+                        String storedHash = hashResp.get();
                         if (storedHash != null && !storedHash.equals(payloadHash)) {
                             throw CyclesProtocolException.idempotencyMismatch();
                         }
@@ -737,13 +749,15 @@ public class RedisReservationRepository {
                 }
             }
 
-            // Store idempotency result (24 h TTL)
+            // Store idempotency result (24 h TTL) - pipeline both writes
             if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
                 String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
-                jedis.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(response));
+                Pipeline idemWritePipe = jedis.pipelined();
+                idemWritePipe.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(response));
                 if (!payloadHash.isEmpty()) {
-                    jedis.psetex(idemKey + ":hash", 86400000L, payloadHash);
+                    idemWritePipe.psetex(idemKey + ":hash", 86400000L, payloadHash);
                 }
+                idemWritePipe.sync();
             }
 
             return response;
@@ -1026,19 +1040,35 @@ public class RedisReservationRepository {
     }
 
     /**
-     * Fetches tenant configuration from Redis with 60-second in-memory cache.
+     * Fetches tenant configuration from Redis with in-memory cache.
      * Returns null if tenant record is not found (caller uses hardcoded defaults).
      */
-    private record CachedTenantConfig(Map<String, Object> config, long expiresAtMs) {}
-    private final java.util.concurrent.ConcurrentHashMap<String, CachedTenantConfig> tenantConfigCache = new java.util.concurrent.ConcurrentHashMap<>();
     @Value("${cycles.tenant-config.cache-ttl-ms:60000}")
     private long tenantConfigCacheTtlMs;
 
+    private volatile com.github.benmanes.caffeine.cache.Cache<String, Optional<Map<String, Object>>> tenantConfigCache;
+
+    private com.github.benmanes.caffeine.cache.Cache<String, Optional<Map<String, Object>>> getTenantConfigCache() {
+        if (tenantConfigCache == null) {
+            synchronized (this) {
+                if (tenantConfigCache == null) {
+                    var builder = com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                            .maximumSize(1_000);
+                    if (tenantConfigCacheTtlMs > 0) {
+                        builder.expireAfterWrite(java.time.Duration.ofMillis(tenantConfigCacheTtlMs));
+                    }
+                    tenantConfigCache = builder.build();
+                }
+            }
+        }
+        return tenantConfigCache;
+    }
+
     private Map<String, Object> getTenantConfig(Jedis jedis, String tenant) {
         if (tenantConfigCacheTtlMs > 0) {
-            CachedTenantConfig cached = tenantConfigCache.get(tenant);
-            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs()) {
-                return cached.config();
+            Optional<Map<String, Object>> cached = getTenantConfigCache().getIfPresent(tenant);
+            if (cached != null) {
+                return cached.orElse(null);
             }
         }
         try {
@@ -1048,7 +1078,7 @@ public class RedisReservationRepository {
                 config = objectMapper.readValue(tenantJson, Map.class);
             }
             if (tenantConfigCacheTtlMs > 0) {
-                tenantConfigCache.put(tenant, new CachedTenantConfig(config, System.currentTimeMillis() + tenantConfigCacheTtlMs));
+                getTenantConfigCache().put(tenant, Optional.ofNullable(config));
             }
             return config;
         } catch (Exception e) {

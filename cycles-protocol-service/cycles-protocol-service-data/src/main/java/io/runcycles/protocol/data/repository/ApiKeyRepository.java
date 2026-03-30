@@ -14,33 +14,46 @@ import redis.clients.jedis.JedisPool;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 @Repository
 public class ApiKeyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyRepository.class);
     private static final long CACHE_TTL_MS = 60_000L; // 60 seconds
+    private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    });
 
     @Autowired
     private JedisPool jedisPool;
     @Autowired
     private ObjectMapper objectMapper;
 
-    private record CachedValidation(ApiKeyValidationResponse response, long expiresAtMs) {}
-    private final ConcurrentHashMap<String, CachedValidation> validationCache = new ConcurrentHashMap<>();
+    private final Cache<String, ApiKeyValidationResponse> validationCache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMillis(CACHE_TTL_MS))
+            .maximumSize(5_000)
+            .build();
 
     public ApiKeyValidationResponse validate(String keySecret) {
         // Check in-memory cache to avoid BCrypt on every request
         String cacheKey = hashKeyForCache(keySecret);
         if (cacheKey != null) {
-            CachedValidation cached = validationCache.get(cacheKey);
-            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs()) {
+            ApiKeyValidationResponse cached = validationCache.getIfPresent(cacheKey);
+            if (cached != null) {
                 LOG.debug("API key cache hit");
-                return cached.response();
+                return cached;
             }
         }
 
@@ -48,11 +61,7 @@ public class ApiKeyRepository {
 
         // Cache the result (both valid and invalid responses)
         if (cacheKey != null) {
-            validationCache.put(cacheKey, new CachedValidation(result, System.currentTimeMillis() + CACHE_TTL_MS));
-            // Lazy eviction: remove expired entries if cache grows large
-            if (validationCache.size() > 10_000) {
-                evictExpiredEntries();
-            }
+            validationCache.put(cacheKey, result);
         }
 
         return result;
@@ -123,7 +132,8 @@ public class ApiKeyRepository {
 
     private String hashKeyForCache(String keySecret) {
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            MessageDigest digest = SHA256_DIGEST.get();
+            digest.reset();
             byte[] hash = digest.digest(keySecret.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
@@ -131,8 +141,4 @@ public class ApiKeyRepository {
         }
     }
 
-    private void evictExpiredEntries() {
-        long now = System.currentTimeMillis();
-        validationCache.entrySet().removeIf(e -> now >= e.getValue().expiresAtMs());
-    }
 }
