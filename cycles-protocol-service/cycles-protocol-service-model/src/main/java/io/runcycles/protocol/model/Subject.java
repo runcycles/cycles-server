@@ -14,12 +14,12 @@ import java.util.Map;
 @Data @NoArgsConstructor @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class Subject {
-    @Size(max = 128) @JsonProperty("tenant") private String tenant;
-    @Size(max = 128) @JsonProperty("workspace") private String workspace;
-    @Size(max = 128) @JsonProperty("app") private String app;
-    @Size(max = 128) @JsonProperty("workflow") private String workflow;
-    @Size(max = 128) @JsonProperty("agent") private String agent;
-    @Size(max = 128) @JsonProperty("toolset") private String toolset;
+    @Size(max = 128) @Pattern(regexp = "^[a-zA-Z0-9_.\\-]+$", message = "must contain only alphanumeric, dot, underscore, or hyphen characters") @JsonProperty("tenant") private String tenant;
+    @Size(max = 128) @Pattern(regexp = "^[a-zA-Z0-9_.\\-]+$", message = "must contain only alphanumeric, dot, underscore, or hyphen characters") @JsonProperty("workspace") private String workspace;
+    @Size(max = 128) @Pattern(regexp = "^[a-zA-Z0-9_.\\-]+$", message = "must contain only alphanumeric, dot, underscore, or hyphen characters") @JsonProperty("app") private String app;
+    @Size(max = 128) @Pattern(regexp = "^[a-zA-Z0-9_.\\-]+$", message = "must contain only alphanumeric, dot, underscore, or hyphen characters") @JsonProperty("workflow") private String workflow;
+    @Size(max = 128) @Pattern(regexp = "^[a-zA-Z0-9_.\\-]+$", message = "must contain only alphanumeric, dot, underscore, or hyphen characters") @JsonProperty("agent") private String agent;
+    @Size(max = 128) @Pattern(regexp = "^[a-zA-Z0-9_.\\-]+$", message = "must contain only alphanumeric, dot, underscore, or hyphen characters") @JsonProperty("toolset") private String toolset;
     @Size(max = 16) @JsonProperty("dimensions") private Map<String, @Size(max = 256) String> dimensions;
 
     /**

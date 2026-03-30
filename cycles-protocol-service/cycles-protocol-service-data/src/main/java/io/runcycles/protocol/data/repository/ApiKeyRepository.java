@@ -113,6 +113,7 @@ public class ApiKeyRepository {
                     .expiresAt(key.getExpiresAt())
                     .build();
         } catch (Exception e) {
+            LOG.error("API key validation failed", e);
             return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
         }
     }
@@ -121,6 +122,7 @@ public class ApiKeyRepository {
         try {
             return BCrypt.checkpw(keySecret, hash);
         } catch (Exception e) {
+            LOG.warn("BCrypt verification failed", e);
             return false;
         }
     }
