@@ -153,6 +153,27 @@ Integration tests (`*IntegrationTest.java`) use [Testcontainers](https://www.tes
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | *(empty)* | Redis password |
 | `cycles.expiry.interval-ms` | `5000` | Background expiry sweep interval (ms) |
+| `JAVA_OPTS` | *(empty)* | JVM options (e.g. `-XX:MaxRAMPercentage=75 -XX:+UseG1GC`) |
+| `LOGGING_STRUCTURED_FORMAT_CONSOLE` | *(unset)* | Set to `ecs` or `logstash` for JSON logging in production |
+| `redis.pool.max-total` | `128` | Max Redis connections |
+| `redis.pool.max-idle` | `32` | Max idle Redis connections |
+| `redis.pool.min-idle` | `16` | Min idle Redis connections |
+
+## Monitoring
+
+### Health Check
+
+```
+GET /actuator/health
+```
+
+### Prometheus Metrics
+
+```
+GET /actuator/prometheus
+```
+
+Exposes JVM, HTTP, and Spring Boot metrics in Prometheus format. Both endpoints are unauthenticated. Configure your Prometheus scrape target to `http://<host>:7878/actuator/prometheus`.
 
 ## Documentation
 

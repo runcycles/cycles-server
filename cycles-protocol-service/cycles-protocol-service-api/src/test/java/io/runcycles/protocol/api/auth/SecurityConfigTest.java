@@ -19,7 +19,8 @@ class SecurityConfigTest {
                 "/webjars/**",
                 "/favicon.ico",
                 "/.well-known/**",
-                "/actuator/health"
+                "/actuator/health",
+                "/actuator/prometheus"
         );
     }
 

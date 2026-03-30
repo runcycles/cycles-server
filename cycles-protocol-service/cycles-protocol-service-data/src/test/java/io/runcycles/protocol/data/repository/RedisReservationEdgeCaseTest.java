@@ -5,6 +5,7 @@ import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import redis.clients.jedis.Response;
 
 import java.util.*;
 
@@ -136,9 +137,14 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
                 .affectedScopes(defaultScopes())
                 .scopePath("tenant:acme/app:myapp")
                 .build();
-            when(jedis.get("idem:acme:dry_run:dry-no-hash")).thenReturn(objectMapper.writeValueAsString(cached));
+            // Mock pipeline.get() for idempotency check (pipelined in evaluateDryRun)
+            Response<String> cachedResp = mock(Response.class);
+            when(cachedResp.get()).thenReturn(objectMapper.writeValueAsString(cached));
+            when(pipeline.get("idem:acme:dry_run:dry-no-hash")).thenReturn(cachedResp);
             // storedHash is null — no hash was stored
-            when(jedis.get("idem:acme:dry_run:dry-no-hash:hash")).thenReturn(null);
+            Response<String> hashResp = mock(Response.class);
+            when(hashResp.get()).thenReturn(null);
+            when(pipeline.get("idem:acme:dry_run:dry-no-hash:hash")).thenReturn(hashResp);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-no-hash");
@@ -626,6 +632,92 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
 
             assertThat(response.getReleased().getAmount()).isZero();
             assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);
+        }
+    }
+
+    // ---- getTenantConfig Caffeine cache ----
+
+    @Nested
+    @DisplayName("getTenantConfig Caffeine cache")
+    class TenantConfigCaffeineCache {
+
+        @Test
+        void shouldCacheAndReplayTenantConfig() throws Exception {
+            // Enable cache by setting TTL > 0
+            setField("tenantConfigCacheTtlMs", 60000L);
+            // Reset the volatile cache field to force re-initialization
+            setField("tenantConfigCache", null);
+
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn("{\"default_commit_overage_policy\":\"REJECT\"}");
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-cache1");
+            luaMap.put("expires_at", 9999999L);
+            luaMap.put("balances", List.of());
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            // First call: fetches from Redis and caches
+            repository.createReservation(request, "acme");
+
+            // Second call: should use cached value, not hit Redis again
+            luaMap.put("reservation_id", "res-cache2");
+            String luaResponse2 = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse2);
+            repository.createReservation(request, "acme");
+
+            // tenant:acme should only be fetched once from Redis (cached on second call)
+            verify(jedis, times(1)).get("tenant:acme");
+
+            // Reset TTL to 0 for other tests
+            setField("tenantConfigCacheTtlMs", 0L);
+            setField("tenantConfigCache", null);
+        }
+
+        @Test
+        void shouldCacheNullTenantConfig() throws Exception {
+            // Enable cache by setting TTL > 0
+            setField("tenantConfigCacheTtlMs", 60000L);
+            setField("tenantConfigCache", null);
+
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(null); // tenant not found
+
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-nullcfg1");
+            luaMap.put("expires_at", 9999999L);
+            luaMap.put("balances", List.of());
+            String luaResponse = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            // First call: fetches null from Redis and caches it
+            repository.createReservation(request, "acme");
+
+            // Second call: should use cached null, not hit Redis again
+            luaMap.put("reservation_id", "res-nullcfg2");
+            String luaResponse2 = objectMapper.writeValueAsString(luaMap);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse2);
+            repository.createReservation(request, "acme");
+
+            verify(jedis, times(1)).get("tenant:acme");
+
+            setField("tenantConfigCacheTtlMs", 0L);
+            setField("tenantConfigCache", null);
         }
     }
 

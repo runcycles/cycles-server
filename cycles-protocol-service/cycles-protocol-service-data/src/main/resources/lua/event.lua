@@ -78,15 +78,26 @@ end
 -- Spec: debt/is_over_limit checks only block *reservations*, not events.
 -- Events use their overage_policy to handle insufficient budget.
 local budgeted_scopes = {}
+local scope_budget_cache = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
 
+    -- Fetch all needed fields in one round-trip
+    local bvals = redis.call('HMGET', budget_key, 'status', 'unit', 'remaining', 'overdraft_limit', 'debt')
+
+    -- Check if key exists: at least one field must be non-false
+    -- (budget keys may lack an explicit 'status' field, defaulting to ACTIVE)
+    local key_exists = false
+    for _, v in ipairs(bvals) do
+        if v then key_exists = true; break end
+    end
+
     -- Skip scopes without a budget (operator may only define budgets at certain levels)
-    if redis.call('EXISTS', budget_key) == 1 then
+    if key_exists then
+        local budget_status = bvals[1] or 'ACTIVE'
         table.insert(budgeted_scopes, scope)
 
         -- Check budget status (consistent with admin FUND_LUA)
-        local budget_status = redis.call('HGET', budget_key, 'status') or 'ACTIVE'
         if budget_status == 'FROZEN' then
             return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
         end
@@ -95,13 +106,18 @@ for _, scope in ipairs(affected_scopes) do
         end
 
         -- Spec NORMATIVE: event actual.unit must be supported for the target scope
-        local budget_unit = redis.call('HGET', budget_key, 'unit')
+        local budget_unit = bvals[2]
         if budget_unit and budget_unit ~= unit then
             return cjson.encode({error = "UNIT_MISMATCH", scope = scope,
                 expected = budget_unit, actual = unit})
         end
 
-        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+        local remaining = tonumber(bvals[3] or 0)
+        local overdraft_limit = tonumber(bvals[4] or 0)
+        local current_debt = tonumber(bvals[5] or 0)
+        -- Cache for reuse in capping/mutation phases
+        scope_budget_cache[scope] = {remaining = remaining, overdraft_limit = overdraft_limit, debt = current_debt}
+
         if remaining < amount then
             if overage_policy == "REJECT" then
                 return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
@@ -126,11 +142,11 @@ local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
 
 if overage_policy == "ALLOW_IF_AVAILABLE" then
     -- Cap to minimum available remaining across all scopes (floor 0)
+    -- Uses cached values from validation phase
     local capped = amount
     for _, scope in ipairs(budgeted_scopes) do
-        local budget_key = "budget:" .. scope .. ":" .. unit
-        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-        capped = math.min(capped, math.max(remaining, 0))
+        local cached = scope_budget_cache[scope]
+        capped = math.min(capped, math.max(cached.remaining, 0))
     end
     effective_amount = capped
     -- Mark over-limit if we couldn't cover the full amount
@@ -143,35 +159,31 @@ if overage_policy == "ALLOW_IF_AVAILABLE" then
 elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
     -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
     -- Phase 1: cap effective_amount from zero-limit scopes (floor 0).
+    -- Uses cached values from validation phase
     for _, scope in ipairs(budgeted_scopes) do
-        local budget_key = "budget:" .. scope .. ":" .. unit
-        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-        local ol = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-        if ol == 0 and remaining < effective_amount then
-            effective_amount = math.min(effective_amount, math.max(remaining, 0))
+        local cached = scope_budget_cache[scope]
+        if cached.overdraft_limit == 0 and cached.remaining < effective_amount then
+            effective_amount = math.min(effective_amount, math.max(cached.remaining, 0))
         end
     end
     -- Phase 2: check non-zero scopes against effective_amount (fail fast)
+    -- Uses cached values from validation phase
     for _, scope in ipairs(budgeted_scopes) do
-        local budget_key = "budget:" .. scope .. ":" .. unit
-        local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
-        local ol = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-        if ol > 0 and remaining < effective_amount then
-            local funded = math.max(remaining, 0)
+        local cached = scope_budget_cache[scope]
+        if cached.overdraft_limit > 0 and cached.remaining < effective_amount then
+            local funded = math.max(cached.remaining, 0)
             local deficit = effective_amount - funded
-            local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-            if current_debt + deficit > ol then
+            if cached.debt + deficit > cached.overdraft_limit then
                 return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
-                    current_debt = current_debt, deficit = deficit, overdraft_limit = ol})
+                    current_debt = cached.debt, deficit = deficit, overdraft_limit = cached.overdraft_limit})
             end
         end
     end
     -- Mark over-limit on zero-limit scopes if full amount couldn't be covered
     if effective_amount < amount then
         for _, scope in ipairs(budgeted_scopes) do
-            local budget_key = "budget:" .. scope .. ":" .. unit
-            local ol = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
-            if ol == 0 then
+            if scope_budget_cache[scope].overdraft_limit == 0 then
+                local budget_key = "budget:" .. scope .. ":" .. unit
                 redis.call('HSET', budget_key, 'is_over_limit', 'true')
             end
         end
@@ -180,22 +192,20 @@ end
 
 for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
-    local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+    local cached = scope_budget_cache[scope]
 
-    if overage_policy == "ALLOW_WITH_OVERDRAFT" and remaining < effective_amount then
+    if overage_policy == "ALLOW_WITH_OVERDRAFT" and cached.remaining < effective_amount then
         -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
         -- spent tracks only the funded portion; debt tracks the unfunded portion.
         -- When remaining is already negative (prior overdraft), the funded portion is 0,
         -- not negative — otherwise spent would decrease and debt would over-count.
-        local funded = math.max(remaining, 0)
+        local funded = math.max(cached.remaining, 0)
         local deficit = effective_amount - funded
-        local current_debt = tonumber(redis.call('HGET', budget_key, 'debt') or 0)
-        local overdraft_limit = tonumber(redis.call('HGET', budget_key, 'overdraft_limit') or 0)
         redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
         redis.call('HINCRBY', budget_key, 'spent', funded)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
-        local new_debt = current_debt + deficit
-        if overdraft_limit > 0 and new_debt > overdraft_limit then
+        local new_debt = cached.debt + deficit
+        if cached.overdraft_limit > 0 and new_debt > cached.overdraft_limit then
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
         end
     else

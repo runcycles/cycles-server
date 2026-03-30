@@ -26,18 +26,21 @@ end
 
 local reservation_key = "reservation:res_" .. reservation_id
 
-if redis.call('EXISTS', reservation_key) == 0 then
+-- Fetch all validation fields in one round-trip (also serves as existence check)
+local vals = redis.call('HMGET', reservation_key, 'state', 'expires_at', 'extension_count', 'max_extensions')
+local state = vals[1]
+
+if not state then
     return cjson.encode({error = "NOT_FOUND"})
 end
 
-local state = redis.call('HGET', reservation_key, 'state')
 if state == "EXPIRED" then
     return cjson.encode({error = "RESERVATION_EXPIRED", state = state})
 elseif state ~= "ACTIVE" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = state})
 end
 
-local current_expires_at = tonumber(redis.call('HGET', reservation_key, 'expires_at'))
+local current_expires_at = tonumber(vals[2])
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 
@@ -47,8 +50,8 @@ if now > current_expires_at then
 end
 
 -- Enforce max_reservation_extensions from tenant config
-local extension_count = tonumber(redis.call('HGET', reservation_key, 'extension_count') or 0)
-local max_extensions = tonumber(redis.call('HGET', reservation_key, 'max_extensions') or 10)
+local extension_count = tonumber(vals[3] or 0)
+local max_extensions = tonumber(vals[4] or 10)
 if extension_count >= max_extensions then
     return cjson.encode({error = "MAX_EXTENSIONS_EXCEEDED", message = "Maximum reservation extensions (" .. max_extensions .. ") reached"})
 end
@@ -60,9 +63,11 @@ redis.call('HINCRBY', reservation_key, 'extension_count', 1)
 redis.call('ZADD', 'reservation:ttl', new_expires_at, reservation_id)
 
 -- Collect balance snapshots (avoids post-operation Java round-trips)
-local affected_scopes_json = redis.call('HGET', reservation_key, 'affected_scopes')
-local budgeted_scopes_json = redis.call('HGET', reservation_key, 'budgeted_scopes')
-local estimate_unit = redis.call('HGET', reservation_key, 'estimate_unit')
+-- Fetch scope and unit data in one round-trip
+local scope_vals = redis.call('HMGET', reservation_key, 'affected_scopes', 'budgeted_scopes', 'estimate_unit')
+local affected_scopes_json = scope_vals[1]
+local budgeted_scopes_json = scope_vals[2]
+local estimate_unit = scope_vals[3]
 
 local scope_list_json = budgeted_scopes_json or affected_scopes_json
 local balances = {}

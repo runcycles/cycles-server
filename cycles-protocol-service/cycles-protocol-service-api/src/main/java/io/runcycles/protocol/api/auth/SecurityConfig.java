@@ -18,7 +18,8 @@ public class SecurityConfig {
             "/webjars/**",
             "/favicon.ico",
             "/.well-known/**",
-            "/actuator/health"  // Add health check too
+            "/actuator/health",
+            "/actuator/prometheus"
     };
     @Bean
     SecurityFilterChain securityFilterChain(

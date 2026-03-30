@@ -11,7 +11,10 @@ local t_now = redis.call('TIME')
 local now   = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
 
 local key   = "reservation:res_" .. reservation_id
-local state = redis.call('HGET', key, 'state')
+
+-- Fetch state, expires_at, grace_ms in one round-trip for early-exit checks
+local early = redis.call('HMGET', key, 'state', 'expires_at', 'grace_ms')
+local state = early[1]
 
 if not state then
     redis.call('ZREM', 'reservation:ttl', reservation_id)
@@ -24,8 +27,8 @@ if state ~= "ACTIVE" then
     return cjson.encode({status = "SKIP", state = state})
 end
 
-local expires_at = tonumber(redis.call('HGET', key, 'expires_at'))
-local grace_ms   = tonumber(redis.call('HGET', key, 'grace_ms') or 0)
+local expires_at = tonumber(early[2])
+local grace_ms   = tonumber(early[3] or 0)
 
 -- Still within grace window — leave ACTIVE for commit/release.
 if now <= expires_at + grace_ms then
@@ -33,13 +36,15 @@ if now <= expires_at + grace_ms then
 end
 
 -- Past grace period: release reserved budget back to all scopes.
-local estimate_amount    = tonumber(redis.call('HGET', key, 'estimate_amount'))
-local estimate_unit      = redis.call('HGET', key, 'estimate_unit')
-local affected_scopes_json = redis.call('HGET', key, 'affected_scopes')
+-- Fetch remaining fields in one round-trip
+local detail = redis.call('HMGET', key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
+local estimate_amount      = tonumber(detail[1])
+local estimate_unit        = detail[2]
+local affected_scopes_json = detail[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
-local budgeted_scopes_json = redis.call('HGET', key, 'budgeted_scopes')
+local budgeted_scopes_json = detail[4]
 
-if estimate_amount and estimate_unit and affected_scopes_json then
+if estimate_amount and estimate_unit and (budgeted_scopes_json or affected_scopes_json) then
     local ok, affected_scopes = pcall(cjson.decode, budgeted_scopes_json or affected_scopes_json)
     if not ok then affected_scopes = {} end
     for _, scope in ipairs(affected_scopes) do
@@ -49,9 +54,8 @@ if estimate_amount and estimate_unit and affected_scopes_json then
     end
 end
 
-local t          = redis.call('TIME')
-local expired_at = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-redis.call('HMSET', key, 'state', 'EXPIRED', 'expired_at', expired_at)
+-- Reuse `now` from earlier TIME call (Redis is single-threaded during script execution)
+redis.call('HMSET', key, 'state', 'EXPIRED', 'expired_at', now)
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
 -- Set 30-day TTL on expired reservation hash (audit trail, then auto-cleanup)

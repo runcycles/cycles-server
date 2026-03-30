@@ -501,7 +501,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                     .affectedScopes(defaultScopes())
                     .scopePath("tenant:acme/app:myapp")
                     .build();
-            when(jedis.get("idem:acme:dry_run:dry-cached")).thenReturn(objectMapper.writeValueAsString(cached));
+            // Mock pipeline.get() for idempotency check (pipelined in evaluateDryRun)
+            Response<String> cachedResp = mock(Response.class);
+            when(cachedResp.get()).thenReturn(objectMapper.writeValueAsString(cached));
+            when(pipeline.get("idem:acme:dry_run:dry-cached")).thenReturn(cachedResp);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-cached");
@@ -523,8 +526,13 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
 
-            when(jedis.get("idem:acme:dry_run:dry-mismatch")).thenReturn("{\"decision\":\"ALLOW\"}");
-            when(jedis.get("idem:acme:dry_run:dry-mismatch:hash")).thenReturn("stale-hash-value");
+            // Mock pipeline.get() for idempotency check (pipelined in evaluateDryRun)
+            Response<String> cachedResp = mock(Response.class);
+            when(cachedResp.get()).thenReturn("{\"decision\":\"ALLOW\"}");
+            when(pipeline.get("idem:acme:dry_run:dry-mismatch")).thenReturn(cachedResp);
+            Response<String> hashResp = mock(Response.class);
+            when(hashResp.get()).thenReturn("stale-hash-value");
+            when(pipeline.get("idem:acme:dry_run:dry-mismatch:hash")).thenReturn(hashResp);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-mismatch");
@@ -579,7 +587,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             repository.createReservation(request, "acme");
 
-            verify(jedis).psetex(eq("idem:acme:dry_run:dry-store"), eq(86400000L), anyString());
+            verify(pipeline).psetex(eq("idem:acme:dry_run:dry-store"), eq(86400000L), anyString());
         }
     }
 

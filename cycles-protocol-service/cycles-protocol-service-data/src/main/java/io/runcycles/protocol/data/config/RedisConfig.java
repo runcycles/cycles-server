@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 import redis.clients.jedis.*;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 
 /** Cycles Protocol v0.1.24 */
 @Configuration
@@ -16,15 +18,25 @@ public class RedisConfig {
     @Value("${redis.host:localhost}") private String host;
     @Value("${redis.port:6379}") private int port;
     @Value("${redis.password:}") private String password;
-    
+    @Value("${redis.pool.max-total:128}") private int poolMaxTotal;
+    @Value("${redis.pool.max-idle:32}") private int poolMaxIdle;
+    @Value("${redis.pool.min-idle:16}") private int poolMinIdle;
+    @Value("${redis.pool.max-wait-ms:2000}") private int poolMaxWaitMs;
+
     @Bean
     public JedisPool jedisPool() {
         LOG.info("Cycles Protocol v0.1.24 - Initializing Redis: {}:{}", host, port);
         JedisPoolConfig config = new JedisPoolConfig();
-        config.setMaxTotal(50);
-        config.setMaxIdle(10);
-        config.setMinIdle(5);
-        return password.isEmpty() ? new JedisPool(config, host, port, 2000) : 
+        config.setMaxTotal(poolMaxTotal);
+        config.setMaxIdle(poolMaxIdle);
+        config.setMinIdle(poolMinIdle);
+        config.setBlockWhenExhausted(true);
+        config.setMaxWait(Duration.ofMillis(poolMaxWaitMs));
+        config.setTestOnBorrow(false);
+        config.setTestWhileIdle(true);
+        config.setTimeBetweenEvictionRuns(Duration.ofSeconds(30));
+        config.setMinEvictableIdleTime(Duration.ofMinutes(5));
+        return password.isEmpty() ? new JedisPool(config, host, port, 2000) :
                                     new JedisPool(config, host, port, 2000, password);
     }
     
@@ -67,9 +79,8 @@ public class RedisConfig {
     }
 
     private String loadLuaScript(String path) throws IOException {
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(path);
-             BufferedReader reader = new BufferedReader(new InputStreamReader(is))) {
-            return reader.lines().reduce("", (a, b) -> a + b + "\n");
+        try (InputStream is = getClass().getClassLoader().getResourceAsStream(path)) {
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 }
