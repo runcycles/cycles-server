@@ -44,3 +44,4 @@ cycles-protocol-service/cycles-protocol-service-data/.project
 cycles-protocol-service/cycles-protocol-service-model/.classpath
 cycles-protocol-service/cycles-protocol-service-model/.project
 .flattened-pom.xml
+.claude/settings.local.json
