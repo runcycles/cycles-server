@@ -3,7 +3,9 @@ package io.runcycles.protocol.data.config;
 import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.*;
 import redis.clients.jedis.*;
 import java.io.*;
@@ -15,6 +17,7 @@ import java.time.Duration;
 public class RedisConfig {
     private static final Logger LOG = LoggerFactory.getLogger(RedisConfig.class);
     
+    @Autowired(required = false) private BuildProperties buildProperties;
     @Value("${redis.host:localhost}") private String host;
     @Value("${redis.port:6379}") private int port;
     @Value("${redis.password:}") private String password;
@@ -25,7 +28,8 @@ public class RedisConfig {
 
     @Bean
     public JedisPool jedisPool() {
-        LOG.info("Cycles Protocol v0.1.24 - Initializing Redis: {}:{}", host, port);
+        String version = buildProperties != null ? buildProperties.getVersion() : "unknown";
+        LOG.info("Cycles Protocol v{} - Initializing Redis: {}:{}", version, host, port);
         JedisPoolConfig config = new JedisPoolConfig();
         config.setMaxTotal(poolMaxTotal);
         config.setMaxIdle(poolMaxIdle);

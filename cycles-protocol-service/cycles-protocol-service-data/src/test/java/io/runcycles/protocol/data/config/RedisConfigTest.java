@@ -5,9 +5,11 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.info.BuildProperties;
 import redis.clients.jedis.JedisPool;
 
 import java.lang.reflect.Field;
+import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -22,6 +24,9 @@ class RedisConfigTest {
         setField("host", "localhost");
         setField("port", 6379);
         setField("password", "");
+        Properties props = new Properties();
+        props.setProperty("version", "0.1.24.3-test");
+        setField("buildProperties", new BuildProperties(props));
     }
 
     private void setField(String name, Object value) throws Exception {
