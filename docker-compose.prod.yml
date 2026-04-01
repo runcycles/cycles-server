@@ -22,6 +22,7 @@ services:
       REDIS_PASSWORD: ""
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
     depends_on:
       redis:
         condition: service_healthy

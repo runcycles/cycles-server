@@ -1,8 +1,58 @@
 # Cycles Protocol v0.1.24 — Server Implementation Audit
 
-**Date:** 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
-**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.24)
+**Date:** 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.24) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-01 — Webhook Event Emission + TTL Retention
+
+Added webhook event emission to the runtime server per v0.1.25 spec, enabling runtime operations to trigger webhook deliveries via the shared Redis dispatch queue.
+
+**Build:** 97 tests, 0 failures, 95%+ coverage (all modules).
+
+**New capabilities:**
+- ReservationController emits `reservation.denied` on DENY decision
+- DecisionController emits `reservation.denied` on DENY decision
+- ReservationController emits `reservation.commit_overage` on commit overage
+- Events written to shared Redis (`event:{id}`, `events:{tenantId}`, `events:_all`)
+- Matching webhook subscriptions found via `webhooks:{tenantId}` + `webhooks:__system__`
+- PENDING deliveries created and LPUSH'd to `dispatch:pending` for cycles-server-events
+- Source field: `"cycles-server"` (vs `"cycles-admin"` from admin)
+
+**TTL retention:**
+- `event:{id}` keys: 90-day TTL (configurable via `EVENT_TTL_DAYS`)
+- `delivery:{id}` keys: 14-day TTL (configurable via `DELIVERY_TTL_DAYS`)
+
+**New files (30):**
+- 11 event model classes (Event, EventType, EventCategory, Actor, ActorType, 6 EventData*)
+- 6 webhook model classes (WebhookSubscription, WebhookDelivery, WebhookRetryPolicy, etc.)
+- CryptoService (AES-256-GCM for signing secret encryption at rest)
+- EventEmitterRepository (event persistence + subscription matching + dispatch)
+- EventEmitterService (non-blocking emit wrapper)
+- 3 test classes (CryptoServiceTest, EventEmitterRepositoryTest, EventEmitterServiceTest)
+
+**Docker-compose updates:**
+- All compose files now include `WEBHOOK_SECRET_ENCRYPTION_KEY` env var
+- Full-stack compose files include `cycles-events` service (port 7980)
+
+**Architecture: shared Redis queue**
+```
+cycles-server ─────┐
+                   ├── event:{id}, delivery:{id}, LPUSH dispatch:pending
+cycles-admin ──────┘
+                           │
+                     Redis ─┤
+                           │
+cycles-server-events ── BRPOP dispatch:pending → HTTP POST with HMAC
+```
+
+**Resilience: events service down**
+- Admin and runtime continue operating normally (fire-and-forget)
+- Events/deliveries accumulate in Redis with TTL (auto-expire after 90d/14d)
+- When events service restarts: stale deliveries (>24h) auto-fail, fresh ones delivered
+- ZSET indexes trimmed hourly by RetentionCleanupService
 
 ---
 
