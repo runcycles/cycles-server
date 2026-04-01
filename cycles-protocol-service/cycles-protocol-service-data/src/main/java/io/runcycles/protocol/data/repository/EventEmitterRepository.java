@@ -30,6 +30,12 @@ public class EventEmitterRepository {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private CryptoService cryptoService;
 
+    @org.springframework.beans.factory.annotation.Value("${events.retention.event-ttl-days:90}")
+    private int eventTtlDays;
+
+    @org.springframework.beans.factory.annotation.Value("${events.retention.delivery-ttl-days:14}")
+    private int deliveryTtlDays;
+
     /**
      * Save an event and dispatch to matching webhook subscriptions.
      * Non-blocking: all failures are logged, never thrown.
@@ -50,6 +56,7 @@ public class EventEmitterRepository {
                 // 1. Save event (same keys as admin)
                 String eventJson = objectMapper.writeValueAsString(event);
                 jedis.set("event:" + event.getEventId(), eventJson);
+                jedis.expire("event:" + event.getEventId(), eventTtlDays * 86400L);
                 long score = event.getTimestamp().toEpochMilli();
                 jedis.zadd("events:" + event.getTenantId(), score, event.getEventId());
                 jedis.zadd("events:_all", score, event.getEventId());
@@ -133,6 +140,7 @@ public class EventEmitterRepository {
                 .build();
         String json = objectMapper.writeValueAsString(delivery);
         jedis.set("delivery:" + deliveryId, json);
+        jedis.expire("delivery:" + deliveryId, deliveryTtlDays * 86400L);
         long score = delivery.getAttemptedAt().toEpochMilli();
         jedis.zadd("deliveries:" + sub.getSubscriptionId(), score, deliveryId);
         jedis.lpush("dispatch:pending", deliveryId);
