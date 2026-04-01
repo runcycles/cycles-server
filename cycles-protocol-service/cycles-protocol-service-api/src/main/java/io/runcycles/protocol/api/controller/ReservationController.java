@@ -2,7 +2,9 @@ package io.runcycles.protocol.api.controller;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.service.EventEmitterService;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.event.*;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -15,7 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-/** Cycles Protocol v0.1.24 - Reservation Controller */
+/** Cycles Protocol v0.1.25 - Reservation Controller */
 @RestController
 @RequestMapping("/v1/reservations")
 @Tag(name = "Reservations")
@@ -25,6 +27,9 @@ public class ReservationController extends BaseController{
 
     @Autowired
     private RedisReservationRepository repository;
+
+    @Autowired
+    private EventEmitterService eventEmitter;
 
     @PostMapping
     @Operation(operationId = "createReservation", summary = "Create budget reservation")
@@ -38,6 +43,19 @@ public class ReservationController extends BaseController{
         authorizeTenant(request.getSubject().getTenant());
         String tenant = extractAuthTenantId();
         ReservationCreateResponse response = repository.createReservation(request, tenant);
+        try {
+            if (response.getDecision() == Enums.DecisionEnum.DENY) {
+                eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, response.getScopePath(),
+                        Actor.builder().type(ActorType.API_KEY).build(),
+                        EventDataReservationDenied.builder()
+                                .scope(response.getScopePath())
+                                .reasonCode(response.getReasonCode())
+                                .requestedAmount(request.getEstimate() != null
+                                        ? request.getEstimate().getAmount() : null)
+                                .build(),
+                        null, null);
+            }
+        } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
 
@@ -63,6 +81,19 @@ public class ReservationController extends BaseController{
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request);
+        try {
+            // Emit commit_overage only when actual charge exceeds the original reservation estimate
+            if (response.getEstimateAmount() != null && response.getCharged() != null
+                    && response.getCharged().getAmount() > response.getEstimateAmount()) {
+                eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant, null,
+                        Actor.builder().type(ActorType.API_KEY).build(),
+                        EventDataCommitOverage.builder()
+                                .reservationId(reservationId)
+                                .actualAmount(response.getCharged().getAmount())
+                                .build(),
+                        null, null);
+            }
+        } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
 

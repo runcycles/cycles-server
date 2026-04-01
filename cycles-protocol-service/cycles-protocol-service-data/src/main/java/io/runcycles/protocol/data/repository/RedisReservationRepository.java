@@ -19,7 +19,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
-/** Cycles Protocol v0.1.24 - Repository with Lua script execution */
+/** Cycles Protocol v0.1.25 - Repository with Lua script execution */
 @Repository
 public class RedisReservationRepository {
     private static final Logger LOG = LoggerFactory.getLogger(RedisReservationRepository.class);
@@ -333,6 +333,7 @@ public class RedisReservationRepository {
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
                 .balances(balances)
+                .estimateAmount(luaEstimate != null ? luaEstimate.longValue() : null)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);

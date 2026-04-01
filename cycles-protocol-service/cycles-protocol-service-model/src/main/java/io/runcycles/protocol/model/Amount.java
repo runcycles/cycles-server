@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Data @NoArgsConstructor @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class Amount {

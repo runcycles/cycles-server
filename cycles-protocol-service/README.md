@@ -1,4 +1,4 @@
-# Cycles Protocol Server v0.1.24
+# Cycles Protocol Server v0.1.25
 
 Reference implementation of the [Cycles Budget Authority API](../cycles-protocol-v0.yaml) — a reservation-based budget control service for AI agents and workflows. All atomic budget operations are executed via Redis Lua scripts; no external database is required.
 
@@ -70,7 +70,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.24.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.1.jar
 ```
 
 The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -477,7 +477,7 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 
 ### GET /v1/reservations/{reservation_id}
 
-Fetch a single reservation by ID. Returns `200 OK` for all statuses including `COMMITTED`, `RELEASED`, and `EXPIRED`.
+Fetch a single reservation by ID. Returns `200 OK` for `ACTIVE`, `COMMITTED`, and `RELEASED` statuses. Returns `410 Gone` for `EXPIRED` reservations.
 
 **Response** `200 OK`
 

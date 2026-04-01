@@ -7,7 +7,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.function.Function;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Service
 public class ScopeDerivationService {
 

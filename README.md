@@ -4,7 +4,7 @@
 
 # Runcycles Server
 
-Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.24) — a reservation-based budget control service for AI agents and workflows.
+Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.25) — a reservation-based budget control service for AI agents and workflows.
 
 ## Quick Start
 
@@ -53,7 +53,7 @@ cd cycles-protocol-service
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.24.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.1.jar
 ```
 
 Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -66,10 +66,18 @@ HTTP client
     ▼
 Spring Boot 3.5 (port 7878)
     │  ApiKeyAuthenticationFilter
-    │  Controllers → Repository
+    │  Controllers → Repository → Lua scripts (atomic)
     ▼
-Redis 7+  (Lua scripts for atomicity)
+Redis 7+
+    │  event:{id}, delivery:{id}, LPUSH dispatch:pending
+    ▼
+cycles-server-events (port 7980)
+    │  BRPOP → HTTP POST with HMAC-SHA256 signature
+    ▼
+Webhook receivers
 ```
+
+**Event emission:** Runtime operations (reserve denied, commit overage) emit events to the shared Redis dispatch queue. The events delivery service (`cycles-server-events`) picks them up and delivers via HTTP POST with HMAC-SHA256 signing.
 
 **Modules** (under `cycles-protocol-service/`):
 
@@ -109,7 +117,7 @@ mvn clean install
 ./build-all.sh
 ```
 
-The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.24.jar`.
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.1.jar`.
 
 ## Docker Deployment
 
@@ -158,6 +166,19 @@ Integration tests (`*IntegrationTest.java`) use [Testcontainers](https://www.tes
 | `redis.pool.max-total` | `128` | Max Redis connections |
 | `redis.pool.max-idle` | `32` | Max idle Redis connections |
 | `redis.pool.min-idle` | `16` | Min idle Redis connections |
+| `WEBHOOK_SECRET_ENCRYPTION_KEY` | *(empty)* | AES-256-GCM key for webhook signing secret encryption at rest (base64, 32 bytes). Must match admin + events services. Generate: `openssl rand -base64 32` |
+| `EVENT_TTL_DAYS` | `90` | Redis TTL for `event:{id}` keys (days) |
+| `DELIVERY_TTL_DAYS` | `14` | Redis TTL for `delivery:{id}` keys (days) |
+
+### Webhook Event Emission
+
+The runtime server emits events to the shared Redis dispatch queue when:
+- A reservation is **denied** (`reservation.denied`)
+- A commit has **actual > estimated** (`reservation.commit_overage`)
+
+These events are delivered by `cycles-server-events` to webhook subscribers via HTTP POST with HMAC-SHA256 signing. Event emission is non-blocking — failures are logged but never affect the API response.
+
+**If the events service is down:** Events and deliveries accumulate in Redis with TTL (90d/14d). When the events service restarts, deliveries older than 24h are auto-failed. The admin and runtime servers continue operating normally.
 
 ## Monitoring
 

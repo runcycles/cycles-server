@@ -14,7 +14,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-/** Cycles Protocol v0.1.24 - Balance Controller */
+/** Cycles Protocol v0.1.25 - Balance Controller */
 @RestController
 @RequestMapping("/v1/balances")
 @Tag(name = "Balances")

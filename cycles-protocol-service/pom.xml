@@ -11,14 +11,14 @@
     <version>${revision}</version>
     <packaging>pom</packaging>
     <name>Cycles Protocol Service</name>
-    <description>Cycles Protocol Service API v0.1.24</description>
+    <description>Cycles Protocol Service API v0.1.25</description>
     <modules>
         <module>cycles-protocol-service-model</module>
         <module>cycles-protocol-service-data</module>
         <module>cycles-protocol-service-api</module>
     </modules>
     <properties>
-        <revision>0.1.24.4</revision>
+        <revision>0.1.25.1</revision>
         <java.version>21</java.version>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>

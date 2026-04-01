@@ -5,7 +5,7 @@ import jakarta.validation.constraints.*;
 import lombok.*;
 import java.util.Map;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Data @NoArgsConstructor @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class ReservationExtendRequest {

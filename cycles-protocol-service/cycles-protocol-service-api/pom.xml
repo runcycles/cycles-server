@@ -8,7 +8,7 @@
     </parent>
     <artifactId>cycles-protocol-service-api</artifactId>
     <name>Cycles Protocol Service API</name>
-    <description>REST API for Cycles Protocol Service v0.1.24</description>
+    <description>REST API for Cycles Protocol Service v0.1.25</description>
     <dependencies>
         <dependency>
             <groupId>io.runcycles</groupId>

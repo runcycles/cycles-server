@@ -4,7 +4,7 @@ import io.runcycles.protocol.model.Enums;
 import lombok.Getter;
 import java.util.Map;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Getter
 public class CyclesProtocolException extends RuntimeException {
     private final Enums.ErrorCode errorCode;
