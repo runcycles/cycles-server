@@ -44,6 +44,7 @@ class DecisionControllerTest {
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private RedisReservationRepository repository;
+    @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
 
     @BeforeEach
     void setAuth() {

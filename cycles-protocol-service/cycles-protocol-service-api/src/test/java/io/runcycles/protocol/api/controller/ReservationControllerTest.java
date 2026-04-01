@@ -50,6 +50,7 @@ class ReservationControllerTest {
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private RedisReservationRepository repository;
+    @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
 
     @BeforeEach
     void setAuth() {
@@ -87,6 +88,15 @@ class ReservationControllerTest {
                 .build();
     }
 
+    private ReservationCreateResponse denyResponse() {
+        return ReservationCreateResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .affectedScopes(List.of("tenant:acme-corp"))
+                .scopePath("tenant:acme-corp")
+                .reasonCode("BUDGET_EXCEEDED")
+                .build();
+    }
+
     // ---- POST /v1/reservations ----
 
     @Nested
@@ -103,6 +113,18 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.decision").value("ALLOW"))
                     .andExpect(jsonPath("$.reservation_id").value("res_123"));
+        }
+
+        @Test
+        void shouldReturnDenyAndEmitEvent() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(denyResponse());
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.decision").value("DENY"))
+                    .andExpect(jsonPath("$.reason_code").value("BUDGET_EXCEEDED"));
         }
 
         @Test

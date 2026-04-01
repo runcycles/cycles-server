@@ -1,7 +1,9 @@
 package io.runcycles.protocol.api.controller;
 
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.service.EventEmitterService;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.event.*;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -22,6 +24,9 @@ public class DecisionController extends BaseController {
     @Autowired
     private RedisReservationRepository repository;
 
+    @Autowired
+    private EventEmitterService eventEmitter;
+
     @PostMapping
     @Operation(operationId = "decide", summary = "Evaluate budget decision without reserving")
     public ResponseEntity<DecisionResponse> decide(
@@ -34,6 +39,18 @@ public class DecisionController extends BaseController {
         authorizeTenant(request.getSubject().getTenant());
         String tenant = extractAuthTenantId();
         DecisionResponse response = repository.decide(request, tenant);
+        try {
+            if (response.getDecision() == Enums.DecisionEnum.DENY) {
+                eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, null,
+                        Actor.builder().type(ActorType.API_KEY).build(),
+                        EventDataReservationDenied.builder()
+                                .reasonCode(response.getReasonCode())
+                                .requestedAmount(request.getEstimate() != null
+                                        ? request.getEstimate().getAmount() : null)
+                                .build(),
+                        null, null);
+            }
+        } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
 }
