@@ -13,7 +13,7 @@ services:
       retries: 5
 
   cycles-server:
-    image: ghcr.io/runcycles/cycles-server:latest
+    image: ghcr.io/runcycles/cycles-server:0.1.25.1
     ports:
       - "7878:7878"
     environment:
@@ -28,7 +28,7 @@ services:
         condition: service_healthy
 
   cycles-admin:
-    image: ghcr.io/runcycles/cycles-server-admin:latest
+    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.1
     ports:
       - "7979:7979"
     environment:
@@ -42,7 +42,7 @@ services:
         condition: service_healthy
 
   cycles-events:
-    image: ghcr.io/runcycles/cycles-server-events:latest
+    image: ghcr.io/runcycles/cycles-server-events:0.1.25.1
     ports:
       - "7980:7980"
     environment:
