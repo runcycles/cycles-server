@@ -1,7 +1,7 @@
 package io.runcycles.protocol.model;
 
 /**
- * Cycles Protocol v0.1.24
+ * Cycles Protocol v0.1.25
  * All enums in one file for convenience
  */
 public class Enums {

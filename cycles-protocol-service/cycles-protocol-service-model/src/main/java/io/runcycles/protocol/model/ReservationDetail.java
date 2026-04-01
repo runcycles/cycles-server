@@ -5,7 +5,7 @@ import jakarta.validation.Valid;
 import lombok.*;
 import java.util.Map;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Data @EqualsAndHashCode(callSuper = true) @NoArgsConstructor @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = false)

@@ -17,7 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-/** Cycles Protocol v0.1.24 - Reservation Controller */
+/** Cycles Protocol v0.1.25 - Reservation Controller */
 @RestController
 @RequestMapping("/v1/reservations")
 @Tag(name = "Reservations")
@@ -82,8 +82,9 @@ public class ReservationController extends BaseController{
         authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request);
         try {
-            // Emit commit_overage if actual > estimated
-            if (request.getActual() != null && response.getCharged() != null) {
+            // Emit commit_overage only when actual charge exceeds the original reservation estimate
+            if (response.getEstimateAmount() != null && response.getCharged() != null
+                    && response.getCharged().getAmount() > response.getEstimateAmount()) {
                 eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant, null,
                         Actor.builder().type(ActorType.API_KEY).build(),
                         EventDataCommitOverage.builder()

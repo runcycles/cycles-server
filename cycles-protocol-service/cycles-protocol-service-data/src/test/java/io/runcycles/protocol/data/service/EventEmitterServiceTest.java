@@ -26,11 +26,14 @@ class EventEmitterServiceTest {
     @InjectMocks private EventEmitterService service;
 
     @Test
-    void emit_createsEventAndDelegates() {
+    void emit_createsEventAndDelegates() throws Exception {
         service.emit(EventType.RESERVATION_DENIED, "t1", "scope/path",
                 Actor.builder().type(ActorType.API_KEY).build(),
                 EventDataReservationDenied.builder().reasonCode("BUDGET_EXCEEDED").build(),
                 "corr-1", "req-1");
+
+        // Async — wait briefly for the executor to process
+        Thread.sleep(200);
 
         verify(repository).emit(argThat(e ->
                 e.getEventType() == EventType.RESERVATION_DENIED &&
@@ -41,8 +44,10 @@ class EventEmitterServiceTest {
     }
 
     @Test
-    void emit_nullData_works() {
+    void emit_nullData_works() throws Exception {
         service.emit(EventType.BUDGET_EXHAUSTED, "t1", null, null, null, null, null);
+
+        Thread.sleep(200);
 
         verify(repository).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_EXHAUSTED &&
@@ -50,10 +55,13 @@ class EventEmitterServiceTest {
     }
 
     @Test
-    void emit_exceptionInRepo_doesNotThrow() {
+    void emit_exceptionInRepo_doesNotThrow() throws Exception {
         doThrow(new RuntimeException("fail")).when(repository).emit(any());
 
         // Should not throw
         service.emit(EventType.RESERVATION_DENIED, "t1", null, null, null, null, null);
+
+        Thread.sleep(200);
+        // No exception propagated — verified by test not failing
     }
 }

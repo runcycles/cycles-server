@@ -9,7 +9,7 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.stereotype.Component;
 
-/** Cycles Protocol v0.1.24 - Main Application */
+/** Cycles Protocol v0.1.25 - Main Application */
 @SpringBootApplication
 @ComponentScan(basePackages = "io.runcycles.protocol")
 @EnableScheduling

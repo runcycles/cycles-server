@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.Pipeline;
 
 import java.time.Instant;
 import java.util.*;
@@ -53,23 +54,37 @@ public class EventEmitterRepository {
             }
 
             try (Jedis jedis = jedisPool.getResource()) {
-                // 1. Save event (same keys as admin)
                 String eventJson = objectMapper.writeValueAsString(event);
-                jedis.set("event:" + event.getEventId(), eventJson);
-                jedis.expire("event:" + event.getEventId(), eventTtlDays * 86400L);
                 long score = event.getTimestamp().toEpochMilli();
-                jedis.zadd("events:" + event.getTenantId(), score, event.getEventId());
-                jedis.zadd("events:_all", score, event.getEventId());
+                String eventKey = "event:" + event.getEventId();
 
-                // 2. Find matching subscriptions
-                List<WebhookSubscription> subs = findMatchingSubscriptions(jedis, event);
+                // Pipeline: save event + fetch subscription IDs in 1 round-trip
+                Pipeline pipe = jedis.pipelined();
+                pipe.set(eventKey, eventJson);
+                pipe.expire(eventKey, eventTtlDays * 86400L);
+                pipe.zadd("events:" + event.getTenantId(), score, event.getEventId());
+                pipe.zadd("events:_all", score, event.getEventId());
+                var tenantIdsResp = pipe.smembers("webhooks:" + event.getTenantId());
+                var systemIdsResp = pipe.smembers("webhooks:__system__");
+                pipe.sync();
 
-                // 3. Create delivery for each matching subscription + LPUSH
-                for (WebhookSubscription sub : subs) {
-                    try {
-                        createDelivery(jedis, event, sub);
-                    } catch (Exception e) {
-                        LOG.error("Failed to create delivery for sub {}: {}", sub.getSubscriptionId(), e.getMessage());
+                // 2. Find matching subscriptions (only if any exist)
+                Set<String> allIds = new HashSet<>();
+                Set<String> tenantIds = tenantIdsResp.get();
+                if (tenantIds != null) allIds.addAll(tenantIds);
+                Set<String> systemIds = systemIdsResp.get();
+                if (systemIds != null) allIds.addAll(systemIds);
+
+                if (!allIds.isEmpty()) {
+                    List<WebhookSubscription> subs = resolveMatchingSubscriptions(jedis, allIds, event);
+
+                    // 3. Create delivery for each matching subscription + LPUSH
+                    for (WebhookSubscription sub : subs) {
+                        try {
+                            createDelivery(jedis, event, sub);
+                        } catch (Exception e) {
+                            LOG.error("Failed to create delivery for sub {}: {}", sub.getSubscriptionId(), e.getMessage());
+                        }
                     }
                 }
             }
@@ -78,21 +93,20 @@ public class EventEmitterRepository {
         }
     }
 
-    private List<WebhookSubscription> findMatchingSubscriptions(Jedis jedis, Event event) {
+    private List<WebhookSubscription> resolveMatchingSubscriptions(Jedis jedis, Set<String> subIds, Event event) {
+        // Pipeline all subscription GETs in 1 round-trip
+        List<String> idList = new ArrayList<>(subIds);
+        Pipeline pipe = jedis.pipelined();
+        List<redis.clients.jedis.Response<String>> responses = new ArrayList<>(idList.size());
+        for (String id : idList) {
+            responses.add(pipe.get("webhook:" + id));
+        }
+        pipe.sync();
+
         List<WebhookSubscription> matching = new ArrayList<>();
-        Set<String> allIds = new HashSet<>();
-
-        // Check tenant-specific subscriptions
-        Set<String> tenantIds = jedis.smembers("webhooks:" + event.getTenantId());
-        if (tenantIds != null) allIds.addAll(tenantIds);
-
-        // Check system-wide subscriptions
-        Set<String> systemIds = jedis.smembers("webhooks:__system__");
-        if (systemIds != null) allIds.addAll(systemIds);
-
-        for (String id : allIds) {
+        for (int i = 0; i < idList.size(); i++) {
             try {
-                String data = jedis.get("webhook:" + id);
+                String data = responses.get(i).get();
                 if (data == null) continue;
                 WebhookSubscription sub = objectMapper.readValue(data, WebhookSubscription.class);
                 if (sub.getStatus() != WebhookStatus.ACTIVE) continue;
@@ -100,7 +114,7 @@ public class EventEmitterRepository {
                 if (!matchesScope(sub, event.getScope())) continue;
                 matching.add(sub);
             } catch (Exception e) {
-                LOG.warn("Failed to parse webhook subscription: {}", id, e);
+                LOG.warn("Failed to parse webhook subscription: {}", idList.get(i), e);
             }
         }
         return matching;
@@ -139,10 +153,15 @@ public class EventEmitterRepository {
                 .attempts(0)
                 .build();
         String json = objectMapper.writeValueAsString(delivery);
-        jedis.set("delivery:" + deliveryId, json);
-        jedis.expire("delivery:" + deliveryId, deliveryTtlDays * 86400L);
+        String deliveryKey = "delivery:" + deliveryId;
         long score = delivery.getAttemptedAt().toEpochMilli();
-        jedis.zadd("deliveries:" + sub.getSubscriptionId(), score, deliveryId);
-        jedis.lpush("dispatch:pending", deliveryId);
+
+        // Pipeline: save delivery + index + dispatch in 1 round-trip
+        Pipeline pipe = jedis.pipelined();
+        pipe.set(deliveryKey, json);
+        pipe.expire(deliveryKey, deliveryTtlDays * 86400L);
+        pipe.zadd("deliveries:" + sub.getSubscriptionId(), score, deliveryId);
+        pipe.lpush("dispatch:pending", deliveryId);
+        pipe.sync();
     }
 }

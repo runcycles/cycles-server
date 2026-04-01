@@ -6,7 +6,7 @@ import lombok.*;
 import java.util.Map;
 
 /**
- * Cycles Protocol v0.1.24
+ * Cycles Protocol v0.1.25
  *
  * YAML spec: anyOf requires at least one of tenant/workspace/app/workflow/agent/toolset.
  * A Subject containing only dimensions is invalid (server MUST return 400 INVALID_REQUEST).

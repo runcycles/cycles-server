@@ -1,21 +1,21 @@
-# Cycles Protocol v0.1.24 — Server Implementation Audit
+# Cycles Protocol v0.1.25 — Server Implementation Audit
 
 **Date:** 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
-**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.24) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
+**Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
 ---
 
-### 2026-04-01 — Webhook Event Emission + TTL Retention
+### 2026-04-01 — Webhook Event Emission + TTL Retention + Performance Optimizations
 
 Added webhook event emission to the runtime server per v0.1.25 spec, enabling runtime operations to trigger webhook deliveries via the shared Redis dispatch queue.
 
-**Build:** 97 tests, 0 failures, 95%+ coverage (all modules).
+**Build:** 553 tests (283 API + 261 Data + 9 Model), 0 failures, 95%+ coverage (all modules).
 
 **New capabilities:**
 - ReservationController emits `reservation.denied` on DENY decision
 - DecisionController emits `reservation.denied` on DENY decision
-- ReservationController emits `reservation.commit_overage` on commit overage
+- ReservationController emits `reservation.commit_overage` when charged > estimated
 - Events written to shared Redis (`event:{id}`, `events:{tenantId}`, `events:_all`)
 - Matching webhook subscriptions found via `webhooks:{tenantId}` + `webhooks:__system__`
 - PENDING deliveries created and LPUSH'd to `dispatch:pending` for cycles-server-events
@@ -25,12 +25,24 @@ Added webhook event emission to the runtime server per v0.1.25 spec, enabling ru
 - `event:{id}` keys: 90-day TTL (configurable via `EVENT_TTL_DAYS`)
 - `delivery:{id}` keys: 14-day TTL (configurable via `DELIVERY_TTL_DAYS`)
 
-**New files (30):**
+**Bug fix:** Commit overage emit condition was firing on every commit (`actual != null && charged != null`). Fixed to only emit when `charged > estimateAmount` (true overage). Added `@JsonIgnore estimateAmount` to `CommitResponse` for internal plumbing.
+
+**Performance optimizations (3):**
+1. **Async event emission** — `EventEmitterService` uses `CompletableFuture.runAsync()` on a dedicated daemon thread pool (`availableProcessors/4`). Emit never blocks the request thread.
+2. **Pipelined Redis in EventEmitterRepository** — Event save (SET + EXPIRE + 2x ZADD) + subscription lookup (2x SMEMBERS) batched into 1 pipeline round-trip (was 6 sequential). Subscription GETs pipelined. Delivery creation pipelined.
+3. **Early exit on no subscribers** — If both SMEMBERS return empty sets, skips subscription resolve and delivery creation entirely.
+
+**Result:** Commit p50 recovered from 13.4ms (pre-fix) to 5.6ms. Concurrent throughput at 32 threads: 2,584 ops/s (matching v0.1.24.3 baseline of 2,534 ops/s). Near-zero overhead on non-event paths.
+
+**New/modified files (33):**
 - 11 event model classes (Event, EventType, EventCategory, Actor, ActorType, 6 EventData*)
 - 6 webhook model classes (WebhookSubscription, WebhookDelivery, WebhookRetryPolicy, etc.)
 - CryptoService (AES-256-GCM for signing secret encryption at rest)
-- EventEmitterRepository (event persistence + subscription matching + dispatch)
-- EventEmitterService (non-blocking emit wrapper)
+- EventEmitterRepository (event persistence + pipelined subscription matching + dispatch)
+- EventEmitterService (async emit via CompletableFuture + daemon thread pool)
+- CommitResponse (added `@JsonIgnore estimateAmount` for overage detection)
+- RedisReservationRepository (sets estimateAmount on CommitResponse)
+- ReservationController (fixed commit overage condition: charged > estimateAmount)
 - 3 test classes (CryptoServiceTest, EventEmitterRepositoryTest, EventEmitterServiceTest)
 
 **Docker-compose updates:**
@@ -76,7 +88,7 @@ cycles-server-events ── BRPOP dispatch:pending → HTTP POST with HMAC
 | Grace Period Handling | — | 0 |
 | Test Coverage | — | 0 |
 | Tenant Default Config | — | 0 |
-| Performance Optimizations | 13/13 | 0 |
+| Performance Optimizations | 16/16 | 0 |
 | Production Hardening | 8/8 | 0 |
 
 **All previously identified issues have been fixed. No remaining spec violations found. Performance optimized, hardened, and benchmarked.**
@@ -204,15 +216,15 @@ Two-pass audit covering:
 
 ### Test Coverage (above 95%)
 - JaCoCo line coverage threshold raised from 90% to **95%** (enforced in parent pom.xml)
-- **API module**: **100%** line coverage (278 tests across 15 test classes)
-- **Data module**: **95%+** line coverage, 76%+ branch coverage (235 tests across 8 test classes)
+- **API module**: **95%+** line coverage (283 tests across 15 test classes)
+- **Data module**: **95%+** line coverage, 76%+ branch coverage (261 tests across 11 test classes)
   - Branch gaps: defensive null-check ternaries and unreachable `&&` short-circuit branches in `RedisReservationRepository`
   - Tenant default resolution: 10 unit tests covering all fallback paths, TTL capping, max extensions, malformed JSON recovery
   - LuaScriptRegistry: 5 tests (startup load, EVALSHA, NOSCRIPT fallback, no-SHA fallback, startup failure)
   - Idempotency replay: 2 tests (commit replay returns released amount, release replay returns released amount)
   - API key cache: 1 test (verifies cache hit avoids second Redis call)
 - **Model module**: Coverage skipped (POJOs only, no business logic) — 9 tests
-- Total test count: 278 (API) + 235 (Data) + 9 (Model) = **522 tests** across 24 test classes
+- Total test count: 283 (API) + 261 (Data) + 9 (Model) = **553 tests** across 26 test classes
 - **Integration tests**: 27+ nested test classes covering all 9 endpoints, including:
   - Tenant Defaults (9 tests): overage policy resolution (ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT, REJECT), explicit override vs tenant default, TTL capping, max extensions enforcement, default TTL usage, no-tenant-record fallback
   - Expiry Sweep (7 tests): end-to-end expire.lua execution, grace period skip, orphan TTL cleanup, multi-scope budget release, already-finalized skip
@@ -246,7 +258,7 @@ Two-pass audit covering:
 
 ### Performance Optimizations (all applied)
 
-Thirteen optimizations applied to the reserve/commit/release hot path, preserving all protocol correctness guarantees (atomicity, idempotency, ledger invariant `remaining = allocated - spent - reserved - debt`).
+Sixteen optimizations applied to the reserve/commit/release hot path and event emission, preserving all protocol correctness guarantees (atomicity, idempotency, ledger invariant `remaining = allocated - spent - reserved - debt`).
 
 | # | Optimization | Impact | Location |
 |---|-------------|--------|----------|
@@ -263,8 +275,11 @@ Thirteen optimizations applied to the reserve/commit/release hot path, preservin
 | 11 | **expire.lua double TIME elimination** — Reuses `now` from initial TIME call instead of calling TIME twice | 1 fewer Redis command per expiry | `expire.lua` |
 | 12 | **event.lua scope budget caching** — Budget fields cached during validation phase and reused in capping/mutation phases | Eliminates redundant HGET/HMGET calls per scope across 3 phases | `event.lua` |
 | 13 | **Lua script loading** — Replaced O(n²) string concatenation with readAllBytes | Faster startup (startup-only) | `RedisConfig.java` |
+| 14 | **Async event emission** — `CompletableFuture.runAsync()` on daemon thread pool (`availableProcessors/4`) | Emit never blocks request thread; near-zero overhead on non-event paths | `EventEmitterService.java` |
+| 15 | **Pipelined event emit** — Event save + subscription lookup in 1 pipeline (was 6 sequential); subscription GETs pipelined; delivery creation pipelined | 6→1 round-trips for event save+lookup; N→1 for subscription resolve; 4→1 for delivery | `EventEmitterRepository.java` |
+| 16 | **Early exit on no subscribers** — If both tenant + system SMEMBERS return empty, skip subscription resolve and delivery creation | Zero additional Redis calls when no webhooks configured | `EventEmitterRepository.java` |
 
-**Thread safety**: All caches use Caffeine (thread-safe by design). ThreadLocal MessageDigest avoids contention.
+**Thread safety**: All caches use Caffeine (thread-safe by design). ThreadLocal MessageDigest avoids contention. Event emit thread pool uses daemon threads that don't prevent JVM shutdown.
 **Backward compatibility**: Old reservations without `budgeted_scopes` field handled via `budgeted_scopes_json or affected_scopes_json` fallback in all Lua scripts.
 
 ### Performance Benchmarks
@@ -452,4 +467,4 @@ The following were investigated during the audit and confirmed **not to be spec 
 
 ## Verdict
 
-The server implementation is **fully compliant** with the YAML spec (v0.1.24) and **performance optimized**. v0.1.24 changes: default overage policy changed from REJECT to ALLOW_IF_AVAILABLE; ALLOW_IF_AVAILABLE commits/events now always succeed with capped charge instead of 409 BUDGET_EXCEEDED; is_over_limit extended to also cover capped ALLOW_IF_AVAILABLE scenarios; event.lua updated with same capped-delta logic; EventCreateResponse includes charged field. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 522 tests across 24 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 4.3-7.4ms. Read-path p50 latency: 2.5-4.6ms. Full reserve-commit lifecycle p50: 12.9ms. Concurrent throughput: 2,555 ops/s at 32 threads with zero errors. No remaining spec violations found.
+The server implementation is **fully compliant** with the YAML spec (v0.1.25) and **performance optimized**. v0.1.25 additions: webhook event emission (reservation.denied, reservation.commit_overage) via shared Redis dispatch queue, event/delivery TTL retention (90d/14d configurable), AES-256-GCM webhook signing secret encryption, subscription matching with scope wildcards. v0.1.24 changes: default overage policy changed from REJECT to ALLOW_IF_AVAILABLE; ALLOW_IF_AVAILABLE commits/events now always succeed with capped charge instead of 409 BUDGET_EXCEEDED; is_over_limit extended to also cover capped ALLOW_IF_AVAILABLE scenarios; event.lua updated with same capped-delta logic; EventCreateResponse includes charged field. All 9 endpoints are implemented, all schemas match, auth/tenancy/idempotency are correctly enforced, and the normative behavioral requirements (atomic operations, debt/overdraft handling, scope derivation, error semantics, dry-run rules, grace period handling) are properly implemented. Seven write-path optimizations reduce hot-path latency by eliminating redundant Redis round-trips, caching BCrypt validation, and returning balance snapshots atomically from Lua scripts. Phase 3 adds read-path pipelining, response compression, and terminal hash TTLs. Test coverage expanded to 553 tests across 26 test classes, including 12 performance benchmark tests. Write-path single-operation p50 latency: 5.6-8.6ms (v0.1.25.1, async emit, near-zero overhead on non-event paths). Read-path p50 latency: 4.0-5.6ms. Full reserve-commit lifecycle p50: 16.0ms. Concurrent throughput: 2,584 ops/s at 32 threads with zero errors. No remaining spec violations found.

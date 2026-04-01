@@ -8,7 +8,7 @@
     </parent>
     <artifactId>cycles-protocol-service-model</artifactId>
     <name>Cycles Protocol Service Model</name>
-    <description>Data models for Cycles Protocol Service v0.1.24</description>
+    <description>Data models for Cycles Protocol Service v0.1.25</description>
     <properties>
         <jacoco.skip>true</jacoco.skip>
     </properties>

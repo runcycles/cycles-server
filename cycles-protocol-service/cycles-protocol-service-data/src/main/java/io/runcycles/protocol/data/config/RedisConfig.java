@@ -12,7 +12,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Configuration
 public class RedisConfig {
     private static final Logger LOG = LoggerFactory.getLogger(RedisConfig.class);

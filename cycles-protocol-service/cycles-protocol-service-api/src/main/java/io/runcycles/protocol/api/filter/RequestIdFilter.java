@@ -8,7 +8,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.UUID;
 
-/** Cycles Protocol v0.1.24 - Adds X-Request-Id and X-Cycles-Tenant to every response */
+/** Cycles Protocol v0.1.25 - Adds X-Request-Id and X-Cycles-Tenant to every response */
 @Component
 @Order(1)
 public class RequestIdFilter extends OncePerRequestFilter {

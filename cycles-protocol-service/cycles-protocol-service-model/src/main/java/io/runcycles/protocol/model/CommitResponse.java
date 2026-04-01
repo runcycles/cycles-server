@@ -6,7 +6,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import java.util.List;
 
-/** Cycles Protocol v0.1.24 */
+/** Cycles Protocol v0.1.25 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = false)
@@ -15,4 +15,6 @@ public class CommitResponse {
     @NotNull @Valid @JsonProperty("charged") private Amount charged;
     @Valid @JsonProperty("released") private Amount released;
     @Valid @JsonProperty("balances") private List<Balance> balances;
+    /** Internal: original reservation estimate for overage detection. Not serialized. */
+    @JsonIgnore @Builder.Default private Long estimateAmount = null;
 }

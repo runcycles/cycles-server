@@ -40,7 +40,7 @@ mvn-proxy -B verify --file cycles-protocol-service/pom.xml \
 
 Uses Maven CI-friendly `${revision}` property. Version is set **once** in `cycles-protocol-service/pom.xml`:
 ```xml
-<revision>0.1.24.0</revision>
+<revision>0.1.25.1</revision>
 ```
 All child modules inherit via `${revision}` (parent ref) and `${project.version}` (inter-module deps).
 The `flatten-maven-plugin` resolves `${revision}` at build time.
