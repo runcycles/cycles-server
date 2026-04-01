@@ -41,9 +41,12 @@ public class DecisionController extends BaseController {
         DecisionResponse response = repository.decide(request, tenant);
         try {
             if (response.getDecision() == Enums.DecisionEnum.DENY) {
-                eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, null,
+                String scope = response.getAffectedScopes() != null && !response.getAffectedScopes().isEmpty()
+                        ? response.getAffectedScopes().get(0) : null;
+                eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, scope,
                         Actor.builder().type(ActorType.API_KEY).build(),
                         EventDataReservationDenied.builder()
+                                .scope(scope)
                                 .reasonCode(response.getReasonCode())
                                 .requestedAmount(request.getEstimate() != null
                                         ? request.getEstimate().getAmount() : null)

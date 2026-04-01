@@ -84,6 +84,7 @@ public class ReservationController extends BaseController{
         try {
             // Emit commit_overage only when actual charge exceeds the original reservation estimate
             if (response.getEstimateAmount() != null && response.getCharged() != null
+                    && response.getCharged().getAmount() != null
                     && response.getCharged().getAmount() > response.getEstimateAmount()) {
                 eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant, null,
                         Actor.builder().type(ActorType.API_KEY).build(),

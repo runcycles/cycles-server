@@ -64,4 +64,10 @@ class EventEmitterServiceTest {
         Thread.sleep(200);
         // No exception propagated — verified by test not failing
     }
+
+    @Test
+    void destroy_shutsDownExecutor() {
+        // Should not throw
+        service.destroy();
+    }
 }

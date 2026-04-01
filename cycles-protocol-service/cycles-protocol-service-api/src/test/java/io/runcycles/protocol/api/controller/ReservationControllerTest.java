@@ -282,6 +282,27 @@ class ReservationControllerTest {
         }
 
         @Test
+        void shouldCommitWithOverageAndEmitEvent() throws Exception {
+            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
+            CommitResponse resp = CommitResponse.builder()
+                    .status(Enums.CommitStatus.COMMITTED)
+                    .charged(new Amount(Enums.UnitEnum.TOKENS, 1500L))
+                    .estimateAmount(1000L) // actual > estimate triggers overage event
+                    .build();
+            when(repository.commitReservation(eq("res_123"), any())).thenReturn(resp);
+
+            CommitRequest req = new CommitRequest();
+            req.setActual(new Amount(Enums.UnitEnum.TOKENS, 1500L));
+            req.setIdempotencyKey(UUID.randomUUID().toString());
+
+            mockMvc.perform(post("/v1/reservations/res_123/commit")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("COMMITTED"));
+        }
+
+        @Test
         void shouldRejectCommitIdempotencyKeyMismatch() throws Exception {
             when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
 
