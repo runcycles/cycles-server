@@ -6,6 +6,19 @@
 
 ---
 
+### 2026-04-03 — v0.1.25.2: Case-insensitive scope matching
+
+**Bug fix (defense-in-depth):** The admin API may have stored mixed-case scope values. `getBalances` lowercased query params but not the stored scope from Redis, causing case mismatches. Now lowercases `trueScope`/`scopePath` before segment matching in both `getBalances` and `listReservations`.
+
+| Fix | Location |
+|-----|----------|
+| Lowercase `trueScope` before `scopeHasSegment` matching in `getBalances` | `RedisReservationRepository.java` |
+| Lowercase `scopePath` before `scopeHasSegment` matching in `listReservations` | `RedisReservationRepository.java` |
+
+Related: runcycles/cycles-openclaw-budget-guard#70, runcycles/cycles-server-admin#54
+
+---
+
 ### 2026-04-01 — Webhook Event Emission + TTL Retention + Performance Optimizations
 
 Added webhook event emission to the runtime server per v0.1.25 spec, enabling runtime operations to trigger webhook deliveries via the shared Redis dispatch queue.
