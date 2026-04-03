@@ -494,7 +494,7 @@ public class RedisReservationRepository {
                             if (!tenant.equals(fields.get("tenant"))) continue;
                             if (status != null && !status.equals(fields.get("state"))) continue;
                             if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) continue;
-                            String scopePath = fields.getOrDefault("scope_path", "");
+                            String scopePath = fields.getOrDefault("scope_path", "").toLowerCase();
                             if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) continue;
                             if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) continue;
                             if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
@@ -566,6 +566,9 @@ public class RedisReservationRepository {
 
                         String trueScope = budget.get("scope");
                         if (trueScope == null) continue;
+                        // Normalize stored scope to lowercase for case-insensitive matching.
+                        // Admin API may have stored mixed-case values before normalization was added.
+                        trueScope = trueScope.toLowerCase();
 
                         // Filter by tenant and optional subject fields.
                         // Use exact segment boundary checks to avoid prefix false-positives
