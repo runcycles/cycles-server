@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import io.runcycles.protocol.model.event.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,7 +10,9 @@ import org.springframework.stereotype.Service;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Cycles Protocol v0.1.25 - Background job that marks expired reservations.
@@ -27,6 +30,7 @@ public class ReservationExpiryService {
     @Autowired private JedisPool jedisPool;
     @Autowired private LuaScriptRegistry luaScripts;
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
+    @Autowired private EventEmitterService eventEmitter;
 
     /** Max candidates per sweep to avoid OOM after prolonged outages. */
     private static final int SWEEP_BATCH_SIZE = 1000;
@@ -54,6 +58,8 @@ public class ReservationExpiryService {
                     // with reserve/commit/release/extend scripts. We still pass reservation_id only.
                     Object result = luaScripts.eval(jedis, "expire", expireScript, reservationId);
                     LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
+                    // Emit reservation.expired event if the Lua script actually expired this reservation
+                    emitExpiredEvent(jedis, reservationId, result);
                 } catch (Exception e) {
                     LOG.warn("Failed to expire reservation: {}", reservationId, e);
                 }
@@ -61,5 +67,55 @@ public class ReservationExpiryService {
         } catch (Exception e) {
             LOG.error("Expiry sweep failed", e);
         }
+    }
+
+    private void emitExpiredEvent(Jedis jedis, String reservationId, Object luaResult) {
+        try {
+            // Only emit if the Lua script actually expired this reservation (status == "EXPIRED")
+            String resultStr = luaResult != null ? luaResult.toString() : "";
+            if (!resultStr.contains("EXPIRED")) return;
+
+            // Fetch reservation hash for event payload — one HGETALL per expired reservation
+            Map<String, String> hash = jedis.hgetAll("reservation:" + reservationId);
+            if (hash == null || hash.isEmpty()) return;
+
+            String tenantId = hash.get("tenant");
+            if (tenantId == null) return;
+
+            String scopePath = hash.get("scope_path");
+            String unit = hash.get("estimate_unit");
+            Long estimateAmount = parseLong(hash.get("estimate_amount"));
+            Long createdAtMs = parseLong(hash.get("created_at_ms"));
+            Long expiresAtMs = parseLong(hash.get("expires_at_ms"));
+            Integer extensionCount = parseInt(hash.get("extension_count"));
+            Integer ttlMs = (createdAtMs != null && expiresAtMs != null)
+                    ? (int) (expiresAtMs - createdAtMs) : null;
+
+            eventEmitter.emit(EventType.RESERVATION_EXPIRED, tenantId, scopePath,
+                    Actor.builder().type(ActorType.SYSTEM).build(),
+                    EventDataReservationExpired.builder()
+                            .reservationId(reservationId)
+                            .scope(scopePath)
+                            .unit(unit)
+                            .estimatedAmount(estimateAmount)
+                            .createdAt(createdAtMs != null ? Instant.ofEpochMilli(createdAtMs) : null)
+                            .expiredAt(expiresAtMs != null ? Instant.ofEpochMilli(expiresAtMs) : null)
+                            .ttlMs(ttlMs)
+                            .extensionsUsed(extensionCount)
+                            .build(),
+                    null, null);
+        } catch (Exception e) {
+            LOG.debug("Failed to emit reservation.expired event for {}: {}", reservationId, e.getMessage());
+        }
+    }
+
+    private static Long parseLong(String value) {
+        if (value == null) return null;
+        try { return Long.parseLong(value); } catch (NumberFormatException e) { return null; }
+    }
+
+    private static Integer parseInt(String value) {
+        if (value == null) return null;
+        try { return Integer.parseInt(value); } catch (NumberFormatException e) { return null; }
     }
 }

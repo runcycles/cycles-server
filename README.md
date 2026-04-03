@@ -53,7 +53,7 @@ cd cycles-protocol-service
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.1.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.3.jar
 ```
 
 Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -77,7 +77,7 @@ cycles-server-events (port 7980)
 Webhook receivers
 ```
 
-**Event emission:** Runtime operations (reserve denied, commit overage) emit events to the shared Redis dispatch queue. The events delivery service (`cycles-server-events`) picks them up and delivers via HTTP POST with HMAC-SHA256 signing.
+**Event emission:** Runtime operations emit events to the shared Redis dispatch queue. The events delivery service (`cycles-server-events`) picks them up and delivers via HTTP POST with HMAC-SHA256 signing.
 
 **Modules** (under `cycles-protocol-service/`):
 
@@ -117,7 +117,7 @@ mvn clean install
 ./build-all.sh
 ```
 
-The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.1.jar`.
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.3.jar`.
 
 ## Docker Deployment
 
@@ -136,7 +136,7 @@ Pre-built images are published to GitHub Container Registry on each release:
 
 ```
 ghcr.io/runcycles/cycles-server:latest
-ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.1
+ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.3
 ```
 
 ## Testing
@@ -172,9 +172,13 @@ Integration tests (`*IntegrationTest.java`) use [Testcontainers](https://www.tes
 
 ### Webhook Event Emission
 
-The runtime server emits events to the shared Redis dispatch queue when:
-- A reservation is **denied** (`reservation.denied`)
-- A commit has **actual > estimated** (`reservation.commit_overage`)
+The runtime server emits events to the shared Redis dispatch queue for:
+- `reservation.denied` — reserve or decide returned DENY
+- `reservation.commit_overage` — commit actual exceeded reservation estimate
+- `reservation.expired` — reservation TTL expired without commit/release (via background sweeper)
+- `budget.exhausted` — remaining budget reached 0 after an operation
+- `budget.over_limit_entered` — scope entered over-limit state (debt > overdraft_limit or ALLOW_IF_AVAILABLE cap)
+- `budget.debt_incurred` — commit/event created debt via ALLOW_WITH_OVERDRAFT
 
 These events are delivered by `cycles-server-events` to webhook subscribers via HTTP POST with HMAC-SHA256 signing. Event emission is non-blocking — failures are logged but never affect the API response.
 

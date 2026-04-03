@@ -44,9 +44,10 @@ public class ReservationController extends BaseController{
         String tenant = extractAuthTenantId();
         ReservationCreateResponse response = repository.createReservation(request, tenant);
         try {
+            Actor actor = Actor.builder().type(ActorType.API_KEY).build();
             if (response.getDecision() == Enums.DecisionEnum.DENY) {
                 eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, response.getScopePath(),
-                        Actor.builder().type(ActorType.API_KEY).build(),
+                        actor,
                         EventDataReservationDenied.builder()
                                 .scope(response.getScopePath())
                                 .reasonCode(response.getReasonCode())
@@ -55,6 +56,8 @@ public class ReservationController extends BaseController{
                                 .build(),
                         null, null);
             }
+            // Emit budget state events from post-operation balances
+            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor, null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
@@ -82,18 +85,21 @@ public class ReservationController extends BaseController{
         authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request);
         try {
+            Actor actor = Actor.builder().type(ActorType.API_KEY).build();
             // Emit commit_overage only when actual charge exceeds the original reservation estimate
             if (response.getEstimateAmount() != null && response.getCharged() != null
                     && response.getCharged().getAmount() != null
                     && response.getCharged().getAmount() > response.getEstimateAmount()) {
                 eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant, null,
-                        Actor.builder().type(ActorType.API_KEY).build(),
+                        actor,
                         EventDataCommitOverage.builder()
                                 .reservationId(reservationId)
                                 .actualAmount(response.getCharged().getAmount())
                                 .build(),
                         null, null);
             }
+            // Emit budget state events from post-operation balances
+            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor, null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }

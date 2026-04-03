@@ -5,7 +5,7 @@ package io.runcycles.protocol.model;
  * All enums in one file for convenience
  */
 public class Enums {
-    public static final String PROTOCOL_VERSION = "0.1.24";
+    public static final String PROTOCOL_VERSION = "0.1.25";
 
     public enum UnitEnum {
         USD_MICROCENTS, TOKENS, CREDITS, RISK_POINTS
