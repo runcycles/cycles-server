@@ -6,6 +6,44 @@
 
 ---
 
+### 2026-04-03 — v0.1.25.3: Extended runtime event emission + PROTOCOL_VERSION fix
+
+**Version bump:** 0.1.25.1 → 0.1.25.3 (0.1.25.2 was the case-insensitive scope fix below).
+
+**Fix:** `Enums.PROTOCOL_VERSION` was hardcoded to `"0.1.24"` — updated to `"0.1.25"` to match the current protocol spec.
+
+**New runtime event emissions (protocol spec v0.1.25 Webhook Event Guidance):**
+
+Added 4 new event types emitted from Java controllers (non-blocking, async via `EventEmitterService`):
+
+| Event Type | Detection | Emit Location |
+|---|---|---|
+| `budget.exhausted` | `remaining.amount == 0` in any post-operation balance | ReservationController (reserve, commit), EventController |
+| `budget.over_limit_entered` | `is_over_limit == true` in any post-operation balance | ReservationController (reserve, commit), EventController |
+| `budget.debt_incurred` | `debt.amount > 0` in any post-operation balance | ReservationController (reserve, commit), EventController |
+| `reservation.expired` | Expiry sweeper Lua returns `EXPIRED` status | ReservationExpiryService (post-expire HGETALL for tenant/scope context) |
+
+**Implementation approach:**
+- `EventEmitterService.emitBalanceEvents()` — new helper that inspects post-operation balances returned from Lua scripts. Called from ReservationController (after reserve and commit) and EventController (after event creation). No extra Redis calls — uses balances already on the response.
+- `ReservationExpiryService.emitExpiredEvent()` — after expire.lua succeeds, fetches the reservation hash (1 HGETALL) to get tenant_id, scope_path, estimate_amount, created_at_ms, expires_at_ms, extension_count for the event payload. Uses `ActorType.SYSTEM` since it's a background job.
+
+**Events NOT emitted (deferred — require new infrastructure):**
+- `budget.threshold_crossed` — needs per-scope threshold configuration + utilization % calculation
+- `budget.burn_rate_anomaly` — needs time-series rate tracking subsystem
+- `budget.over_limit_exited` — admin-only event (triggered by funding operations in cycles-server-admin)
+
+**Runtime event coverage:** 6 of 9 spec-suggested event types now emitted (was 2).
+
+**Modified files:**
+- `Enums.java` — PROTOCOL_VERSION "0.1.24" → "0.1.25"
+- `EventEmitterService.java` — added `emitBalanceEvents()` helper
+- `ReservationController.java` — wired `emitBalanceEvents()` after reserve and commit
+- `EventController.java` — wired `emitBalanceEvents()` after event creation
+- `ReservationExpiryService.java` — added `emitExpiredEvent()` post-expire hook
+- `pom.xml` — revision 0.1.25.1 → 0.1.25.3
+
+---
+
 ### 2026-04-03 — v0.1.25.2: Case-insensitive scope matching
 
 **Bug fix (defense-in-depth):** The admin API may have stored mixed-case scope values. `getBalances` lowercased query params but not the stored scope from Redis, causing case mismatches. Now lowercases `trueScope`/`scopePath` before segment matching in both `getBalances` and `listReservations`.

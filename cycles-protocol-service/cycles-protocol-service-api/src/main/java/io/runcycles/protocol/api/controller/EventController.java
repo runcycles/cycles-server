@@ -1,7 +1,9 @@
 package io.runcycles.protocol.api.controller;
 
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.service.EventEmitterService;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.event.*;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -23,6 +25,9 @@ public class EventController extends BaseController {
     @Autowired
     private RedisReservationRepository repository;
 
+    @Autowired
+    private EventEmitterService eventEmitter;
+
     @PostMapping
     @Operation(operationId = "createEvent", summary = "Record a direct debit event without reservation")
     public ResponseEntity<EventCreateResponse> create(
@@ -35,6 +40,10 @@ public class EventController extends BaseController {
         authorizeTenant(request.getSubject().getTenant());
         String tenant = extractAuthTenantId();
         EventCreateResponse response = repository.createEvent(request, tenant);
+        try {
+            Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor, null, null);
+        } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 }

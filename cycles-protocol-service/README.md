@@ -70,7 +70,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.1.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.3.jar
 ```
 
 The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -148,13 +148,13 @@ Beyond expires_at_ms:                  extend blocked (410)
 
 | Policy | Behaviour |
 |---|---|
-| `REJECT` *(default)* | Commit fails with `409 BUDGET_EXCEEDED` if actual exceeds reserved |
-| `ALLOW_IF_AVAILABLE` | Delta is atomically charged from remaining budget; fails with `409 BUDGET_EXCEEDED` if insufficient |
+| `REJECT` | Commit fails with `409 BUDGET_EXCEEDED` if actual exceeds reserved |
+| `ALLOW_IF_AVAILABLE` *(default)* | Commit always succeeds; delta charged from remaining budget if available, otherwise capped to available remaining and `is_over_limit` set on affected scopes |
 | `ALLOW_WITH_OVERDRAFT` | Delta creates debt up to `overdraft_limit`; fails with `409 OVERDRAFT_LIMIT_EXCEEDED` if `debt + delta > overdraft_limit` |
 
 The same three policies apply to `/v1/events` for direct debits.
 
-When `overage_policy` is omitted from the request, the server resolves it from the tenant's `default_commit_overage_policy` (set via the Admin API). If the tenant has no default configured, `REJECT` is used.
+When `overage_policy` is omitted from the request, the server resolves it from the tenant's `default_commit_overage_policy` (set via the Admin API). If the tenant has no default configured, `ALLOW_IF_AVAILABLE` is used.
 
 ### Debt and Overdraft
 
@@ -308,7 +308,7 @@ Reserve budget before executing an action. Returns `200 OK`.
 | `estimate.amount` | yes | — | ≥ 0 |
 | `ttl_ms` | no | tenant `default_reservation_ttl_ms` or `60000` | 1000–86400000 ms; capped to tenant `max_reservation_ttl_ms` |
 | `grace_period_ms` | no | `5000` | 0–60000 ms |
-| `overage_policy` | no | tenant `default_commit_overage_policy` or `REJECT` | see Overage Policies |
+| `overage_policy` | no | tenant `default_commit_overage_policy` or `ALLOW_IF_AVAILABLE` | see Overage Policies |
 | `dry_run` | no | `false` | evaluates without persisting if true |
 
 **Response** `200 OK`
@@ -477,7 +477,7 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 
 ### GET /v1/reservations/{reservation_id}
 
-Fetch a single reservation by ID. Returns `200 OK` for `ACTIVE`, `COMMITTED`, and `RELEASED` statuses. Returns `410 Gone` for `EXPIRED` reservations.
+Fetch a single reservation by ID. Returns `200 OK` with the reservation's current status (`ACTIVE`, `COMMITTED`, `RELEASED`, or `EXPIRED`).
 
 **Response** `200 OK`
 
@@ -553,8 +553,8 @@ Record a direct debit without a prior reservation. Applied atomically across all
 
 | Overage policy | Behaviour |
 |---|---|
-| `REJECT` *(default)* | Returns `409 BUDGET_EXCEEDED` if `actual > remaining` on any derived scope |
-| `ALLOW_IF_AVAILABLE` | Applies atomically only if sufficient remaining exists; otherwise `409 BUDGET_EXCEEDED` |
+| `REJECT` | Returns `409 BUDGET_EXCEEDED` if `actual > remaining` on any derived scope |
+| `ALLOW_IF_AVAILABLE` *(default)* | Event always succeeds; charges available remaining, caps to available if insufficient, sets `is_over_limit` on affected scopes |
 | `ALLOW_WITH_OVERDRAFT` | Creates debt if insufficient; `409 OVERDRAFT_LIMIT_EXCEEDED` if `debt + actual > overdraft_limit` |
 
 `client_time_ms` is advisory only; server time governs all budget and expiry decisions. Debt and over-limit state do **not** block events — only the `overage_policy` logic applies.
@@ -590,10 +590,13 @@ All errors use this envelope:
 | `FORBIDDEN` | 403 | Tenant in request does not match API key |
 | `NOT_FOUND` | 404 | Reservation, budget, or resource not found |
 | `BUDGET_EXCEEDED` | 409 | Insufficient remaining budget |
+| `BUDGET_FROZEN` | 409 | Budget is frozen by operator (no mutations allowed) |
+| `BUDGET_CLOSED` | 409 | Budget has been permanently closed |
 | `RESERVATION_FINALIZED` | 409 | Reservation already committed or released |
 | `IDEMPOTENCY_MISMATCH` | 409 | Idempotency key reused with different parameters |
 | `OVERDRAFT_LIMIT_EXCEEDED` | 409 | `debt + delta > overdraft_limit`; or scope is over-limit |
 | `DEBT_OUTSTANDING` | 409 | Scope has unresolved debt with no overdraft limit; new reservations blocked |
+| `MAX_EXTENSIONS_EXCEEDED` | 409 | Tenant's `max_reservation_extensions` limit reached |
 | `RESERVATION_EXPIRED` | 410 | Operation attempted after expiry window |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
