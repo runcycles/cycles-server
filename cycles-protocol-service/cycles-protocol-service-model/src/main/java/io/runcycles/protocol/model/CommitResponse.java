@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import java.util.List;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.25 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
@@ -23,4 +24,6 @@ public class CommitResponse {
     @JsonIgnore private String overagePolicy;
     /** Internal: total debt incurred during this commit for event emission. Not serialized. */
     @JsonIgnore @Builder.Default private Long debtIncurred = null;
+    /** Internal: per-scope debt incurred during this commit for event emission. Not serialized. */
+    @JsonIgnore private Map<String, Long> scopeDebtIncurred;
 }

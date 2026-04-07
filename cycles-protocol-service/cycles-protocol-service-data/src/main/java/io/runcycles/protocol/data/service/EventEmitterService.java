@@ -10,6 +10,7 @@ import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -85,7 +86,7 @@ public class EventEmitterService implements DisposableBean {
      */
     public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
                                   String correlationId, String requestId) {
-        emitBalanceEvents(balances, tenantId, actor, null, null, correlationId, requestId);
+        emitBalanceEvents(balances, tenantId, actor, null, null, null, correlationId, requestId);
     }
 
     /**
@@ -94,6 +95,17 @@ public class EventEmitterService implements DisposableBean {
     public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
                                   String reservationId, String overagePolicy,
                                   String correlationId, String requestId) {
+        emitBalanceEvents(balances, tenantId, actor, reservationId, overagePolicy, null, correlationId, requestId);
+    }
+
+    /**
+     * Full overload with per-scope debt incurred map for complete EventDataBudgetDebtIncurred.
+     */
+    public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
+                                  String reservationId, String overagePolicy,
+                                  Map<String, Long> scopeDebtIncurred,
+                                  String correlationId, String requestId) {
+        Map<String, Long> debtMap = scopeDebtIncurred != null ? scopeDebtIncurred : Collections.emptyMap();
         if (balances == null || balances.isEmpty()) return;
         for (Balance b : balances) {
             String unit = b.getRemaining() != null ? b.getRemaining().getUnit().name() : null;
@@ -146,12 +158,14 @@ public class EventEmitterService implements DisposableBean {
             if (b.getDebt() != null && b.getDebt().getAmount() != null
                     && b.getDebt().getAmount() > 0L) {
                 Long odLimit = b.getOverdraftLimit() != null ? b.getOverdraftLimit().getAmount() : null;
+                Long perScopeDebt = debtMap.get(b.getScopePath());
                 emit(EventType.BUDGET_DEBT_INCURRED, tenantId, b.getScopePath(),
                         actor,
                         EventDataBudgetDebtIncurred.builder()
                                 .scope(b.getScopePath())
                                 .unit(b.getDebt().getUnit().name())
                                 .reservationId(reservationId)
+                                .debtIncurred(perScopeDebt)
                                 .totalDebt(b.getDebt().getAmount())
                                 .overdraftLimit(odLimit)
                                 .overagePolicy(overagePolicy)

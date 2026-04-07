@@ -135,7 +135,8 @@ public class ReservationController extends BaseController{
             }
             // Emit budget state events from post-operation balances
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
-                    reservationId, response.getOveragePolicy(), null, null);
+                    reservationId, response.getOveragePolicy(),
+                    response.getScopeDebtIncurred(), null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }

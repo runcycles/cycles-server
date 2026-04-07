@@ -15,24 +15,28 @@
 | # | Issue | Fix |
 |---|-------|-----|
 | 1 | `EventDataReservationDenied` missing `unit`, `remaining`, `action`, `subject` | Populated from request context in DecisionController and ReservationController |
-| 2 | `EventDataCommitOverage` missing `scope`, `unit`, `estimatedAmount`, `overage`, `overagePolicy`, `debtIncurred` | Populated from CommitResponse internal fields; added `scope_path`/`overage_policy` to commit.lua return |
-| 3 | `EventDataBudgetDebtIncurred` missing `reservationId`, `overagePolicy` | Added `reservationId`/`overagePolicy` context params to `emitBalanceEvents()` overload |
+| 2 | `EventDataCommitOverage` missing `scope`, `unit`, `estimatedAmount`, `overage`, `overagePolicy`, `debtIncurred` | Populated from CommitResponse internal fields; added `scope_path`/`overage_policy` to commit.lua return. Audit fix: uses `request.actual` (not `response.charged`) for actualAmount/overage — charged is capped by ALLOW_IF_AVAILABLE |
+| 3 | `EventDataBudgetDebtIncurred` missing `reservationId`, `debtIncurred`, `overagePolicy` | Added per-scope `debt_incurred` tracking in commit.lua/event.lua via `scope_debt_incurred` table; plumbed through `scopeDebtIncurred` map in CommitResponse/EventCreateResponse; `emitBalanceEvents()` overload with full context |
 | 4 | `budget.exhausted` emitted with `null` data | Now emits `EventDataBudgetThreshold` with scope, unit, threshold=1.0, utilization, allocated, remaining=0, spent, reserved, direction="rising" |
 | 5 | `Event.actor` missing `keyId` and `sourceIp` | Added `keyId` to `ApiKeyAuthentication`; `buildActor()` helper in BaseController extracts keyId from auth context and sourceIp from HttpServletRequest |
 
 **Modified files:**
-- `commit.lua` — returns `scope_path` and `overage_policy` in response JSON
-- `CommitResponse.java` — added `@JsonIgnore` internal fields: `scopePath`, `overagePolicy`, `debtIncurred`
+- `commit.lua` — returns `scope_path`/`overage_policy` in response; tracks per-scope `scope_debt_incurred` table, includes in balance snapshots; version comment v0.1.24 → v0.1.25
+- `event.lua` — tracks per-scope `scope_debt_incurred` table, includes in balance snapshots
+- `CommitResponse.java` — added `@JsonIgnore` internal fields: `scopePath`, `overagePolicy`, `debtIncurred`, `scopeDebtIncurred`
+- `EventCreateResponse.java` — added `@JsonIgnore scopeDebtIncurred` map
 - `ApiKeyAuthentication.java` — added `keyId` field + getter
 - `ApiKeyAuthenticationFilter.java` — passes `keyId` from validation response
 - `BaseController.java` — added `buildActor(HttpServletRequest)` helper
 - `DecisionController.java` — full EventDataReservationDenied fields + Actor with keyId/sourceIp
-- `ReservationController.java` — full EventDataReservationDenied/CommitOverage fields + Actor; uses `emitBalanceEvents` overload with reservation context
-- `EventController.java` — Actor with keyId/sourceIp; passes overagePolicy to emitBalanceEvents
-- `EventEmitterService.java` — `emitBalanceEvents` overload with `reservationId`/`overagePolicy`; budget.exhausted uses EventDataBudgetThreshold
-- `RedisReservationRepository.java` — parses `scope_path`, `overage_policy`, `debt_incurred` from Lua response into CommitResponse
+- `ReservationController.java` — full EventDataReservationDenied/CommitOverage fields + Actor; uses request.actual (not response.charged) for overage event; passes `scopeDebtIncurred` to emitBalanceEvents
+- `EventController.java` — Actor with keyId/sourceIp; passes overagePolicy + scopeDebtIncurred to emitBalanceEvents
+- `EventEmitterService.java` — `emitBalanceEvents` overloads with `reservationId`/`overagePolicy`/`scopeDebtIncurred`; budget.exhausted uses EventDataBudgetThreshold; budget.debt_incurred uses per-scope debtIncurred from map
+- `RedisReservationRepository.java` — `parseScopeDebtIncurred()` helper; parses `scope_path`, `overage_policy`, `debt_incurred` from Lua response
 
-**Tests:** 286 tests pass, 0 failures. Added tests for `keyId` propagation, budget.exhausted data payload, debt_incurred reservation context.
+**Tests:** 287 tests pass, 0 failures. Added tests for `keyId` propagation, budget.exhausted data payload, debt_incurred reservation context, per-scope debt_incurred map.
+
+**Remaining event data gaps:** None. All EventData fields now fully populated for runtime-emitted events.
 
 ---
 

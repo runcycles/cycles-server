@@ -125,6 +125,7 @@ end
 local delta = actual_amount - estimate_amount
 local charged_amount = actual_amount
 local total_debt_incurred = 0
+local scope_debt_incurred = {}  -- per-scope debt delta for event data
 
 -- Handle overage
 if delta > 0 then
@@ -215,6 +216,7 @@ if delta > 0 then
                 redis.call('HINCRBY', budget_key, 'spent', funded)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
                 total_debt_incurred = total_debt_incurred + deficit
+                scope_debt_incurred[scope] = deficit
 
                 -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
                 local new_debt = cached.debt + deficit
@@ -306,7 +308,8 @@ for _, scope in ipairs(affected_scopes) do
         allocated = tonumber(b[4] or 0),
         debt = tonumber(b[5] or 0),
         overdraft_limit = tonumber(b[6] or 0),
-        is_over_limit = (b[7] == "true")
+        is_over_limit = (b[7] == "true"),
+        debt_incurred = scope_debt_incurred[scope] or 0
     })
 end
 
