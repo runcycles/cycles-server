@@ -1,4 +1,4 @@
--- Cycles Protocol v0.1.24 - Commit Lua Script
+-- Cycles Protocol v0.1.25 - Commit Lua Script
 -- Atomically commit actual spend with overdraft support
 --local cjson = require("cjson")
 

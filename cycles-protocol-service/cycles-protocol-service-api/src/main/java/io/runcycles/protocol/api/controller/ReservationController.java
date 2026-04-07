@@ -112,20 +112,20 @@ public class ReservationController extends BaseController{
         CommitResponse response = repository.commitReservation(reservationId, request);
         try {
             Actor actor = buildActor(httpRequest);
-            // Emit commit_overage only when actual charge exceeds the original reservation estimate
-            if (response.getEstimateAmount() != null && response.getCharged() != null
-                    && response.getCharged().getAmount() != null
-                    && response.getCharged().getAmount() > response.getEstimateAmount()) {
-                long overage = response.getCharged().getAmount() - response.getEstimateAmount();
+            // Spec: emit commit_overage when committed actual > estimated amount
+            // Use request.actual (not response.charged, which may be capped by ALLOW_IF_AVAILABLE)
+            long requestActual = request.getActual().getAmount();
+            if (response.getEstimateAmount() != null && requestActual > response.getEstimateAmount()) {
+                long overage = requestActual - response.getEstimateAmount();
                 eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant,
                         response.getScopePath(),
                         actor,
                         EventDataCommitOverage.builder()
                                 .reservationId(reservationId)
                                 .scope(response.getScopePath())
-                                .unit(response.getCharged().getUnit().name())
+                                .unit(request.getActual().getUnit().name())
                                 .estimatedAmount(response.getEstimateAmount())
-                                .actualAmount(response.getCharged().getAmount())
+                                .actualAmount(requestActual)
                                 .overage(overage)
                                 .overagePolicy(response.getOveragePolicy())
                                 .debtIncurred(response.getDebtIncurred() != null
