@@ -16,7 +16,7 @@ local reservation_key = "reservation:res_" .. reservation_id
 local rdata = redis.call('HMGET', reservation_key,
     'state', 'estimate_amount', 'estimate_unit', 'affected_scopes',
     'budgeted_scopes', 'committed_idempotency_key', 'overage_policy',
-    'expires_at', 'grace_ms')
+    'expires_at', 'grace_ms', 'scope_path')
 
 local state = rdata[1]
 if not state then
@@ -31,6 +31,7 @@ local affected_scopes_json = rdata[4]
 local budgeted_scopes_json = rdata[5]
 local stored_idempotency_key = rdata[6]
 local overage_policy = rdata[7] or "ALLOW_IF_AVAILABLE"
+local scope_path = rdata[10] or ""
 
 -- Check if already committed (idempotent replay or finalized)
 if state == "COMMITTED" then
@@ -72,6 +73,8 @@ if state == "COMMITTED" then
             estimate_amount = tonumber(idem_vals[3] or 0),
             estimate_unit = idem_vals[4],
             affected_scopes_json = idem_vals[5],
+            overage_policy = overage_policy,
+            scope_path = scope_path,
             balances = replay_balances
         })
     else
@@ -315,5 +318,7 @@ return cjson.encode({
     estimate_amount = estimate_amount,
     estimate_unit = estimate_unit,
     affected_scopes_json = affected_scopes_json,
+    overage_policy = overage_policy,
+    scope_path = scope_path,
     balances = balances
 })

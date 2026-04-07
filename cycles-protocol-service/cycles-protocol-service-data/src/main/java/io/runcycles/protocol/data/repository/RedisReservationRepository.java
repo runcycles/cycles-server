@@ -328,12 +328,20 @@ public class RedisReservationRepository {
             // Parse balances from Lua response (read atomically with mutation)
             List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
 
+            // Internal fields from Lua for event emission (not serialized to client)
+            String scopePath = response.get("scope_path") != null ? response.get("scope_path").toString() : null;
+            String overagePolicy = response.get("overage_policy") != null ? response.get("overage_policy").toString() : null;
+            Number luaDebt = (Number) response.get("debt_incurred");
+
             return CommitResponse.builder()
                 .status(Enums.CommitStatus.COMMITTED)
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
                 .balances(balances)
                 .estimateAmount(luaEstimate != null ? luaEstimate.longValue() : null)
+                .scopePath(scopePath)
+                .overagePolicy(overagePolicy)
+                .debtIncurred(luaDebt != null ? luaDebt.longValue() : null)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);

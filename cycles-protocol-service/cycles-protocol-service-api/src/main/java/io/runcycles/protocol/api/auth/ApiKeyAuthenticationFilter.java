@@ -61,6 +61,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
                 new ApiKeyAuthentication(
                         apiKey,
                         result.getTenantId(),
+                        result.getKeyId(),
                         result.getPermissions());
 
         SecurityContextHolder.getContext().setAuthentication(authentication);

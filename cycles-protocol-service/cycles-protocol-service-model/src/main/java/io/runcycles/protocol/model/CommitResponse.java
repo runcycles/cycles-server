@@ -17,4 +17,10 @@ public class CommitResponse {
     @Valid @JsonProperty("balances") private List<Balance> balances;
     /** Internal: original reservation estimate for overage detection. Not serialized. */
     @JsonIgnore @Builder.Default private Long estimateAmount = null;
+    /** Internal: scope path from reservation for event emission. Not serialized. */
+    @JsonIgnore private String scopePath;
+    /** Internal: overage policy from reservation for event emission. Not serialized. */
+    @JsonIgnore private String overagePolicy;
+    /** Internal: total debt incurred during this commit for event emission. Not serialized. */
+    @JsonIgnore @Builder.Default private Long debtIncurred = null;
 }

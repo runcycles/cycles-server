@@ -1,8 +1,38 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-07 — v0.1.25.4: Event data payload completeness
+
+**Compliance review** against protocol spec v0.1.25 + admin spec v0.1.25 found 5 event data payload gaps. Core protocol (endpoints, schemas, error codes, Lua scripts, idempotency, scope derivation, auth/tenancy) was fully compliant.
+
+**Fixes applied:**
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | `EventDataReservationDenied` missing `unit`, `remaining`, `action`, `subject` | Populated from request context in DecisionController and ReservationController |
+| 2 | `EventDataCommitOverage` missing `scope`, `unit`, `estimatedAmount`, `overage`, `overagePolicy`, `debtIncurred` | Populated from CommitResponse internal fields; added `scope_path`/`overage_policy` to commit.lua return |
+| 3 | `EventDataBudgetDebtIncurred` missing `reservationId`, `overagePolicy` | Added `reservationId`/`overagePolicy` context params to `emitBalanceEvents()` overload |
+| 4 | `budget.exhausted` emitted with `null` data | Now emits `EventDataBudgetThreshold` with scope, unit, threshold=1.0, utilization, allocated, remaining=0, spent, reserved, direction="rising" |
+| 5 | `Event.actor` missing `keyId` and `sourceIp` | Added `keyId` to `ApiKeyAuthentication`; `buildActor()` helper in BaseController extracts keyId from auth context and sourceIp from HttpServletRequest |
+
+**Modified files:**
+- `commit.lua` — returns `scope_path` and `overage_policy` in response JSON
+- `CommitResponse.java` — added `@JsonIgnore` internal fields: `scopePath`, `overagePolicy`, `debtIncurred`
+- `ApiKeyAuthentication.java` — added `keyId` field + getter
+- `ApiKeyAuthenticationFilter.java` — passes `keyId` from validation response
+- `BaseController.java` — added `buildActor(HttpServletRequest)` helper
+- `DecisionController.java` — full EventDataReservationDenied fields + Actor with keyId/sourceIp
+- `ReservationController.java` — full EventDataReservationDenied/CommitOverage fields + Actor; uses `emitBalanceEvents` overload with reservation context
+- `EventController.java` — Actor with keyId/sourceIp; passes overagePolicy to emitBalanceEvents
+- `EventEmitterService.java` — `emitBalanceEvents` overload with `reservationId`/`overagePolicy`; budget.exhausted uses EventDataBudgetThreshold
+- `RedisReservationRepository.java` — parses `scope_path`, `overage_policy`, `debt_incurred` from Lua response into CommitResponse
+
+**Tests:** 286 tests pass, 0 failures. Added tests for `keyId` propagation, budget.exhausted data payload, debt_incurred reservation context.
 
 ---
 

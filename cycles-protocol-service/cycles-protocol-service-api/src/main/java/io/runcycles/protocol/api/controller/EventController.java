@@ -6,6 +6,7 @@ import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.event.*;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,7 +33,8 @@ public class EventController extends BaseController {
     @Operation(operationId = "createEvent", summary = "Record a direct debit event without reservation")
     public ResponseEntity<EventCreateResponse> create(
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
-            @Valid @RequestBody EventCreateRequest request) {
+            @Valid @RequestBody EventCreateRequest request,
+            HttpServletRequest httpRequest) {
         LOG.info("POST /v1/events - tenant: {}", request.getSubject().getTenant());
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
@@ -41,8 +43,11 @@ public class EventController extends BaseController {
         String tenant = extractAuthTenantId();
         EventCreateResponse response = repository.createEvent(request, tenant);
         try {
-            Actor actor = Actor.builder().type(ActorType.API_KEY).build();
-            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor, null, null);
+            Actor actor = buildActor(httpRequest);
+            String policy = request.getOveragePolicy() != null
+                    ? request.getOveragePolicy().name() : "ALLOW_IF_AVAILABLE";
+            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
+                    null, policy, null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
