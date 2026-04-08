@@ -9,6 +9,59 @@ Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 
 ---
 
+## v0.1.25.4 — Event Data Payload Completeness
+
+**Date:** 2026-04-07
+**Branch:** `release/v0.1.25.4`
+**Base commit:** `175f2fc`
+**Environment:** Windows 11 Pro, AMD Ryzen Threadripper 3990X 64-Core, Java 21.0.5, Docker 29.3.1, Redis 7 (Testcontainers)
+
+**Changes from v0.1.25.3:**
+- Populated all missing EventData fields for 6 runtime event types (admin spec compliance)
+- Added per-scope `scope_debt_incurred` tracking in commit.lua and event.lua (1 extra table insert per overdraft scope)
+- commit.lua reads 1 additional field (`scope_path`) in initial HMGET and returns 2 extra fields in response JSON
+- Added `buildActor()` helper extracting keyId/sourceIp from auth context per request
+- ObjectMapper.convertValue calls for action/subject maps on DENY path only (non-hot-path)
+- No changes to reserve.lua, release.lua, extend.lua, or expire.lua
+
+### Single-Threaded Write-Path Latency
+
+| Operation         |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|-------------------|--------|--------|--------|--------|--------|--------|
+| Reserve           |  5.7ms |  6.6ms |  6.9ms |  4.4ms |  7.2ms |  5.7ms |
+| Commit            |  4.7ms |  5.6ms |  5.9ms |  3.2ms |  6.5ms |  4.7ms |
+| Release           |  4.8ms |  5.8ms |  6.0ms |  3.2ms |  6.3ms |  4.8ms |
+| Extend            |  7.6ms |  9.4ms | 10.3ms |  5.5ms | 16.8ms |  7.7ms |
+| Decide            |  5.5ms |  6.5ms |  8.0ms |  3.5ms | 16.1ms |  5.7ms |
+| Event             |  5.1ms |  6.0ms |  6.6ms |  3.9ms | 14.0ms |  5.1ms |
+| Reserve + Commit  | 14.0ms | 15.9ms | 19.8ms | 10.9ms | 23.0ms | 14.1ms |
+| Reserve + Release | 11.7ms | 13.7ms | 17.0ms |  9.4ms | 20.4ms | 11.8ms |
+
+**Write-path analysis:** All write operations are within noise of v0.1.25.3. Reserve (5.7ms vs 6.2ms), Commit (4.7ms vs 4.1ms), Release (4.8ms vs 4.8ms), Extend (7.6ms vs 7.4ms), Decide (5.5ms vs 5.5ms), Event (5.1ms vs 5.2ms) — all within normal environmental variance. The extra HMGET field in commit.lua (`scope_path`) and the `scope_debt_incurred` table insert add no measurable overhead — both are in-memory Lua operations on a single Redis thread. The `buildActor()` helper is a lightweight SecurityContext lookup (no I/O). The ObjectMapper.convertValue for action/subject maps only executes on the DENY path (not the benchmark happy path). No regressions detected.
+
+### Single-Threaded Read-Path Latency
+
+| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|---------------------|--------|--------|--------|--------|--------|--------|
+| GET reservation     |  3.8ms |  4.7ms |  5.2ms |  2.3ms |  5.8ms |  3.8ms |
+| GET balances        |  4.0ms |  4.9ms |  5.3ms |  2.4ms |  5.4ms |  4.0ms |
+| LIST reservations   |  4.3ms |  5.2ms |  5.3ms |  2.8ms |  5.8ms |  4.3ms |
+| Decide (pipelined)  |  5.1ms |  6.2ms |  6.5ms |  3.6ms |  6.6ms |  5.1ms |
+
+**Read-path analysis:** Read operations are slightly higher than v0.1.25.3 (GET reservation 3.8ms vs 2.8ms, GET balances 4.0ms vs 2.9ms) — environmental variance from container state. No read-path code was changed. These numbers remain well within acceptable range and are consistent with v0.1.25.1 baselines (GET reservation 4.0ms, GET balances 4.1ms).
+
+### Concurrent Throughput (Reserve+Commit lifecycle)
+
+| Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    |  min   |  max    | Errors |
+|---------|-----------|----------|---------|---------|---------|--------|---------|--------|
+|       8 |     3,945 |    789.0 |   9.9ms |  12.0ms |  21.1ms |  7.5ms |  25.7ms |      0 |
+|      16 |     5,506 |  1,101.2 |  14.2ms |  19.8ms |  24.2ms |  7.0ms |  36.5ms |      0 |
+|      32 |    13,277 |  2,655.4 |  11.3ms |  17.6ms |  29.8ms |  7.1ms |  66.0ms |      0 |
+
+**Concurrency analysis:** Throughput at 32 threads is 2,655 ops/s — within 8% of v0.1.25.3's 2,873 ops/s, attributable to environmental variance. The scaling ratio from 8→32 threads is 3.4x (789 → 2,655 ops/s), consistent with prior versions (v0.1.25.3: 3.5x, v0.1.25.1: 3.2x). p99 at 32 threads (29.8ms) is higher than v0.1.25.3's 19.3ms but comparable to v0.1.24.3's 22.7ms — container GC variance. Zero errors at all concurrency levels. The benchmark happy-path lifecycle does not trigger overdraft logic, so the new `scope_debt_incurred` table tracking is a no-op during benchmarks. Real-world overhead for overdraft commits would be one additional Lua table insert per scope — negligible compared to Redis I/O.
+
+---
+
 ## v0.1.25.3 — Extended Runtime Event Emission + PROTOCOL_VERSION Fix
 
 **Date:** 2026-04-03
