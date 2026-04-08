@@ -86,7 +86,8 @@ public class EventEmitterService implements DisposableBean {
      */
     public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
                                   String correlationId, String requestId) {
-        emitBalanceEvents(balances, tenantId, actor, null, null, null, correlationId, requestId);
+        emitBalanceEvents(balances, tenantId, actor, null, null, null,
+                null, null, correlationId, requestId);
     }
 
     /**
@@ -94,24 +95,35 @@ public class EventEmitterService implements DisposableBean {
      */
     public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
                                   String reservationId, String overagePolicy,
+                                  Map<String, Long> scopeDebtIncurred,
                                   String correlationId, String requestId) {
-        emitBalanceEvents(balances, tenantId, actor, reservationId, overagePolicy, null, correlationId, requestId);
+        emitBalanceEvents(balances, tenantId, actor, reservationId, overagePolicy, scopeDebtIncurred,
+                null, null, correlationId, requestId);
     }
 
     /**
-     * Full overload with per-scope debt incurred map for complete EventDataBudgetDebtIncurred.
+     * Full overload with pre-mutation state maps for transition-based event emission.
+     * Only emits budget state events on state transitions (not on every operation where
+     * the post-state matches). Fixes duplicate event firing (cycles-server-events#15).
      */
     public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
                                   String reservationId, String overagePolicy,
                                   Map<String, Long> scopeDebtIncurred,
+                                  Map<String, Long> preRemaining,
+                                  Map<String, Boolean> preIsOverLimit,
                                   String correlationId, String requestId) {
         Map<String, Long> debtMap = scopeDebtIncurred != null ? scopeDebtIncurred : Collections.emptyMap();
+        Map<String, Long> preRem = preRemaining != null ? preRemaining : Collections.emptyMap();
+        Map<String, Boolean> preOvl = preIsOverLimit != null ? preIsOverLimit : Collections.emptyMap();
         if (balances == null || balances.isEmpty()) return;
         for (Balance b : balances) {
+            String scopePath = b.getScopePath();
             String unit = b.getRemaining() != null ? b.getRemaining().getUnit().name() : null;
-            // budget.exhausted — remaining.amount == 0
+            long preRemainingVal = preRem.getOrDefault(scopePath, Long.MAX_VALUE);
+            boolean preOverLimitVal = preOvl.getOrDefault(scopePath, false);
+            // budget.exhausted — transition: pre_remaining > 0 && remaining == 0
             if (b.getRemaining() != null && b.getRemaining().getAmount() != null
-                    && b.getRemaining().getAmount() == 0L) {
+                    && b.getRemaining().getAmount() == 0L && preRemainingVal > 0L) {
                 // Spec: use EventDataBudgetThreshold with threshold=1.0, direction=rising
                 Double utilization = null;
                 Long allocated = b.getAllocated() != null ? b.getAllocated().getAmount() : null;
@@ -136,8 +148,8 @@ public class EventEmitterService implements DisposableBean {
                                 .build(),
                         correlationId, requestId);
             }
-            // budget.over_limit_entered — is_over_limit flipped to true
-            if (Boolean.TRUE.equals(b.getIsOverLimit())) {
+            // budget.over_limit_entered — transition: pre=false && post=true
+            if (Boolean.TRUE.equals(b.getIsOverLimit()) && !preOverLimitVal) {
                 Long debt = b.getDebt() != null ? b.getDebt().getAmount() : null;
                 Long odLimit = b.getOverdraftLimit() != null ? b.getOverdraftLimit().getAmount() : null;
                 Double debtUtilization = (debt != null && odLimit != null && odLimit > 0)
@@ -154,11 +166,11 @@ public class EventEmitterService implements DisposableBean {
                                 .build(),
                         correlationId, requestId);
             }
-            // budget.debt_incurred — debt > 0
-            if (b.getDebt() != null && b.getDebt().getAmount() != null
-                    && b.getDebt().getAmount() > 0L) {
+            // budget.debt_incurred — only when new debt was created in this operation
+            Long perScopeDebt = debtMap.get(scopePath);
+            if (perScopeDebt != null && perScopeDebt > 0L
+                    && b.getDebt() != null && b.getDebt().getAmount() != null) {
                 Long odLimit = b.getOverdraftLimit() != null ? b.getOverdraftLimit().getAmount() : null;
-                Long perScopeDebt = debtMap.get(b.getScopePath());
                 emit(EventType.BUDGET_DEBT_INCURRED, tenantId, b.getScopePath(),
                         actor,
                         EventDataBudgetDebtIncurred.builder()

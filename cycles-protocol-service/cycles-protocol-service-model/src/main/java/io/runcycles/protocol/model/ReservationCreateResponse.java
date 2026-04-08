@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import java.util.List;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.25 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
@@ -21,4 +22,8 @@ public class ReservationCreateResponse {
     @Size(max = 128) @JsonProperty("reason_code") private String reasonCode;
     @Min(0) @JsonProperty("retry_after_ms") private Integer retryAfterMs;
     @Valid @JsonProperty("balances") private List<Balance> balances;
+    /** Internal: per-scope pre-mutation remaining for transition detection. Not serialized. */
+    @JsonIgnore private Map<String, Long> preRemaining;
+    /** Internal: per-scope pre-mutation is_over_limit for transition detection. Not serialized. */
+    @JsonIgnore private Map<String, Boolean> preIsOverLimit;
 }

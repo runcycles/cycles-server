@@ -18,4 +18,8 @@ public class EventCreateResponse {
     @Valid @JsonProperty("balances") private List<Balance> balances;
     /** Internal: per-scope debt incurred during this event for event emission. Not serialized. */
     @JsonIgnore private Map<String, Long> scopeDebtIncurred;
+    /** Internal: per-scope pre-mutation remaining for transition detection. Not serialized. */
+    @JsonIgnore private Map<String, Long> preRemaining;
+    /** Internal: per-scope pre-mutation is_over_limit for transition detection. Not serialized. */
+    @JsonIgnore private Map<String, Boolean> preIsOverLimit;
 }
