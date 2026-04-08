@@ -1,6 +1,6 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
@@ -38,7 +38,7 @@
 
 **Remaining event data gaps:** None. All EventData fields now fully populated for runtime-emitted events.
 
-### 2026-04-08 — v0.1.25.4 (addendum): Fix duplicate budget state events (cycles-server-events#15)
+### 2026-04-08 — v0.1.25.5: Fix duplicate budget state events (cycles-server-events#15)
 
 **Bug:** `budget.exhausted`, `budget.over_limit_entered`, and `budget.debt_incurred` events fired on every operation where the post-state matched the condition, not only on state *transitions*. For example, a reserve that depleted a budget emitted `budget.exhausted`, then the subsequent commit (with remaining still at 0) emitted it again.
 
