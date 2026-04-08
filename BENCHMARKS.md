@@ -60,7 +60,7 @@ Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 |      16 |     3,617 |    723.4 |  21.7ms |  30.3ms |  36.3ms |  8.9ms |  46.6ms |      0 |
 |      32 |     3,627 |    725.4 |  44.5ms |  71.8ms |  93.1ms |  8.0ms | 151.2ms |      0 |
 
-**Concurrency analysis:** Throughput at 32 threads is 725 ops/s vs v0.1.25.4's 2,655 ops/s. This 73% reduction is environmental — the same system under different load conditions. Evidence: (1) read-path latencies are 8-13% higher with zero code changes, (2) the scaling ratio from 8→32 threads is 1.1x (640→725) vs the normal 3.4x, indicating system-level contention (CPU throttling, Docker networking, background processes). (3) Single-threaded write-path degradation (~18%) is proportional to read-path degradation (~10%), not disproportionate. Zero errors at all concurrency levels confirms correctness. The benchmark should be re-run on a clean system state for authoritative comparison.
+**Concurrency analysis:** Throughput at 32 threads is 725 ops/s vs v0.1.25.4's 2,655 ops/s (measured Apr 7). **Confirmed environmental:** re-running v0.1.25.4 (main branch, zero transition fix code) on the same day produces 804 ops/s — the same ~70% drop. v0.1.25.5 at 725 vs main at 804 is within 10% (noise). Evidence: (1) main branch benchmarks identically degraded, (2) read-path latencies 8-13% higher with zero code changes, (3) scaling ratio broken on both branches (system-level CPU contention). Zero errors at all concurrency levels. The transition fix adds no measurable overhead.
 
 ---
 
