@@ -55,7 +55,7 @@ class ReservationControllerTest {
     @BeforeEach
     void setAuth() {
         SecurityContextHolder.getContext().setAuthentication(
-                new ApiKeyAuthentication("cyc_live_test", TENANT, PERMISSIONS));
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", PERMISSIONS));
     }
 
     // ---- helpers ----

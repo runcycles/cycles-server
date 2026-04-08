@@ -1,12 +1,16 @@
 package io.runcycles.protocol.api.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.EventEmitterService;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.event.*;
+
+import java.util.Map;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -31,11 +35,15 @@ public class ReservationController extends BaseController{
     @Autowired
     private EventEmitterService eventEmitter;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @PostMapping
     @Operation(operationId = "createReservation", summary = "Create budget reservation")
     public ResponseEntity<ReservationCreateResponse> create(
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
-            @Valid @RequestBody ReservationCreateRequest request) {
+            @Valid @RequestBody ReservationCreateRequest request,
+            HttpServletRequest httpRequest) {
         LOG.info("POST /v1/reservations - tenant: {}", request.getSubject().getTenant());
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
@@ -44,15 +52,32 @@ public class ReservationController extends BaseController{
         String tenant = extractAuthTenantId();
         ReservationCreateResponse response = repository.createReservation(request, tenant);
         try {
-            Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+            Actor actor = buildActor(httpRequest);
             if (response.getDecision() == Enums.DecisionEnum.DENY) {
+                // Derive remaining from balances if available
+                Long remaining = null;
+                if (response.getBalances() != null && !response.getBalances().isEmpty()) {
+                    remaining = response.getBalances().stream()
+                            .filter(b -> b.getRemaining() != null && b.getRemaining().getAmount() != null)
+                            .mapToLong(b -> b.getRemaining().getAmount())
+                            .min().orElse(0L);
+                }
+                Map<String, Object> actionMap = objectMapper.convertValue(request.getAction(),
+                        new com.fasterxml.jackson.core.type.TypeReference<>() {});
+                Map<String, Object> subjectMap = objectMapper.convertValue(request.getSubject(),
+                        new com.fasterxml.jackson.core.type.TypeReference<>() {});
                 eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, response.getScopePath(),
                         actor,
                         EventDataReservationDenied.builder()
                                 .scope(response.getScopePath())
+                                .unit(request.getEstimate() != null
+                                        ? request.getEstimate().getUnit().name() : null)
                                 .reasonCode(response.getReasonCode())
                                 .requestedAmount(request.getEstimate() != null
                                         ? request.getEstimate().getAmount() : null)
+                                .remaining(remaining)
+                                .action(actionMap)
+                                .subject(subjectMap)
                                 .build(),
                         null, null);
             }
@@ -78,28 +103,40 @@ public class ReservationController extends BaseController{
     public ResponseEntity<CommitResponse> commit(
             @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
-            @Valid @RequestBody CommitRequest request) {
+            @Valid @RequestBody CommitRequest request,
+            HttpServletRequest httpRequest) {
         LOG.info("POST /v1/reservations/{}/commit", reservationId);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request);
         try {
-            Actor actor = Actor.builder().type(ActorType.API_KEY).build();
-            // Emit commit_overage only when actual charge exceeds the original reservation estimate
-            if (response.getEstimateAmount() != null && response.getCharged() != null
-                    && response.getCharged().getAmount() != null
-                    && response.getCharged().getAmount() > response.getEstimateAmount()) {
-                eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant, null,
+            Actor actor = buildActor(httpRequest);
+            // Spec: emit commit_overage when committed actual > estimated amount
+            // Use request.actual (not response.charged, which may be capped by ALLOW_IF_AVAILABLE)
+            long requestActual = request.getActual().getAmount();
+            if (response.getEstimateAmount() != null && requestActual > response.getEstimateAmount()) {
+                long overage = requestActual - response.getEstimateAmount();
+                eventEmitter.emit(EventType.RESERVATION_COMMIT_OVERAGE, tenant,
+                        response.getScopePath(),
                         actor,
                         EventDataCommitOverage.builder()
                                 .reservationId(reservationId)
-                                .actualAmount(response.getCharged().getAmount())
+                                .scope(response.getScopePath())
+                                .unit(request.getActual().getUnit().name())
+                                .estimatedAmount(response.getEstimateAmount())
+                                .actualAmount(requestActual)
+                                .overage(overage)
+                                .overagePolicy(response.getOveragePolicy())
+                                .debtIncurred(response.getDebtIncurred() != null
+                                        ? response.getDebtIncurred() : 0L)
                                 .build(),
                         null, null);
             }
             // Emit budget state events from post-operation balances
-            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor, null, null);
+            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
+                    reservationId, response.getOveragePolicy(),
+                    response.getScopeDebtIncurred(), null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }

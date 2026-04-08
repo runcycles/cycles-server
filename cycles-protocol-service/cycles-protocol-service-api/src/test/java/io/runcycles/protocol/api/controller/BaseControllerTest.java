@@ -24,7 +24,7 @@ class BaseControllerTest {
     @BeforeEach
     void setAuth() {
         SecurityContextHolder.getContext().setAuthentication(
-                new ApiKeyAuthentication("cyc_live_test", "acme-corp", List.of("reservations:create")));
+                new ApiKeyAuthentication("cyc_live_test", "acme-corp", "key-test-001", List.of("reservations:create")));
     }
 
     @AfterEach

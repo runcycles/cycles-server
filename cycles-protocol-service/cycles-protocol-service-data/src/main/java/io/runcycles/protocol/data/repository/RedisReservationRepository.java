@@ -328,12 +328,22 @@ public class RedisReservationRepository {
             // Parse balances from Lua response (read atomically with mutation)
             List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
 
+            // Internal fields from Lua for event emission (not serialized to client)
+            String scopePath = response.get("scope_path") != null ? response.get("scope_path").toString() : null;
+            String overagePolicy = response.get("overage_policy") != null ? response.get("overage_policy").toString() : null;
+            Number luaDebt = (Number) response.get("debt_incurred");
+            Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
+
             return CommitResponse.builder()
                 .status(Enums.CommitStatus.COMMITTED)
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
                 .balances(balances)
                 .estimateAmount(luaEstimate != null ? luaEstimate.longValue() : null)
+                .scopePath(scopePath)
+                .overagePolicy(overagePolicy)
+                .debtIncurred(luaDebt != null ? luaDebt.longValue() : null)
+                .scopeDebtIncurred(scopeDebtIncurred)
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
@@ -826,11 +836,14 @@ public class RedisReservationRepository {
                 charged = new Amount(request.getActual().getUnit(), chargedNum.longValue());
             }
 
+            Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
+
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
                 .charged(charged)
                 .balances(balances)
+                .scopeDebtIncurred(scopeDebtIncurred)
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
@@ -1016,6 +1029,27 @@ public class RedisReservationRepository {
      * Falls back to empty list if balances are not present in the response.
      */
     @SuppressWarnings("unchecked")
+    /**
+     * Extract per-scope debt_incurred from Lua balance entries.
+     * Returns a map of scope → debt incurred during this operation.
+     */
+    private Map<String, Long> parseScopeDebtIncurred(Map<String, Object> response) {
+        Object balancesObj = response.get("balances");
+        if (balancesObj == null || !(balancesObj instanceof List)) {
+            return Collections.emptyMap();
+        }
+        List<Map<String, Object>> luaBalances = (List<Map<String, Object>>) balancesObj;
+        Map<String, Long> result = new java.util.HashMap<>();
+        for (Map<String, Object> lb : luaBalances) {
+            String scope = (String) lb.get("scope");
+            long debtIncurred = ((Number) lb.getOrDefault("debt_incurred", 0)).longValue();
+            if (debtIncurred > 0) {
+                result.put(scope, debtIncurred);
+            }
+        }
+        return result;
+    }
+
     private List<Balance> parseLuaBalances(Map<String, Object> response, Enums.UnitEnum unit) {
         Object balancesObj = response.get("balances");
         if (balancesObj == null || !(balancesObj instanceof List)) {

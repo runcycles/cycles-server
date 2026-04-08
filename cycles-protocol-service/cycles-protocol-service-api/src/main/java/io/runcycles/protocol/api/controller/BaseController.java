@@ -4,6 +4,9 @@ import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.Enums;
 import io.runcycles.protocol.model.Subject;
+import io.runcycles.protocol.model.event.Actor;
+import io.runcycles.protocol.model.event.ActorType;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -19,6 +22,21 @@ abstract public class BaseController {
             return auth.getTenantId();
         }
         return null;
+    }
+
+    /**
+     * Build Actor from current auth context and request, populating keyId and sourceIp.
+     */
+    protected Actor buildActor(HttpServletRequest request) {
+        ApiKeyAuthentication auth = (ApiKeyAuthentication) SecurityContextHolder
+                .getContext().getAuthentication();
+        String keyId = auth != null ? auth.getKeyId() : null;
+        String sourceIp = request != null ? request.getRemoteAddr() : null;
+        return Actor.builder()
+                .type(ActorType.API_KEY)
+                .keyId(keyId)
+                .sourceIp(sourceIp)
+                .build();
     }
     public void authorizeTenant (String tenantFromRequest){
         LOG.debug("Authorizing tenant: tenantFromRequest={}",tenantFromRequest);

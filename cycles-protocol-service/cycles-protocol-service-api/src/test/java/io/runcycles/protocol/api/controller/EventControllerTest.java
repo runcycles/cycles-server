@@ -49,7 +49,7 @@ class EventControllerTest {
     @BeforeEach
     void setAuth() {
         SecurityContextHolder.getContext().setAuthentication(
-                new ApiKeyAuthentication("cyc_live_test", TENANT, List.of("reservations:create")));
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("reservations:create")));
     }
 
     private String eventJson(String tenant) throws Exception {

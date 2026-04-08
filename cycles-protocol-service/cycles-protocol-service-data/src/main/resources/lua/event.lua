@@ -137,6 +137,7 @@ end
 -- All checks passed - debit amount across budgeted scopes only.
 -- For ALLOW_IF_AVAILABLE, cap effective_amount to available remaining.
 local effective_amount = amount
+local scope_debt_incurred = {}  -- per-scope debt delta for event data
 local t_now = redis.call('TIME')
 local now = tonumber(t_now[1]) * 1000 + math.floor(tonumber(t_now[2]) / 1000)
 
@@ -204,6 +205,7 @@ for _, scope in ipairs(budgeted_scopes) do
         redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
         redis.call('HINCRBY', budget_key, 'spent', funded)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
+        scope_debt_incurred[scope] = deficit
         local new_debt = cached.debt + deficit
         if cached.overdraft_limit > 0 and new_debt > cached.overdraft_limit then
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
@@ -227,7 +229,8 @@ for _, scope in ipairs(budgeted_scopes) do
         allocated = tonumber(b[4] or 0),
         debt = tonumber(b[5] or 0),
         overdraft_limit = tonumber(b[6] or 0),
-        is_over_limit = (b[7] == "true")
+        is_over_limit = (b[7] == "true"),
+        debt_incurred = scope_debt_incurred[scope] or 0
     })
 end
 

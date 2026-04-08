@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
 import java.util.List;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.25 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
@@ -17,4 +18,12 @@ public class CommitResponse {
     @Valid @JsonProperty("balances") private List<Balance> balances;
     /** Internal: original reservation estimate for overage detection. Not serialized. */
     @JsonIgnore @Builder.Default private Long estimateAmount = null;
+    /** Internal: scope path from reservation for event emission. Not serialized. */
+    @JsonIgnore private String scopePath;
+    /** Internal: overage policy from reservation for event emission. Not serialized. */
+    @JsonIgnore private String overagePolicy;
+    /** Internal: total debt incurred during this commit for event emission. Not serialized. */
+    @JsonIgnore @Builder.Default private Long debtIncurred = null;
+    /** Internal: per-scope debt incurred during this commit for event emission. Not serialized. */
+    @JsonIgnore private Map<String, Long> scopeDebtIncurred;
 }

@@ -14,6 +14,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
@@ -48,12 +49,12 @@ class EventEmitterServiceTest {
 
     @Test
     void emit_nullData_works() throws Exception {
-        service.emit(EventType.BUDGET_EXHAUSTED, "t1", null, null, null, null, null);
+        service.emit(EventType.SYSTEM_WEBHOOK_TEST, "t1", null, null, null, null, null);
 
         Thread.sleep(200);
 
         verify(repository).emit(argThat(e ->
-                e.getEventType() == EventType.BUDGET_EXHAUSTED &&
+                e.getEventType() == EventType.SYSTEM_WEBHOOK_TEST &&
                 e.getData() == null));
     }
 
@@ -77,11 +78,14 @@ class EventEmitterServiceTest {
     // --- emitBalanceEvents tests ---
 
     @Test
-    void emitBalanceEvents_exhausted_emitsWhenRemainingZero() throws Exception {
+    void emitBalanceEvents_exhausted_emitsWithBudgetThresholdData() throws Exception {
         Balance b = Balance.builder()
                 .scope("tenant:t1")
                 .scopePath("tenant:t1")
                 .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, 0L))
+                .allocated(new Amount(Enums.UnitEnum.USD_MICROCENTS, 10000L))
+                .spent(new Amount(Enums.UnitEnum.USD_MICROCENTS, 8000L))
+                .reserved(new Amount(Enums.UnitEnum.USD_MICROCENTS, 2000L))
                 .build();
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
 
@@ -91,7 +95,11 @@ class EventEmitterServiceTest {
         verify(repository).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_EXHAUSTED &&
                 e.getTenantId().equals("t1") &&
-                e.getScope().equals("tenant:t1")));
+                e.getScope().equals("tenant:t1") &&
+                e.getData() != null &&
+                e.getData().get("threshold").equals(1.0) &&
+                e.getData().get("direction").equals("rising") &&
+                e.getData().get("remaining").equals(0L)));
     }
 
     @Test
@@ -132,6 +140,51 @@ class EventEmitterServiceTest {
         verify(repository).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
                 e.getTenantId().equals("t1")));
+    }
+
+    @Test
+    void emitBalanceEvents_debtIncurred_populatesReservationContext() throws Exception {
+        Balance b = Balance.builder()
+                .scope("tenant:t1")
+                .scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, -200L))
+                .debt(new Amount(Enums.UnitEnum.USD_MICROCENTS, 200L))
+                .overdraftLimit(new Amount(Enums.UnitEnum.USD_MICROCENTS, 1000L))
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+
+        service.emitBalanceEvents(List.of(b), "t1", actor,
+                "res-123", "ALLOW_WITH_OVERDRAFT", null, null);
+        Thread.sleep(200);
+
+        verify(repository).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
+                e.getData() != null &&
+                "res-123".equals(e.getData().get("reservation_id")) &&
+                "ALLOW_WITH_OVERDRAFT".equals(e.getData().get("overage_policy"))));
+    }
+
+    @Test
+    void emitBalanceEvents_debtIncurred_populatesPerScopeDebtIncurred() throws Exception {
+        Balance b = Balance.builder()
+                .scope("tenant:t1")
+                .scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, -200L))
+                .debt(new Amount(Enums.UnitEnum.USD_MICROCENTS, 200L))
+                .overdraftLimit(new Amount(Enums.UnitEnum.USD_MICROCENTS, 1000L))
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+        Map<String, Long> scopeDebt = Map.of("tenant:t1", 150L);
+
+        service.emitBalanceEvents(List.of(b), "t1", actor,
+                "res-456", "ALLOW_WITH_OVERDRAFT", scopeDebt, null, null);
+        Thread.sleep(200);
+
+        verify(repository).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
+                e.getData() != null &&
+                Long.valueOf(150L).equals(((Number) e.getData().get("debt_incurred")).longValue()) &&
+                "res-456".equals(e.getData().get("reservation_id"))));
     }
 
     @Test

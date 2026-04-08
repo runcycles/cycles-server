@@ -16,7 +16,7 @@ class ApiKeyAuthenticationTest {
     @DisplayName("should be authenticated after construction")
     void shouldBeAuthenticated() {
         ApiKeyAuthentication auth = new ApiKeyAuthentication(
-                "cyc_live_key123", "tenant-acme", List.of("reservations:create"));
+                "cyc_live_key123", "tenant-acme", "key-001", List.of("reservations:create"));
 
         assertThat(auth.isAuthenticated()).isTrue();
     }
@@ -25,7 +25,7 @@ class ApiKeyAuthenticationTest {
     @DisplayName("getCredentials should return the API key")
     void shouldReturnApiKeyAsCredentials() {
         ApiKeyAuthentication auth = new ApiKeyAuthentication(
-                "cyc_live_key123", "tenant-acme", List.of("reservations:create"));
+                "cyc_live_key123", "tenant-acme", "key-001", List.of("reservations:create"));
 
         assertThat(auth.getCredentials()).isEqualTo("cyc_live_key123");
     }
@@ -34,7 +34,7 @@ class ApiKeyAuthenticationTest {
     @DisplayName("getPrincipal should return the tenant ID")
     void shouldReturnTenantIdAsPrincipal() {
         ApiKeyAuthentication auth = new ApiKeyAuthentication(
-                "cyc_live_key123", "tenant-acme", List.of("reservations:create"));
+                "cyc_live_key123", "tenant-acme", "key-001", List.of("reservations:create"));
 
         assertThat(auth.getPrincipal()).isEqualTo("tenant-acme");
     }
@@ -43,9 +43,27 @@ class ApiKeyAuthenticationTest {
     @DisplayName("getTenantId should return the tenant ID")
     void shouldReturnTenantId() {
         ApiKeyAuthentication auth = new ApiKeyAuthentication(
-                "cyc_live_key123", "tenant-acme", List.of("reservations:create"));
+                "cyc_live_key123", "tenant-acme", "key-001", List.of("reservations:create"));
 
         assertThat(auth.getTenantId()).isEqualTo("tenant-acme");
+    }
+
+    @Test
+    @DisplayName("getKeyId should return the key ID")
+    void shouldReturnKeyId() {
+        ApiKeyAuthentication auth = new ApiKeyAuthentication(
+                "cyc_live_key123", "tenant-acme", "key-001", List.of("reservations:create"));
+
+        assertThat(auth.getKeyId()).isEqualTo("key-001");
+    }
+
+    @Test
+    @DisplayName("getKeyId should return null when not provided")
+    void shouldReturnNullKeyId() {
+        ApiKeyAuthentication auth = new ApiKeyAuthentication(
+                "cyc_live_key123", "tenant-acme", null, List.of("reservations:create"));
+
+        assertThat(auth.getKeyId()).isNull();
     }
 
     @Test
@@ -53,7 +71,7 @@ class ApiKeyAuthenticationTest {
     void shouldMapPermissionsToAuthorities() {
         List<String> permissions = List.of("reservations:create", "reservations:read", "balances:read");
         ApiKeyAuthentication auth = new ApiKeyAuthentication(
-                "cyc_live_key123", "tenant-acme", permissions);
+                "cyc_live_key123", "tenant-acme", "key-001", permissions);
 
         assertThat(auth.getAuthorities())
                 .hasSize(3)
@@ -68,12 +86,13 @@ class ApiKeyAuthenticationTest {
     @DisplayName("should work with empty permissions list")
     void shouldHandleEmptyPermissions() {
         ApiKeyAuthentication auth = new ApiKeyAuthentication(
-                "cyc_live_key123", "tenant-acme", List.of());
+                "cyc_live_key123", "tenant-acme", "key-001", List.of());
 
         assertThat(auth.isAuthenticated()).isTrue();
         assertThat(auth.getAuthorities()).isEmpty();
         assertThat(auth.getCredentials()).isEqualTo("cyc_live_key123");
         assertThat(auth.getPrincipal()).isEqualTo("tenant-acme");
         assertThat(auth.getTenantId()).isEqualTo("tenant-acme");
+        assertThat(auth.getKeyId()).isEqualTo("key-001");
     }
 }

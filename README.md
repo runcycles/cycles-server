@@ -53,7 +53,7 @@ cd cycles-protocol-service
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.3.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.4.jar
 ```
 
 Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -117,7 +117,7 @@ mvn clean install
 ./build-all.sh
 ```
 
-The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.3.jar`.
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.4.jar`.
 
 ## Docker Deployment
 
@@ -136,7 +136,7 @@ Pre-built images are published to GitHub Container Registry on each release:
 
 ```
 ghcr.io/runcycles/cycles-server:latest
-ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.3
+ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.4
 ```
 
 ## Testing

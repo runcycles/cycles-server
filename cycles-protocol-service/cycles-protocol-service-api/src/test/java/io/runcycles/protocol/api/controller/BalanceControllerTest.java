@@ -46,7 +46,7 @@ class BalanceControllerTest {
     @BeforeEach
     void setAuth() {
         SecurityContextHolder.getContext().setAuthentication(
-                new ApiKeyAuthentication("cyc_live_test", TENANT, List.of("balances:read")));
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("balances:read")));
     }
 
     @Test
