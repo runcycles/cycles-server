@@ -1,6 +1,6 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
@@ -37,6 +37,19 @@
 **Tests:** 287 tests pass, 0 failures. Added tests for `keyId` propagation, budget.exhausted data payload, debt_incurred reservation context, per-scope debt_incurred map.
 
 **Remaining event data gaps:** None. All EventData fields now fully populated for runtime-emitted events.
+
+### 2026-04-08 — v0.1.25.5: Fix duplicate budget state events (cycles-server-events#15)
+
+**Bug:** `budget.exhausted`, `budget.over_limit_entered`, and `budget.debt_incurred` events fired on every operation where the post-state matched the condition, not only on state *transitions*. For example, a reserve that depleted a budget emitted `budget.exhausted`, then the subsequent commit (with remaining still at 0) emitted it again.
+
+**Root cause:** `EventEmitterService.emitBalanceEvents()` checked post-mutation state only (e.g., `remaining == 0`). No transition detection.
+
+**Fix:** Lua scripts (reserve, commit, event) now include `pre_remaining` and `pre_is_over_limit` per scope in balance snapshots. Java emits only on transitions:
+- `budget.exhausted`: `pre_remaining > 0 && remaining == 0`
+- `budget.over_limit_entered`: `!pre_is_over_limit && is_over_limit`
+- `budget.debt_incurred`: `scopeDebtIncurred[scope] > 0` (already tracked)
+
+**Performance:** No extra Redis calls. reserve.lua caches pre-state from existing validation HMGET. commit.lua caches from existing overage-path reads (ALLOW_IF_AVAILABLE/ALLOW_WITH_OVERDRAFT); delta <= 0 paths skip (remaining can only increase). event.lua folds `is_over_limit` into existing HMGET.
 
 ---
 

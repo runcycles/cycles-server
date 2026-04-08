@@ -47,7 +47,9 @@ public class EventController extends BaseController {
             String policy = request.getOveragePolicy() != null
                     ? request.getOveragePolicy().name() : "ALLOW_IF_AVAILABLE";
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
-                    null, policy, response.getScopeDebtIncurred(), null, null);
+                    null, policy, response.getScopeDebtIncurred(),
+                    response.getPreRemaining(), response.getPreIsOverLimit(),
+                    null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }

@@ -83,7 +83,7 @@ for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
 
     -- Fetch all needed fields in one round-trip
-    local bvals = redis.call('HMGET', budget_key, 'status', 'unit', 'remaining', 'overdraft_limit', 'debt')
+    local bvals = redis.call('HMGET', budget_key, 'status', 'unit', 'remaining', 'overdraft_limit', 'debt', 'is_over_limit')
 
     -- Check if key exists: at least one field must be non-false
     -- (budget keys may lack an explicit 'status' field, defaulting to ACTIVE)
@@ -115,8 +115,11 @@ for _, scope in ipairs(affected_scopes) do
         local remaining = tonumber(bvals[3] or 0)
         local overdraft_limit = tonumber(bvals[4] or 0)
         local current_debt = tonumber(bvals[5] or 0)
-        -- Cache for reuse in capping/mutation phases
-        scope_budget_cache[scope] = {remaining = remaining, overdraft_limit = overdraft_limit, debt = current_debt}
+        -- Cache for reuse in capping/mutation phases (pre-state for transition detection)
+        scope_budget_cache[scope] = {
+            remaining = remaining, overdraft_limit = overdraft_limit, debt = current_debt,
+            pre_remaining = remaining, pre_is_over_limit = (bvals[6] == "true")
+        }
 
         if remaining < amount then
             if overage_policy == "REJECT" then
@@ -221,6 +224,7 @@ local balances = {}
 for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    local cached = scope_budget_cache[scope] or {}
     table.insert(balances, {
         scope = scope,
         remaining = tonumber(b[1] or 0),
@@ -230,7 +234,9 @@ for _, scope in ipairs(budgeted_scopes) do
         debt = tonumber(b[5] or 0),
         overdraft_limit = tonumber(b[6] or 0),
         is_over_limit = (b[7] == "true"),
-        debt_incurred = scope_debt_incurred[scope] or 0
+        debt_incurred = scope_debt_incurred[scope] or 0,
+        pre_remaining = cached.pre_remaining or 0,
+        pre_is_over_limit = cached.pre_is_over_limit or false
     })
 end
 

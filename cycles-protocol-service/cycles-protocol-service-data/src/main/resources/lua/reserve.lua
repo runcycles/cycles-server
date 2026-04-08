@@ -49,6 +49,7 @@ local expires_at = now + ttl_ms
 -- Check all scopes first (fail fast). Skip scopes without budgets.
 -- Use HMGET to fetch all needed fields in a single call per scope.
 local budgeted_scopes = {}
+local pre_budget_state = {}  -- pre-mutation state for transition detection in events
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
     local vals = redis.call('HMGET', budget_key, 'status', 'remaining', 'debt', 'is_over_limit', 'overdraft_limit')
@@ -61,6 +62,7 @@ for _, scope in ipairs(affected_scopes) do
         local remaining = tonumber(vals[2] or 0)
         local debt = tonumber(vals[3] or 0)
         local is_over_limit = vals[4]
+        pre_budget_state[scope] = {remaining = remaining, is_over_limit = (is_over_limit == "true")}
 
         if budget_status == 'FROZEN' then
             return cjson.encode({error = "BUDGET_FROZEN", scope = scope})
@@ -136,6 +138,7 @@ local balances = {}
 for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
     local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    local pre = pre_budget_state[scope] or {}
     table.insert(balances, {
         scope = scope,
         remaining = tonumber(b[1] or 0),
@@ -144,7 +147,9 @@ for _, scope in ipairs(budgeted_scopes) do
         allocated = tonumber(b[4] or 0),
         debt = tonumber(b[5] or 0),
         overdraft_limit = tonumber(b[6] or 0),
-        is_over_limit = (b[7] == "true")
+        is_over_limit = (b[7] == "true"),
+        pre_remaining = pre.remaining or 0,
+        pre_is_over_limit = pre.is_over_limit or false
     })
 end
 

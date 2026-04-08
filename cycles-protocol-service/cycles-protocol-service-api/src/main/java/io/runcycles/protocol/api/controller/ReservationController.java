@@ -81,8 +81,11 @@ public class ReservationController extends BaseController{
                                 .build(),
                         null, null);
             }
-            // Emit budget state events from post-operation balances
-            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor, null, null);
+            // Emit budget state events from post-operation balances (transition-based)
+            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
+                    null, null, null,
+                    response.getPreRemaining(), response.getPreIsOverLimit(),
+                    null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
@@ -133,10 +136,12 @@ public class ReservationController extends BaseController{
                                 .build(),
                         null, null);
             }
-            // Emit budget state events from post-operation balances
+            // Emit budget state events from post-operation balances (transition-based)
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
                     reservationId, response.getOveragePolicy(),
-                    response.getScopeDebtIncurred(), null, null);
+                    response.getScopeDebtIncurred(),
+                    response.getPreRemaining(), response.getPreIsOverLimit(),
+                    null, null);
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }

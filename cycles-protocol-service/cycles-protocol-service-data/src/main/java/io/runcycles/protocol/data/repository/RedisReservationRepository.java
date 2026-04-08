@@ -130,6 +130,8 @@ public class RedisReservationRepository {
                 .expiresAtMs(((Number) response.get("expires_at")).longValue())
                 .caps(caps)
                 .balances(balances)
+                .preRemaining(parsePreRemaining(response))
+                .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
@@ -344,6 +346,8 @@ public class RedisReservationRepository {
                 .overagePolicy(overagePolicy)
                 .debtIncurred(luaDebt != null ? luaDebt.longValue() : null)
                 .scopeDebtIncurred(scopeDebtIncurred)
+                .preRemaining(parsePreRemaining(response))
+                .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
@@ -844,6 +848,8 @@ public class RedisReservationRepository {
                 .charged(charged)
                 .balances(balances)
                 .scopeDebtIncurred(scopeDebtIncurred)
+                .preRemaining(parsePreRemaining(response))
+                .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
         } catch (CyclesProtocolException e) {
             throw e;
@@ -1033,6 +1039,44 @@ public class RedisReservationRepository {
      * Extract per-scope debt_incurred from Lua balance entries.
      * Returns a map of scope → debt incurred during this operation.
      */
+    /**
+     * Extract per-scope pre-mutation remaining from Lua balance entries.
+     * Used for transition detection: emit budget.exhausted only when pre_remaining > 0 && remaining == 0.
+     */
+    private Map<String, Long> parsePreRemaining(Map<String, Object> response) {
+        Object balancesObj = response.get("balances");
+        if (balancesObj == null || !(balancesObj instanceof List)) {
+            return Collections.emptyMap();
+        }
+        List<Map<String, Object>> luaBalances = (List<Map<String, Object>>) balancesObj;
+        Map<String, Long> result = new java.util.HashMap<>();
+        for (Map<String, Object> lb : luaBalances) {
+            String scope = (String) lb.get("scope");
+            long preRemaining = ((Number) lb.getOrDefault("pre_remaining", 0)).longValue();
+            result.put(scope, preRemaining);
+        }
+        return result;
+    }
+
+    /**
+     * Extract per-scope pre-mutation is_over_limit from Lua balance entries.
+     * Used for transition detection: emit budget.over_limit_entered only when pre=false && post=true.
+     */
+    private Map<String, Boolean> parsePreIsOverLimit(Map<String, Object> response) {
+        Object balancesObj = response.get("balances");
+        if (balancesObj == null || !(balancesObj instanceof List)) {
+            return Collections.emptyMap();
+        }
+        List<Map<String, Object>> luaBalances = (List<Map<String, Object>>) balancesObj;
+        Map<String, Boolean> result = new java.util.HashMap<>();
+        for (Map<String, Object> lb : luaBalances) {
+            String scope = (String) lb.get("scope");
+            boolean preOverLimit = Boolean.TRUE.equals(lb.get("pre_is_over_limit"));
+            result.put(scope, preOverLimit);
+        }
+        return result;
+    }
+
     private Map<String, Long> parseScopeDebtIncurred(Map<String, Object> response) {
         Object balancesObj = response.get("balances");
         if (balancesObj == null || !(balancesObj instanceof List)) {

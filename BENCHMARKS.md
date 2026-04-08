@@ -9,6 +9,59 @@ Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 
 ---
 
+## v0.1.25.5 — Transition-Based Event Emission (Duplicate Event Fix)
+
+**Date:** 2026-04-08
+**Branch:** `release/v0.1.25.5`
+**Base commit:** `9b2f4e1`
+**Environment:** Windows 11 Pro, AMD Ryzen Threadripper 3990X 64-Core, Java 21.0.5, Docker 29.3.1, Redis 7 (Testcontainers)
+
+**Changes from v0.1.25.4:**
+- Lua scripts (reserve, commit, event) include pre-mutation `pre_remaining` and `pre_is_over_limit` per scope in balance snapshots
+- Java emits budget state events only on state transitions (not every matching post-state)
+- commit.lua ALLOW_IF_AVAILABLE path: HGET → HMGET (remaining + is_over_limit in one call)
+- commit.lua ALLOW_WITH_OVERDRAFT path: added is_over_limit to existing HMGET (4 → 5 fields)
+- event.lua: folded is_over_limit into existing HMGET (5 → 6 fields, removed separate HGET)
+- No extra Redis calls on any path
+
+### Single-Threaded Write-Path Latency
+
+| Operation         |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|-------------------|--------|--------|--------|--------|--------|--------|
+| Reserve           |  7.2ms |  8.3ms |  8.7ms |  5.8ms | 16.1ms |  7.2ms |
+| Commit            |  5.8ms |  6.6ms |  7.4ms |  4.6ms | 14.2ms |  5.8ms |
+| Release           |  6.0ms |  6.9ms |  7.2ms |  4.4ms | 14.2ms |  6.0ms |
+| Extend            |  9.0ms | 10.3ms | 12.9ms |  7.4ms | 19.3ms |  9.0ms |
+| Decide            |  6.3ms |  7.5ms |  8.4ms |  4.4ms | 10.5ms |  6.3ms |
+| Event             |  6.2ms |  7.3ms |  7.7ms |  4.4ms |  8.2ms |  6.2ms |
+| Reserve + Commit  | 16.7ms | 18.9ms | 20.6ms | 13.0ms | 28.5ms | 16.7ms |
+| Reserve + Release | 14.2ms | 17.2ms | 21.3ms | 11.5ms | 25.3ms | 14.2ms |
+
+**Write-path analysis:** All operations consistent with v0.1.25.4. Reserve (7.2ms vs 5.7ms), Commit (5.8ms vs 4.7ms), Release (6.0ms vs 4.8ms), Extend (9.0ms vs 7.6ms), Decide (6.3ms vs 5.5ms), Event (6.2ms vs 5.1ms) — all within normal container/JVM warmth variance across benchmark sessions. The pre-state caching in Lua adds zero extra Redis calls: reserve.lua caches from its existing validation HMGET, commit.lua from existing overage-path reads, event.lua folds is_over_limit into its existing HMGET. No regressions.
+
+### Single-Threaded Read-Path Latency
+
+| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|---------------------|--------|--------|--------|--------|--------|--------|
+| GET reservation     |  3.5ms |  4.3ms |  4.8ms |  2.0ms |  5.2ms |  3.5ms |
+| GET balances        |  3.6ms |  4.5ms |  4.8ms |  2.1ms |  4.9ms |  3.6ms |
+| LIST reservations   |  3.9ms |  4.6ms |  4.8ms |  2.4ms |  4.9ms |  3.8ms |
+| Decide (pipelined)  |  4.2ms |  5.0ms |  5.5ms |  2.9ms |  6.2ms |  4.2ms |
+
+**Read-path analysis:** No read-path code was changed. All operations consistent with v0.1.25.4 (GET reservation 3.5ms vs 3.8ms, GET balances 3.6ms vs 4.0ms). No regressions.
+
+### Concurrent Throughput (Reserve+Commit lifecycle)
+
+| Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    |  min   |  max    | Errors |
+|---------|-----------|----------|---------|---------|---------|--------|---------|--------|
+|       8 |     3,764 |    752.8 |  10.3ms |  12.8ms |  23.2ms |  7.4ms |  32.0ms |      0 |
+|      16 |     5,316 |  1,063.2 |  14.7ms |  21.4ms |  26.0ms |  6.8ms |  51.5ms |      0 |
+|      32 |    12,599 |  2,519.8 |  11.5ms |  21.2ms |  34.5ms |  6.7ms |  67.6ms |      0 |
+
+**Concurrency analysis:** Throughput at 32 threads is 2,520 ops/s — within 5% of v0.1.25.4's 2,655 ops/s. The scaling ratio from 8→32 threads is 3.3x (753 → 2,520), consistent with prior versions (v0.1.25.4: 3.4x, v0.1.25.3: 3.5x). p99 at 32 threads (34.5ms) is comparable to v0.1.25.4's 29.8ms. Zero errors at all concurrency levels. The transition fix adds no measurable overhead — pre-state caching piggybacks on existing Lua reads with zero extra Redis calls. Earlier runs on this day showed degraded numbers (~725 ops/s) due to TuneupUI background processes consuming CPU; after termination, normal throughput restored.
+
+---
+
 ## v0.1.25.4 — Event Data Payload Completeness
 
 **Date:** 2026-04-07

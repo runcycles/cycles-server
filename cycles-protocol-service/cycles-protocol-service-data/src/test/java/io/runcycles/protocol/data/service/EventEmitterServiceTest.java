@@ -124,7 +124,29 @@ class EventEmitterServiceTest {
     }
 
     @Test
-    void emitBalanceEvents_debtIncurred_emitsWhenDebtPositive() throws Exception {
+    void emitBalanceEvents_debtIncurred_emitsWhenNewDebtCreated() throws Exception {
+        Balance b = Balance.builder()
+                .scope("tenant:t1")
+                .scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, -200L))
+                .debt(new Amount(Enums.UnitEnum.USD_MICROCENTS, 200L))
+                .overdraftLimit(new Amount(Enums.UnitEnum.USD_MICROCENTS, 1000L))
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+        Map<String, Long> scopeDebt = Map.of("tenant:t1", 200L);
+
+        service.emitBalanceEvents(List.of(b), "t1", actor,
+                null, null, scopeDebt, null, null);
+        Thread.sleep(200);
+
+        verify(repository).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
+                e.getTenantId().equals("t1")));
+    }
+
+    @Test
+    void emitBalanceEvents_debtIncurred_doesNotEmitWhenNoNewDebt() throws Exception {
+        // debt > 0 but no new debt in this operation — should NOT emit
         Balance b = Balance.builder()
                 .scope("tenant:t1")
                 .scopePath("tenant:t1")
@@ -134,12 +156,12 @@ class EventEmitterServiceTest {
                 .build();
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
 
+        // No scopeDebtIncurred entry — debt existed from prior operation
         service.emitBalanceEvents(List.of(b), "t1", actor, null, null);
         Thread.sleep(200);
 
-        verify(repository).emit(argThat(e ->
-                e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
-                e.getTenantId().equals("t1")));
+        verify(repository, never()).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_DEBT_INCURRED));
     }
 
     @Test
@@ -152,9 +174,10 @@ class EventEmitterServiceTest {
                 .overdraftLimit(new Amount(Enums.UnitEnum.USD_MICROCENTS, 1000L))
                 .build();
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+        Map<String, Long> scopeDebt = Map.of("tenant:t1", 200L);
 
         service.emitBalanceEvents(List.of(b), "t1", actor,
-                "res-123", "ALLOW_WITH_OVERDRAFT", null, null);
+                "res-123", "ALLOW_WITH_OVERDRAFT", scopeDebt, null, null);
         Thread.sleep(200);
 
         verify(repository).emit(argThat(e ->
@@ -185,6 +208,51 @@ class EventEmitterServiceTest {
                 e.getData() != null &&
                 Long.valueOf(150L).equals(((Number) e.getData().get("debt_incurred")).longValue()) &&
                 "res-456".equals(e.getData().get("reservation_id"))));
+    }
+
+    // --- Transition detection tests (cycles-server-events#15) ---
+
+    @Test
+    void emitBalanceEvents_exhausted_doesNotEmitWhenAlreadyExhausted() throws Exception {
+        // remaining == 0 but pre_remaining was also 0 — should NOT emit (not a transition)
+        Balance b = Balance.builder()
+                .scope("tenant:t1")
+                .scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, 0L))
+                .allocated(new Amount(Enums.UnitEnum.USD_MICROCENTS, 10000L))
+                .spent(new Amount(Enums.UnitEnum.USD_MICROCENTS, 10000L))
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+        Map<String, Long> preRem = Map.of("tenant:t1", 0L);
+
+        service.emitBalanceEvents(List.of(b), "t1", actor,
+                null, null, null, preRem, null, null, null);
+        Thread.sleep(200);
+
+        verify(repository, never()).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_EXHAUSTED));
+    }
+
+    @Test
+    void emitBalanceEvents_overLimitEntered_doesNotEmitWhenAlreadyOverLimit() throws Exception {
+        // is_over_limit == true but was already true — should NOT emit (not a transition)
+        Balance b = Balance.builder()
+                .scope("tenant:t1")
+                .scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, -500L))
+                .debt(new Amount(Enums.UnitEnum.USD_MICROCENTS, 1500L))
+                .overdraftLimit(new Amount(Enums.UnitEnum.USD_MICROCENTS, 1000L))
+                .isOverLimit(true)
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+        Map<String, Boolean> preOvl = Map.of("tenant:t1", true);
+
+        service.emitBalanceEvents(List.of(b), "t1", actor,
+                null, null, null, null, preOvl, null, null);
+        Thread.sleep(200);
+
+        verify(repository, never()).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_OVER_LIMIT_ENTERED));
     }
 
     @Test

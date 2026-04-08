@@ -126,6 +126,10 @@ local delta = actual_amount - estimate_amount
 local charged_amount = actual_amount
 local total_debt_incurred = 0
 local scope_debt_incurred = {}  -- per-scope debt delta for event data
+-- Pre-mutation state for transition detection. Populated from existing reads
+-- in overage paths (no extra HMGET). For delta <= 0, remaining can only stay
+-- same or increase, so transitions to exhausted/over-limit are impossible.
+local pre_budget_state = {}
 
 -- Handle overage
 if delta > 0 then
@@ -138,7 +142,9 @@ if delta > 0 then
         local capped_delta = delta
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
-            local remaining = tonumber(redis.call('HGET', budget_key, 'remaining') or 0)
+            local cvals = redis.call('HMGET', budget_key, 'remaining', 'is_over_limit')
+            local remaining = tonumber(cvals[1] or 0)
+            pre_budget_state[scope] = {remaining = remaining, is_over_limit = (cvals[2] == "true")}
             capped_delta = math.min(capped_delta, math.max(remaining, 0))
         end
 
@@ -171,11 +177,12 @@ if delta > 0 then
         -- Phase 1: cache all scopes, cap delta from zero-limit scopes
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
-            local vals = redis.call('HMGET', budget_key, 'remaining', 'debt', 'overdraft_limit')
+            local vals = redis.call('HMGET', budget_key, 'remaining', 'debt', 'overdraft_limit', 'is_over_limit')
             local remaining = tonumber(vals[1] or 0)
             local current_debt = tonumber(vals[2] or 0)
             local overdraft_limit = tonumber(vals[3] or 0)
             scope_budget_cache[scope] = {remaining = remaining, debt = current_debt, overdraft_limit = overdraft_limit}
+            pre_budget_state[scope] = {remaining = remaining, is_over_limit = (vals[4] == "true")}
 
             if overdraft_limit == 0 and remaining < delta then
                 -- Spec: behaves as ALLOW_IF_AVAILABLE — cap delta to available (floor 0)
@@ -300,6 +307,7 @@ local balances = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. actual_unit
     local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
+    local pre = pre_budget_state[scope] or {}
     table.insert(balances, {
         scope = scope,
         remaining = tonumber(b[1] or 0),
@@ -309,7 +317,9 @@ for _, scope in ipairs(affected_scopes) do
         debt = tonumber(b[5] or 0),
         overdraft_limit = tonumber(b[6] or 0),
         is_over_limit = (b[7] == "true"),
-        debt_incurred = scope_debt_incurred[scope] or 0
+        debt_incurred = scope_debt_incurred[scope] or 0,
+        pre_remaining = pre.remaining or 0,
+        pre_is_over_limit = pre.is_over_limit or false
     })
 end
 
