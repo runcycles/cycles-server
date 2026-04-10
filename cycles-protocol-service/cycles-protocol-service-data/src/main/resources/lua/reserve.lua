@@ -91,20 +91,20 @@ end
 if #budgeted_scopes == 0 then
     if units_csv ~= "" then
         for _, scope in ipairs(affected_scopes) do
-            local alt_units = {}
+            local expected_units = {}
             for unit_alt in string.gmatch(units_csv, "[^,]+") do
                 if unit_alt ~= estimate_unit then
                     if redis.call('EXISTS', "budget:" .. scope .. ":" .. unit_alt) == 1 then
-                        table.insert(alt_units, unit_alt)
+                        table.insert(expected_units, unit_alt)
                     end
                 end
             end
-            if #alt_units > 0 then
+            if #expected_units > 0 then
                 return cjson.encode({
                     error = "UNIT_MISMATCH",
                     scope = scope,
                     requested_unit = estimate_unit,
-                    available_units = alt_units
+                    expected_units = expected_units
                 })
             end
         end

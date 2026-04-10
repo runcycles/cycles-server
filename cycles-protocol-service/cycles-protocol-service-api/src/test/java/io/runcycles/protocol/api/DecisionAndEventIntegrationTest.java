@@ -136,6 +136,45 @@ class DecisionAndEventIntegrationTest extends BaseIntegrationTest {
             assertThat(resp.getStatusCode().value()).isEqualTo(200);
             assertThat(resp.getBody().get("affected_scopes")).isNotNull();
         }
+
+        @Test
+        void shouldRejectDecideWithUnitMismatchWhenBudgetExistsInDifferentUnit() {
+            // Budget seeded at tenant:tenant-a in TOKENS. Request USD_MICROCENTS on /decide →
+            // Java probe finds TOKENS at the scope → 400 UNIT_MISMATCH with expected_units.
+            // Spec line 1131-1134 only prohibits 409 on decide for debt/overdraft; 400 for a
+            // request-validity error (wrong unit) is permitted and consistent with reserve/event.
+            Map<String, Object> body = new HashMap<>();
+            body.put("idempotency_key", UUID.randomUUID().toString());
+            body.put("subject", Map.of("tenant", TENANT_A));
+            body.put("action", Map.of("kind", "llm.completion", "name", "test-model"));
+            body.put("estimate", Map.of("unit", "USD_MICROCENTS", "amount", 1000));
+
+            ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("UNIT_MISMATCH");
+            Map<String, Object> details = (Map<String, Object>) resp.getBody().get("details");
+            assertThat(details).isNotNull();
+            assertThat(details.get("scope")).isEqualTo("tenant:" + TENANT_A);
+            assertThat(details.get("requested_unit")).isEqualTo("USD_MICROCENTS");
+            assertThat((List<String>) details.get("expected_units")).contains("TOKENS");
+        }
+
+        @Test
+        void shouldReturnDenyBudgetNotFoundOnDecideWhenNoBudgetAtAnyUnit() {
+            // Regression guard: when no budget exists at ANY unit for the scope, decide still
+            // returns 200 DENY with reason_code=BUDGET_NOT_FOUND (the probe found nothing).
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del("budget:tenant:" + TENANT_A + ":TOKENS");
+            }
+
+            ResponseEntity<Map> resp = post("/v1/decide", API_KEY_SECRET_A,
+                    decisionBody(TENANT_A, 1000));
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().get("decision")).isEqualTo("DENY");
+            assertThat(resp.getBody().get("reason_code")).isEqualTo("BUDGET_NOT_FOUND");
+        }
     }
 
     @Nested
@@ -187,7 +226,7 @@ class DecisionAndEventIntegrationTest extends BaseIntegrationTest {
         void shouldRejectEventWithUnitMismatch() {
             // Spec: event actual.unit not supported for the target scope MUST return UNIT_MISMATCH.
             // Budget seeded for TOKENS at tenant:tenant-a; request USD_MICROCENTS → Lua probes
-            // alternate units, finds TOKENS, returns UNIT_MISMATCH (400) with available_units.
+            // alternate units, finds TOKENS, returns UNIT_MISMATCH (400) with expected_units.
             Map<String, Object> body = new HashMap<>();
             body.put("idempotency_key", UUID.randomUUID().toString());
             body.put("subject", Map.of("tenant", TENANT_A));
@@ -202,7 +241,7 @@ class DecisionAndEventIntegrationTest extends BaseIntegrationTest {
             assertThat(details).isNotNull();
             assertThat(details.get("scope")).isEqualTo("tenant:" + TENANT_A);
             assertThat(details.get("requested_unit")).isEqualTo("USD_MICROCENTS");
-            assertThat((List<String>) details.get("available_units")).contains("TOKENS");
+            assertThat((List<String>) details.get("expected_units")).contains("TOKENS");
         }
 
         @Test

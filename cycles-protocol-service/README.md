@@ -585,7 +585,7 @@ All errors use this envelope:
 | Code | HTTP | Meaning |
 |---|---|---|
 | `INVALID_REQUEST` | 400 | Missing or invalid field |
-| `UNIT_MISMATCH` | 400 | Requested unit does not match the stored budget unit for the target scope. Raised by reserve/commit/event. Reserve and event responses include `details.scope`, `details.requested_unit`, and `details.available_units` so the client can self-correct; commit uses the legacy no-detail form. |
+| `UNIT_MISMATCH` | 400 | Requested unit does not match the stored budget unit for the target scope. Raised by reserve/commit/event. Reserve and event responses include `details.scope`, `details.requested_unit`, and `details.expected_units` so the client can self-correct; commit uses the legacy no-detail form. |
 | `UNAUTHORIZED` | 401 | Missing or invalid API key |
 | `FORBIDDEN` | 403 | Tenant in request does not match API key |
 | `NOT_FOUND` | 404 | Reservation, budget, or resource not found |

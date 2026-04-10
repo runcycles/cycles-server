@@ -12,25 +12,27 @@
 
 **Root cause:** `reserve.lua` / `event.lua` key budgets by `budget:<scope>:<unit>`. When the requested unit doesn't match the stored unit, the key doesn't exist, the scope is silently skipped, and `#budgeted_scopes == 0` falls through to `BUDGET_NOT_FOUND`. The existing `UNIT_MISMATCH` branch in `event.lua` only caught an internal inconsistency between key suffix and stored `unit` field — it did not catch the cross-unit case.
 
-**Fix:** On the empty-budgeted-scopes error path only, both scripts now probe the fixed `UnitEnum` set (`USD_MICROCENTS`, `TOKENS`, `CREDITS`, `RISK_POINTS`) via `EXISTS budget:<scope>:<unit_alt>` for each affected scope. If any alternate-unit budget exists, the script returns `UNIT_MISMATCH` (400) with `scope`, `requested_unit`, and `available_units` in the error payload so the client can self-correct. Otherwise falls through to the existing `BUDGET_NOT_FOUND` (404).
+**Fix:** On the empty-budgeted-scopes error path only, both scripts now probe the fixed `UnitEnum` set (`USD_MICROCENTS`, `TOKENS`, `CREDITS`, `RISK_POINTS`) via `EXISTS budget:<scope>:<unit_alt>` for each affected scope. If any alternate-unit budget exists, the script returns `UNIT_MISMATCH` (400) with `scope`, `requested_unit`, and `expected_units` in the error payload so the client can self-correct. Otherwise falls through to the existing `BUDGET_NOT_FOUND` (404).
 
 Cascade semantics preserved: scopes without a budget at the requested unit are still silently skipped during the main validation loop — the probe only fires when every affected scope missed. No hot-path change; the cost is paid once on the error path only.
 
-`evaluateDryRun` (the non-Lua dry-run path) gets the symmetric probe in Java and throws `UNIT_MISMATCH` (400) to match the real-reserve behavior.
+`evaluateDryRun` and `/v1/decide` (the non-Lua Java paths) get the symmetric probe via a shared `probeAlternateUnits` helper and throw `UNIT_MISMATCH` (400) to match the reserve/event behavior. Spec line 1131-1134 only prohibits 409 on `/decide` for debt/overdraft conditions; 400 for a request-validity error (wrong unit) is permitted and is consistent across all four entry points.
 
 **Modified files:**
 - `reserve.lua` — new `ARGV[15] = units_csv`; scopes now start at ARGV[16]; alternate-unit probe added to the empty-budgeted-scopes branch
 - `event.lua` — new `ARGV[14] = units_csv`; scopes now start at ARGV[15]; symmetric probe
-- `RedisReservationRepository.java` — `UNIT_CSV` constant derived once from `Enums.UnitEnum.values()`; passed into both `createReservation` and `createEvent` args; `evaluateDryRun` mirrors the probe in Java; `handleScriptError` extracts `scope` / `requested_unit` / `available_units` for reserve/event and falls back to the no-detail factory for commit.lua's legacy form
-- `CyclesProtocolException.java` — `unitMismatch(scope, requestedUnit, availableUnits)` overload populating `details`
+- `RedisReservationRepository.java` — `UNIT_CSV` constant derived once from `Enums.UnitEnum.values()`; passed into both `createReservation` and `createEvent` args; `evaluateDryRun` and `decide` mirror the probe via a shared `probeAlternateUnits(jedis, scope, requestedUnit)` helper; `handleScriptError` extracts `scope` / `requested_unit` / `expected_units` for reserve/event and falls back to the no-detail factory for commit.lua's legacy form
+- `CyclesProtocolException.java` — `unitMismatch(scope, requestedUnit, expectedUnits)` overload populating `details`
 - `ReservationLifecycleIntegrationTest.java` — `shouldRejectWhenNoBudgetExistsForUnit` renamed to `shouldRejectWithUnitMismatchWhenBudgetExistsInDifferentUnit` and flipped to expect 400 + details; added `shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnit` regression guard and `shouldReturnUnitMismatchOnDryRunWhenBudgetExistsInDifferentUnit`
-- `DecisionAndEventIntegrationTest.java` — `shouldRejectEventWithUnitMismatch` flipped from 404 `NOT_FOUND` to 400 `UNIT_MISMATCH` + details; added `shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnitOnEvent`
+- `DecisionAndEventIntegrationTest.java` — `shouldRejectEventWithUnitMismatch` flipped from 404 `NOT_FOUND` to 400 `UNIT_MISMATCH` + details; added `shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnitOnEvent`, `shouldRejectDecideWithUnitMismatchWhenBudgetExistsInDifferentUnit`, and `shouldReturnDenyBudgetNotFoundOnDecideWhenNoBudgetAtAnyUnit`
 - `RedisReservationCoreOpsTest.java` — existing `shouldThrowUnitMismatch` asserts the no-detail fallback path; added `shouldThrowUnitMismatchWithDetailsFromReserve`
 - `CyclesProtocolExceptionTest.java` — coverage for the new factory overload (populated details + null-tolerant form)
 - `cycles-protocol-service/README.md` — error table entry for `UNIT_MISMATCH` broadened to include reserve + describe the `details.*` payload
 - `cycles-protocol-service/pom.xml` — `<revision>` bumped `0.1.25.5` → `0.1.25.6`
 
-**Out of scope:** Client-side rust SDK changes (not needed — structured error is enough for the user to correct their call). Protocol YAML spec update lives in `runcycles/cycles-protocol` and is handled on a coordinated branch.
+**Closes:** runcycles/cycles-server#79. Addresses runcycles/cycles-client-rust#8.
+
+**Out of scope:** Client-side rust SDK changes (not needed — structured error is enough for the user to correct their call). Protocol YAML spec update lives in `runcycles/cycles-protocol` and is handled on a coordinated branch (adds `"404"` to `/v1/reservations` POST and `/v1/events` POST response lists + broadens normative UNIT_MISMATCH wording to cover reserve).
 
 ### 2026-04-07 — v0.1.25.4: Event data payload completeness
 
@@ -302,7 +304,7 @@ Two-pass audit covering:
 - RESERVATION_FINALIZED → 409
 - RESERVATION_EXPIRED → 410
 - NOT_FOUND → 404
-- UNIT_MISMATCH → 400 (enforced in reserve.lua, commit.lua, event.lua; reserve/event paths return `scope`, `requested_unit`, `available_units` in details so the client can self-correct — see v0.1.25.6)
+- UNIT_MISMATCH → 400 (enforced in reserve.lua, commit.lua, event.lua; reserve/event paths return `scope`, `requested_unit`, `expected_units` in details so the client can self-correct — see v0.1.25.6)
 - IDEMPOTENCY_MISMATCH → 409
 - INVALID_REQUEST → 400
 - INTERNAL_ERROR → 500

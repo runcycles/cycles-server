@@ -186,13 +186,13 @@ class RedisReservationCoreOpsTest extends BaseRedisReservationRepositoryTest {
 
         @Test
         void shouldThrowUnitMismatchWithDetailsFromReserve() {
-            // reserve.lua / event.lua populate scope + requested_unit + available_units so the
+            // reserve.lua / event.lua populate scope + requested_unit + expected_units so the
             // client can self-correct.
             Map<String, Object> resp = new HashMap<>();
             resp.put("error", "UNIT_MISMATCH");
             resp.put("scope", "tenant:rider");
             resp.put("requested_unit", "TOKENS");
-            resp.put("available_units", List.of("USD_MICROCENTS"));
+            resp.put("expected_units", List.of("USD_MICROCENTS"));
 
             assertThatThrownBy(() -> invokeHandleScriptError(resp))
                     .isInstanceOf(CyclesProtocolException.class)
@@ -205,7 +205,7 @@ class RedisReservationCoreOpsTest extends BaseRedisReservationRepositoryTest {
                         CyclesProtocolException cex = (CyclesProtocolException) ex;
                         assertThat(cex.getDetails()).containsEntry("scope", "tenant:rider");
                         assertThat(cex.getDetails()).containsEntry("requested_unit", "TOKENS");
-                        assertThat(cex.getDetails()).containsEntry("available_units",
+                        assertThat(cex.getDetails()).containsEntry("expected_units",
                                 List.of("USD_MICROCENTS"));
                     });
         }

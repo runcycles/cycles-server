@@ -80,9 +80,9 @@ class CyclesProtocolExceptionTest {
 
     @Test
     void shouldCreateUnitMismatchWithDetails() {
-        List<String> available = List.of("USD_MICROCENTS", "CREDITS");
+        List<String> expected = List.of("USD_MICROCENTS", "CREDITS");
         CyclesProtocolException ex = CyclesProtocolException.unitMismatch(
-                "tenant:rider", "TOKENS", available);
+                "tenant:rider", "TOKENS", expected);
 
         assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.UNIT_MISMATCH);
         assertThat(ex.getHttpStatus()).isEqualTo(400);
@@ -91,7 +91,7 @@ class CyclesProtocolExceptionTest {
         assertThat(ex.getMessage()).contains("USD_MICROCENTS");
         assertThat(ex.getDetails()).containsEntry("scope", "tenant:rider");
         assertThat(ex.getDetails()).containsEntry("requested_unit", "TOKENS");
-        assertThat(ex.getDetails()).containsEntry("available_units", available);
+        assertThat(ex.getDetails()).containsEntry("expected_units", expected);
     }
 
     @Test

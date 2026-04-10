@@ -57,14 +57,14 @@ public class CyclesProtocolException extends RuntimeException {
     public static CyclesProtocolException unitMismatch() {
         return new CyclesProtocolException(Enums.ErrorCode.UNIT_MISMATCH, "Provided units does not match the stored ones", 400);
     }
-    public static CyclesProtocolException unitMismatch(String scope, String requestedUnit, List<String> availableUnits) {
+    public static CyclesProtocolException unitMismatch(String scope, String requestedUnit, List<String> expectedUnits) {
         Map<String, Object> details = new LinkedHashMap<>();
         if (scope != null) details.put("scope", scope);
         if (requestedUnit != null) details.put("requested_unit", requestedUnit);
-        if (availableUnits != null) details.put("available_units", availableUnits);
+        if (expectedUnits != null) details.put("expected_units", expectedUnits);
         String message = String.format(
-            "Budget at scope '%s' exists but in a different unit (requested: %s, available: %s)",
-            scope, requestedUnit, availableUnits);
+            "Budget at scope '%s' exists but in a different unit (requested: %s, expected: %s)",
+            scope, requestedUnit, expectedUnits);
         return new CyclesProtocolException(Enums.ErrorCode.UNIT_MISMATCH, message, 400, details);
     }
     public static CyclesProtocolException reservationExpired() {

@@ -175,7 +175,7 @@ class ReservationLifecycleIntegrationTest extends BaseIntegrationTest {
         @Test
         void shouldRejectWithUnitMismatchWhenBudgetExistsInDifferentUnit() {
             // Budget seeded at tenant:tenant-a in TOKENS. Request USD_MICROCENTS → Lua probes
-            // alternate units, finds TOKENS, returns UNIT_MISMATCH (400) with available_units.
+            // alternate units, finds TOKENS, returns UNIT_MISMATCH (400) with expected_units.
             Map<String, Object> body = reservationBody(TENANT_A, 1000, "USD_MICROCENTS");
 
             ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
@@ -186,7 +186,7 @@ class ReservationLifecycleIntegrationTest extends BaseIntegrationTest {
             assertThat(details).isNotNull();
             assertThat(details.get("scope")).isEqualTo("tenant:" + TENANT_A);
             assertThat(details.get("requested_unit")).isEqualTo("USD_MICROCENTS");
-            assertThat((List<String>) details.get("available_units")).contains("TOKENS");
+            assertThat((List<String>) details.get("expected_units")).contains("TOKENS");
         }
 
         @Test
@@ -217,7 +217,7 @@ class ReservationLifecycleIntegrationTest extends BaseIntegrationTest {
             assertThat(resp.getBody().get("error")).isEqualTo("UNIT_MISMATCH");
             Map<String, Object> details = (Map<String, Object>) resp.getBody().get("details");
             assertThat(details).isNotNull();
-            assertThat((List<String>) details.get("available_units")).contains("TOKENS");
+            assertThat((List<String>) details.get("expected_units")).contains("TOKENS");
         }
 
         @Test
