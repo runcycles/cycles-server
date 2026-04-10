@@ -106,11 +106,17 @@ for _, scope in ipairs(affected_scopes) do
             return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
         end
 
-        -- Spec NORMATIVE: event actual.unit must be supported for the target scope
+        -- Spec NORMATIVE: event actual.unit must be supported for the target scope.
+        -- This branch is a defensive data-integrity check: it fires only when
+        -- budget:<scope>:<unit> exists AND the stored `unit` field inside the hash
+        -- disagrees with the key suffix — an internal inconsistency that shouldn't
+        -- happen under normal operation. We keep it as a safety net and emit the
+        -- same {scope, requested_unit, expected_units} shape as the cross-unit
+        -- probe below so handleScriptError (Java) extracts details uniformly.
         local budget_unit = bvals[2]
         if budget_unit and budget_unit ~= unit then
             return cjson.encode({error = "UNIT_MISMATCH", scope = scope,
-                expected = budget_unit, actual = unit})
+                requested_unit = unit, expected_units = {budget_unit}})
         end
 
         local remaining = tonumber(bvals[3] or 0)
