@@ -14,6 +14,7 @@ local metrics_json    = ARGV[10] or ""
 local client_time_ms  = ARGV[11] or ""
 local payload_hash    = ARGV[12] or ""
 local metadata_json   = ARGV[13] or ""
+local units_csv       = ARGV[14] or ""
 
 -- Check idempotency
 if idempotency_key ~= "" and idempotency_key ~= nil then
@@ -66,10 +67,10 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
 end
 
 -- Parse affected scopes.
--- Fixed args: ARGV[1]=event_id .. [13]=metadata_json.
--- Affected scopes are the variadic tail starting at ARGV[14].
+-- Fixed args: ARGV[1]=event_id .. [13]=metadata_json, [14]=units_csv.
+-- Affected scopes are the variadic tail starting at ARGV[15].
 local affected_scopes = {}
-for i = 14, #ARGV do
+for i = 15, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -105,11 +106,17 @@ for _, scope in ipairs(affected_scopes) do
             return cjson.encode({error = "BUDGET_CLOSED", scope = scope})
         end
 
-        -- Spec NORMATIVE: event actual.unit must be supported for the target scope
+        -- Spec NORMATIVE: event actual.unit must be supported for the target scope.
+        -- This branch is a defensive data-integrity check: it fires only when
+        -- budget:<scope>:<unit> exists AND the stored `unit` field inside the hash
+        -- disagrees with the key suffix — an internal inconsistency that shouldn't
+        -- happen under normal operation. We keep it as a safety net and emit the
+        -- same {scope, requested_unit, expected_units} shape as the cross-unit
+        -- probe below so handleScriptError (Java) extracts details uniformly.
         local budget_unit = bvals[2]
         if budget_unit and budget_unit ~= unit then
             return cjson.encode({error = "UNIT_MISMATCH", scope = scope,
-                expected = budget_unit, actual = unit})
+                requested_unit = unit, expected_units = {budget_unit}})
         end
 
         local remaining = tonumber(bvals[3] or 0)
@@ -132,8 +139,31 @@ for _, scope in ipairs(affected_scopes) do
     end
 end
 
--- At least one scope must have a budget
+-- At least one scope must have a budget.
+-- Distinguish "wrong unit" from "truly missing": probe known units for each affected scope.
+-- If any scope has a budget at a different unit, return UNIT_MISMATCH with the stored unit(s)
+-- so the client can self-correct. Otherwise return BUDGET_NOT_FOUND.
 if #budgeted_scopes == 0 then
+    if units_csv ~= "" then
+        for _, scope in ipairs(affected_scopes) do
+            local expected_units = {}
+            for unit_alt in string.gmatch(units_csv, "[^,]+") do
+                if unit_alt ~= unit then
+                    if redis.call('EXISTS', "budget:" .. scope .. ":" .. unit_alt) == 1 then
+                        table.insert(expected_units, unit_alt)
+                    end
+                end
+            end
+            if #expected_units > 0 then
+                return cjson.encode({
+                    error = "UNIT_MISMATCH",
+                    scope = scope,
+                    requested_unit = unit,
+                    expected_units = expected_units
+                })
+            end
+        end
+    end
     return cjson.encode({error = "BUDGET_NOT_FOUND", scope = affected_scopes[#affected_scopes]})
 end
 

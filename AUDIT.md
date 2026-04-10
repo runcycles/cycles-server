@@ -1,10 +1,38 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
 ---
+
+### 2026-04-10 — v0.1.25.6: Distinguish UNIT_MISMATCH from BUDGET_NOT_FOUND on reserve/event
+
+**Bug (runcycles/cycles-client-rust#8):** `POST /v1/reservations` with `Amount::tokens(1000)` against a scope whose budget was stored in `USD_MICROCENTS` returned `404 BUDGET_NOT_FOUND`. The client could not distinguish "no budget at this scope" from "budget exists but in a different unit" and had no hint toward the fix. `/v1/events` had the same latent bug.
+
+**Root cause:** `reserve.lua` / `event.lua` key budgets by `budget:<scope>:<unit>`. When the requested unit doesn't match the stored unit, the key doesn't exist, the scope is silently skipped, and `#budgeted_scopes == 0` falls through to `BUDGET_NOT_FOUND`. The existing `UNIT_MISMATCH` branch in `event.lua` only caught an internal inconsistency between key suffix and stored `unit` field — it did not catch the cross-unit case.
+
+**Fix:** On the empty-budgeted-scopes error path only, both scripts now probe the fixed `UnitEnum` set (`USD_MICROCENTS`, `TOKENS`, `CREDITS`, `RISK_POINTS`) via `EXISTS budget:<scope>:<unit_alt>` for each affected scope. If any alternate-unit budget exists, the script returns `UNIT_MISMATCH` (400) with `scope`, `requested_unit`, and `expected_units` in the error payload so the client can self-correct. Otherwise falls through to the existing `BUDGET_NOT_FOUND` (404).
+
+Cascade semantics preserved: scopes without a budget at the requested unit are still silently skipped during the main validation loop — the probe only fires when every affected scope missed. No hot-path change; the cost is paid once on the error path only.
+
+`evaluateDryRun` and `/v1/decide` (the non-Lua Java paths) get the symmetric probe via a shared `probeAlternateUnits` helper and throw `UNIT_MISMATCH` (400) to match the reserve/event behavior. Spec line 1131-1134 only prohibits 409 on `/decide` for debt/overdraft conditions; 400 for a request-validity error (wrong unit) is permitted and is consistent across all four entry points.
+
+**Modified files:**
+- `reserve.lua` — new `ARGV[15] = units_csv`; scopes now start at ARGV[16]; alternate-unit probe added to the empty-budgeted-scopes branch
+- `event.lua` — new `ARGV[14] = units_csv`; scopes now start at ARGV[15]; symmetric probe
+- `RedisReservationRepository.java` — `UNIT_CSV` constant derived once from `Enums.UnitEnum.values()`; passed into both `createReservation` and `createEvent` args; `evaluateDryRun` and `decide` mirror the probe via a shared `probeAlternateUnits(jedis, scope, requestedUnit)` helper; `handleScriptError` extracts `scope` / `requested_unit` / `expected_units` for reserve/event and falls back to the no-detail factory for commit.lua's legacy form
+- `CyclesProtocolException.java` — `unitMismatch(scope, requestedUnit, expectedUnits)` overload populating `details`
+- `ReservationLifecycleIntegrationTest.java` — `shouldRejectWhenNoBudgetExistsForUnit` renamed to `shouldRejectWithUnitMismatchWhenBudgetExistsInDifferentUnit` and flipped to expect 400 + details; added `shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnit` regression guard and `shouldReturnUnitMismatchOnDryRunWhenBudgetExistsInDifferentUnit`
+- `DecisionAndEventIntegrationTest.java` — `shouldRejectEventWithUnitMismatch` flipped from 404 `NOT_FOUND` to 400 `UNIT_MISMATCH` + details; added `shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnitOnEvent`, `shouldRejectDecideWithUnitMismatchWhenBudgetExistsInDifferentUnit`, and `shouldReturnDenyBudgetNotFoundOnDecideWhenNoBudgetAtAnyUnit`
+- `RedisReservationCoreOpsTest.java` — existing `shouldThrowUnitMismatch` asserts the no-detail fallback path; added `shouldThrowUnitMismatchWithDetailsFromReserve`
+- `CyclesProtocolExceptionTest.java` — coverage for the new factory overload (populated details + null-tolerant form)
+- `cycles-protocol-service/README.md` — error table entry for `UNIT_MISMATCH` broadened to include reserve + describe the `details.*` payload
+- `cycles-protocol-service/pom.xml` — `<revision>` bumped `0.1.25.5` → `0.1.25.6`
+
+**Closes:** runcycles/cycles-server#79. Addresses runcycles/cycles-client-rust#8.
+
+**Out of scope:** Client-side rust SDK changes (not needed — structured error is enough for the user to correct their call). Protocol YAML spec update lives in `runcycles/cycles-protocol` and is handled on a coordinated branch (adds `"404"` to `/v1/reservations` POST and `/v1/events` POST response lists + broadens normative UNIT_MISMATCH wording to cover reserve).
 
 ### 2026-04-07 — v0.1.25.4: Event data payload completeness
 
@@ -276,7 +304,7 @@ Two-pass audit covering:
 - RESERVATION_FINALIZED → 409
 - RESERVATION_EXPIRED → 410
 - NOT_FOUND → 404
-- UNIT_MISMATCH → 400 (enforced in commit.lua and event.lua)
+- UNIT_MISMATCH → 400 (enforced in reserve.lua, commit.lua, event.lua; reserve/event paths return `scope`, `requested_unit`, `expected_units` in details so the client can self-correct — see v0.1.25.6)
 - IDEMPOTENCY_MISMATCH → 409
 - INVALID_REQUEST → 400
 - INTERNAL_ERROR → 500

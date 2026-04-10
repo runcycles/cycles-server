@@ -70,7 +70,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.5.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.6.jar
 ```
 
 The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
@@ -585,7 +585,7 @@ All errors use this envelope:
 | Code | HTTP | Meaning |
 |---|---|---|
 | `INVALID_REQUEST` | 400 | Missing or invalid field |
-| `UNIT_MISMATCH` | 400 | Commit unit differs from reservation unit, or event unit not supported for target scope |
+| `UNIT_MISMATCH` | 400 | Requested unit does not match the stored budget unit for the target scope. Raised by reserve/commit/event. Reserve and event responses include `details.scope`, `details.requested_unit`, and `details.expected_units` so the client can self-correct; commit uses the legacy no-detail form. |
 | `UNAUTHORIZED` | 401 | Missing or invalid API key |
 | `FORBIDDEN` | 403 | Tenant in request does not match API key |
 | `NOT_FOUND` | 404 | Reservation, budget, or resource not found |
