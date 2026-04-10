@@ -9,6 +9,57 @@ Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 
 ---
 
+## v0.1.25.6 — UNIT_MISMATCH vs BUDGET_NOT_FOUND detection on reserve/event/decide
+
+**Date:** 2026-04-10
+**Tag:** `v0.1.25.6`
+**Base commit:** `89d2651`
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X 64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Changes from v0.1.25.5:**
+- `reserve.lua` + `event.lua` — new `units_csv` ARGV slot; alternate-unit probe added to the `#budgeted_scopes == 0` error path (returns 400 `UNIT_MISMATCH` with `{scope, requested_unit, expected_units}` when a budget exists at the scope in a different unit, else falls through to `BUDGET_NOT_FOUND`)
+- `event.lua` — defensive data-integrity branch aligned to the same response shape
+- `RedisReservationRepository` — shared `probeAlternateUnits(jedis, scope, requestedUnit)` helper used by `evaluateDryRun` and `decide()`; symmetric Java-side probe throws 400 `UNIT_MISMATCH`
+- No hot-path change: the probe fires only when every affected scope missed at the requested unit — benchmarks exercise the success path, so the probe is never triggered during measurement
+
+### Single-Threaded Write-Path Latency
+
+| Operation         |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|-------------------|--------|--------|--------|--------|--------|--------|
+| Reserve           |  6.0ms |  7.3ms |  7.8ms |  4.0ms |  8.8ms |  6.0ms |
+| Commit            |  5.0ms |  6.2ms |  6.7ms |  3.5ms | 11.6ms |  5.0ms |
+| Release           |  4.8ms |  5.9ms |  6.9ms |  3.6ms | 12.9ms |  4.8ms |
+| Extend            |  7.5ms |  9.1ms | 10.6ms |  5.7ms | 18.0ms |  7.5ms |
+| Decide            |  5.9ms |  7.1ms |  7.6ms |  4.0ms | 12.5ms |  5.9ms |
+| Event             |  5.0ms |  6.1ms |  7.4ms |  3.4ms | 13.2ms |  5.0ms |
+| Reserve + Commit  | 14.3ms | 17.0ms | 20.1ms | 11.0ms | 21.7ms | 14.3ms |
+| Reserve + Release | 12.2ms | 14.6ms | 16.2ms |  9.0ms | 20.8ms | 12.2ms |
+
+**Write-path analysis:** All operations equal-or-faster than v0.1.25.5 (Reserve 6.0ms vs 7.2ms, Commit 5.0ms vs 5.8ms, Release 4.8ms vs 6.0ms, Extend 7.5ms vs 9.0ms, Decide 5.9ms vs 6.3ms, Event 5.0ms vs 6.2ms, Reserve+Commit 14.3ms vs 16.7ms, Reserve+Release 12.2ms vs 14.2ms). The deltas are environmental/warmth variance — the probe block added to reserve.lua / event.lua only executes when `#budgeted_scopes == 0`, which never fires during benchmark runs (all measured requests hit valid budgets). The extra `units_csv` ARGV string per request is parsed only if the probe fires, so the hot path ignores it. No regressions; no measurable overhead from the fix.
+
+### Single-Threaded Read-Path Latency
+
+| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|---------------------|--------|--------|--------|--------|--------|--------|
+| GET reservation     |  3.7ms |  4.8ms |  5.3ms |  2.4ms |  5.5ms |  3.7ms |
+| GET balances        |  3.9ms |  4.7ms |  4.9ms |  2.3ms |  6.1ms |  3.9ms |
+| LIST reservations   |  3.9ms |  5.0ms |  6.0ms |  2.4ms |  6.6ms |  3.9ms |
+| Decide (pipelined)  |  4.6ms |  5.5ms |  5.7ms |  3.1ms |  5.9ms |  4.6ms |
+
+**Read-path analysis:** No read-path code was changed. Numbers are within ±0.4ms of v0.1.25.5 (GET reservation 3.7ms vs 3.5ms, GET balances 3.9ms vs 3.6ms, LIST reservations 3.9ms vs 3.9ms, Decide pipelined 4.6ms vs 4.2ms) — environmental noise, no structural change.
+
+### Concurrent Throughput (Reserve+Commit lifecycle)
+
+| Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    | Errors |
+|---------|-----------|----------|---------|---------|---------|--------|
+|       8 |     3,947 |    789.4 |   9.9ms |  12.1ms |  17.6ms |      0 |
+|      16 |     5,612 |  1,122.4 |  14.3ms |  19.8ms |  22.8ms |      0 |
+|      32 |    13,120 |  2,624.0 |  11.8ms |  16.5ms |  20.5ms |      0 |
+
+**Concurrency analysis:** Throughput at 32 threads is **2,624 ops/s** — within 4% of v0.1.25.5's 2,520 ops/s (slightly higher, well within run-to-run noise). Scaling ratio from 8→32 threads is 3.3x (789 → 2,624), consistent with v0.1.25.5 (3.3x) and prior versions. p99 latency at 32 threads (20.5ms) improved vs v0.1.25.5's 34.5ms — again, environmental variance on a warm system. **Zero errors at all concurrency levels.** The wrong-unit probe has zero cost on the success path; its cost is paid only when a reservation/event/decide request misses every affected scope at the requested unit (a 4xx error path that no benchmark workload exercises).
+
+---
+
 ## v0.1.25.5 — Transition-Based Event Emission (Duplicate Event Fix)
 
 **Date:** 2026-04-08
