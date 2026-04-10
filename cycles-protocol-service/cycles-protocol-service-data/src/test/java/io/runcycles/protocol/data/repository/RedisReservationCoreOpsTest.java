@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -175,10 +176,38 @@ class RedisReservationCoreOpsTest extends BaseRedisReservationRepositoryTest {
 
         @Test
         void shouldThrowUnitMismatch() {
+            // Legacy commit.lua path: no details in response → fall back to no-detail factory.
             assertThatThrownBy(() -> invokeHandleScriptError(
                     Map.of("error", "UNIT_MISMATCH")))
                     .isInstanceOf(CyclesProtocolException.class)
-                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.UNIT_MISMATCH);
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.UNIT_MISMATCH)
+                    .hasFieldOrPropertyWithValue("details", null);
+        }
+
+        @Test
+        void shouldThrowUnitMismatchWithDetailsFromReserve() {
+            // reserve.lua / event.lua populate scope + requested_unit + available_units so the
+            // client can self-correct.
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("error", "UNIT_MISMATCH");
+            resp.put("scope", "tenant:rider");
+            resp.put("requested_unit", "TOKENS");
+            resp.put("available_units", List.of("USD_MICROCENTS"));
+
+            assertThatThrownBy(() -> invokeHandleScriptError(resp))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.UNIT_MISMATCH)
+                    .hasFieldOrPropertyWithValue("httpStatus", 400)
+                    .hasMessageContaining("tenant:rider")
+                    .hasMessageContaining("TOKENS")
+                    .hasMessageContaining("USD_MICROCENTS")
+                    .satisfies(ex -> {
+                        CyclesProtocolException cex = (CyclesProtocolException) ex;
+                        assertThat(cex.getDetails()).containsEntry("scope", "tenant:rider");
+                        assertThat(cex.getDetails()).containsEntry("requested_unit", "TOKENS");
+                        assertThat(cex.getDetails()).containsEntry("available_units",
+                                List.of("USD_MICROCENTS"));
+                    });
         }
 
         @Test

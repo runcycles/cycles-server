@@ -173,14 +173,51 @@ class ReservationLifecycleIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldRejectWhenNoBudgetExistsForUnit() {
-            // No budget seeded for USD_MICROCENTS unit — Lua returns BUDGET_NOT_FOUND → 404
+        void shouldRejectWithUnitMismatchWhenBudgetExistsInDifferentUnit() {
+            // Budget seeded at tenant:tenant-a in TOKENS. Request USD_MICROCENTS → Lua probes
+            // alternate units, finds TOKENS, returns UNIT_MISMATCH (400) with available_units.
             Map<String, Object> body = reservationBody(TENANT_A, 1000, "USD_MICROCENTS");
 
             ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
 
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("UNIT_MISMATCH");
+            Map<String, Object> details = (Map<String, Object>) resp.getBody().get("details");
+            assertThat(details).isNotNull();
+            assertThat(details.get("scope")).isEqualTo("tenant:" + TENANT_A);
+            assertThat(details.get("requested_unit")).isEqualTo("USD_MICROCENTS");
+            assertThat((List<String>) details.get("available_units")).contains("TOKENS");
+        }
+
+        @Test
+        void shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnit() {
+            // Remove the seeded TOKENS budget so the scope has no budget at ANY unit.
+            // Regression guard: BUDGET_NOT_FOUND (404) still wins when the probe finds nothing.
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del("budget:tenant:" + TENANT_A + ":TOKENS");
+            }
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A,
+                    reservationBody(TENANT_A, 1000, "TOKENS"));
+
             assertThat(resp.getStatusCode().value()).isEqualTo(404);
             assertThat(resp.getBody().get("error")).isEqualTo("NOT_FOUND");
+        }
+
+        @Test
+        void shouldReturnUnitMismatchOnDryRunWhenBudgetExistsInDifferentUnit() {
+            // Symmetric probe in evaluateDryRun: dry_run with wrong unit should 400 UNIT_MISMATCH,
+            // not silently DENY with reason_code=BUDGET_NOT_FOUND.
+            Map<String, Object> body = reservationBody(TENANT_A, 1000, "USD_MICROCENTS");
+            body.put("dry_run", true);
+
+            ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("UNIT_MISMATCH");
+            Map<String, Object> details = (Map<String, Object>) resp.getBody().get("details");
+            assertThat(details).isNotNull();
+            assertThat((List<String>) details.get("available_units")).contains("TOKENS");
         }
 
         @Test

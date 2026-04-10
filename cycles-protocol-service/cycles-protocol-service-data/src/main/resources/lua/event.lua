@@ -14,6 +14,7 @@ local metrics_json    = ARGV[10] or ""
 local client_time_ms  = ARGV[11] or ""
 local payload_hash    = ARGV[12] or ""
 local metadata_json   = ARGV[13] or ""
+local units_csv       = ARGV[14] or ""
 
 -- Check idempotency
 if idempotency_key ~= "" and idempotency_key ~= nil then
@@ -66,10 +67,10 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
 end
 
 -- Parse affected scopes.
--- Fixed args: ARGV[1]=event_id .. [13]=metadata_json.
--- Affected scopes are the variadic tail starting at ARGV[14].
+-- Fixed args: ARGV[1]=event_id .. [13]=metadata_json, [14]=units_csv.
+-- Affected scopes are the variadic tail starting at ARGV[15].
 local affected_scopes = {}
-for i = 14, #ARGV do
+for i = 15, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -132,8 +133,31 @@ for _, scope in ipairs(affected_scopes) do
     end
 end
 
--- At least one scope must have a budget
+-- At least one scope must have a budget.
+-- Distinguish "wrong unit" from "truly missing": probe known units for each affected scope.
+-- If any scope has a budget at a different unit, return UNIT_MISMATCH with the stored unit(s)
+-- so the client can self-correct. Otherwise return BUDGET_NOT_FOUND.
 if #budgeted_scopes == 0 then
+    if units_csv ~= "" then
+        for _, scope in ipairs(affected_scopes) do
+            local alt_units = {}
+            for unit_alt in string.gmatch(units_csv, "[^,]+") do
+                if unit_alt ~= unit then
+                    if redis.call('EXISTS', "budget:" .. scope .. ":" .. unit_alt) == 1 then
+                        table.insert(alt_units, unit_alt)
+                    end
+                end
+            end
+            if #alt_units > 0 then
+                return cjson.encode({
+                    error = "UNIT_MISMATCH",
+                    scope = scope,
+                    requested_unit = unit,
+                    available_units = alt_units
+                })
+            end
+        end
+    end
     return cjson.encode({error = "BUDGET_NOT_FOUND", scope = affected_scopes[#affected_scopes]})
 end
 

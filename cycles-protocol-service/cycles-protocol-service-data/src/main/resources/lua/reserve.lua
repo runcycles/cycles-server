@@ -17,6 +17,7 @@ local overage_policy = ARGV[11] or "ALLOW_IF_AVAILABLE"
 local metadata_json   = ARGV[12] or ""
 local payload_hash    = ARGV[13] or ""
 local max_extensions  = tonumber(ARGV[14]) or 10
+local units_csv       = ARGV[15] or ""
 
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
@@ -36,9 +37,9 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         })
     end
 end
--- Parse affected scopes (fixed args end at ARGV[14]; scopes start at ARGV[15])
+-- Parse affected scopes (fixed args end at ARGV[15]; scopes start at ARGV[16])
 local affected_scopes = {}
-for i = 15, #ARGV do
+for i = 16, #ARGV do
     table.insert(affected_scopes, ARGV[i])
 end
 
@@ -83,8 +84,31 @@ for _, scope in ipairs(affected_scopes) do
     end
 end
 
--- At least one scope must have a budget
+-- At least one scope must have a budget.
+-- Distinguish "wrong unit" from "truly missing": probe known units for each affected scope.
+-- If any scope has a budget at a different unit, return UNIT_MISMATCH with the stored unit(s)
+-- so the client can self-correct. Otherwise return BUDGET_NOT_FOUND.
 if #budgeted_scopes == 0 then
+    if units_csv ~= "" then
+        for _, scope in ipairs(affected_scopes) do
+            local alt_units = {}
+            for unit_alt in string.gmatch(units_csv, "[^,]+") do
+                if unit_alt ~= estimate_unit then
+                    if redis.call('EXISTS', "budget:" .. scope .. ":" .. unit_alt) == 1 then
+                        table.insert(alt_units, unit_alt)
+                    end
+                end
+            end
+            if #alt_units > 0 then
+                return cjson.encode({
+                    error = "UNIT_MISMATCH",
+                    scope = scope,
+                    requested_unit = estimate_unit,
+                    available_units = alt_units
+                })
+            end
+        end
+    end
     return cjson.encode({error = "BUDGET_NOT_FOUND", scope = affected_scopes[#affected_scopes]})
 end
 

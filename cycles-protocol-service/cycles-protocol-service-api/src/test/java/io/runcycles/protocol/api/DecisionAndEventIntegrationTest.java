@@ -185,8 +185,9 @@ class DecisionAndEventIntegrationTest extends BaseIntegrationTest {
 
         @Test
         void shouldRejectEventWithUnitMismatch() {
-            // Spec: event actual.unit not supported for the target scope MUST return error
-            // Budget is seeded for TOKENS only; USD_MICROCENTS has no budget → BUDGET_NOT_FOUND
+            // Spec: event actual.unit not supported for the target scope MUST return UNIT_MISMATCH.
+            // Budget seeded for TOKENS at tenant:tenant-a; request USD_MICROCENTS → Lua probes
+            // alternate units, finds TOKENS, returns UNIT_MISMATCH (400) with available_units.
             Map<String, Object> body = new HashMap<>();
             body.put("idempotency_key", UUID.randomUUID().toString());
             body.put("subject", Map.of("tenant", TENANT_A));
@@ -194,6 +195,26 @@ class DecisionAndEventIntegrationTest extends BaseIntegrationTest {
             body.put("actual", Map.of("unit", "USD_MICROCENTS", "amount", 500));
 
             ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(400);
+            assertThat(resp.getBody().get("error")).isEqualTo("UNIT_MISMATCH");
+            Map<String, Object> details = (Map<String, Object>) resp.getBody().get("details");
+            assertThat(details).isNotNull();
+            assertThat(details.get("scope")).isEqualTo("tenant:" + TENANT_A);
+            assertThat(details.get("requested_unit")).isEqualTo("USD_MICROCENTS");
+            assertThat((List<String>) details.get("available_units")).contains("TOKENS");
+        }
+
+        @Test
+        void shouldReturnBudgetNotFoundWhenNoBudgetAtAnyUnitOnEvent() {
+            // Remove the seeded TOKENS budget so the scope has no budget at ANY unit.
+            // Regression guard: event.lua probe falls through to BUDGET_NOT_FOUND (404).
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del("budget:tenant:" + TENANT_A + ":TOKENS");
+            }
+
+            ResponseEntity<Map> resp = post("/v1/events", API_KEY_SECRET_A,
+                    eventBody(TENANT_A, 500));
 
             assertThat(resp.getStatusCode().value()).isEqualTo(404);
             assertThat(resp.getBody().get("error")).isEqualTo("NOT_FOUND");

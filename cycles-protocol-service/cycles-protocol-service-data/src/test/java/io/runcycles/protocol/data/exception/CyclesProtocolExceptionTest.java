@@ -4,6 +4,7 @@ import io.runcycles.protocol.model.Enums;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,6 +76,31 @@ class CyclesProtocolExceptionTest {
 
         assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.UNIT_MISMATCH);
         assertThat(ex.getHttpStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void shouldCreateUnitMismatchWithDetails() {
+        List<String> available = List.of("USD_MICROCENTS", "CREDITS");
+        CyclesProtocolException ex = CyclesProtocolException.unitMismatch(
+                "tenant:rider", "TOKENS", available);
+
+        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.UNIT_MISMATCH);
+        assertThat(ex.getHttpStatus()).isEqualTo(400);
+        assertThat(ex.getMessage()).contains("tenant:rider");
+        assertThat(ex.getMessage()).contains("TOKENS");
+        assertThat(ex.getMessage()).contains("USD_MICROCENTS");
+        assertThat(ex.getDetails()).containsEntry("scope", "tenant:rider");
+        assertThat(ex.getDetails()).containsEntry("requested_unit", "TOKENS");
+        assertThat(ex.getDetails()).containsEntry("available_units", available);
+    }
+
+    @Test
+    void shouldCreateUnitMismatchWithDetailsAllowingNulls() {
+        CyclesProtocolException ex = CyclesProtocolException.unitMismatch(null, null, null);
+
+        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.UNIT_MISMATCH);
+        assertThat(ex.getHttpStatus()).isEqualTo(400);
+        assertThat(ex.getDetails()).isEmpty();
     }
 
     @Test

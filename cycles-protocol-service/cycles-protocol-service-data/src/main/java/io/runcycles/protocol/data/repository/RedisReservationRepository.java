@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /** Cycles Protocol v0.1.25 - Repository with Lua script execution */
 @Repository
@@ -33,6 +34,13 @@ public class RedisReservationRepository {
     @Autowired @Qualifier("releaseLuaScript") private String releaseScript;
     @Autowired @Qualifier("extendLuaScript") private String extendScript;
     @Autowired @Qualifier("eventLuaScript") private String eventScript;
+
+    /** CSV of all known Unit enum values, passed to reserve.lua/event.lua so the scripts can
+     *  probe alternate units on the BUDGET_NOT_FOUND error path and distinguish "wrong unit"
+     *  from "truly missing". Derived once from the enum to avoid drift. */
+    private static final String UNIT_CSV = Arrays.stream(Enums.UnitEnum.values())
+        .map(Enums.UnitEnum::name)
+        .collect(Collectors.joining(","));
 
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
@@ -72,11 +80,13 @@ public class RedisReservationRepository {
             args.add(scopePath);
             args.add(tenant);
             args.add(overagePolicy);
-            // ARGV[12] = metadata_json, ARGV[13] = payload_hash, ARGV[14] = max_extensions; scopes start at ARGV[15]
+            // ARGV[12] = metadata_json, ARGV[13] = payload_hash, ARGV[14] = max_extensions,
+            // ARGV[15] = units_csv; scopes start at ARGV[16]
             args.add(request.getMetadata() != null
                 ? objectMapper.writeValueAsString(request.getMetadata()) : "");
             args.add(computePayloadHash(request));
             args.add(String.valueOf(maxExtensions));
+            args.add(UNIT_CSV);
             args.addAll(affectedScopes);
 
             Object result = luaScripts.eval(jedis, "reserve", reserveScript, args.toArray(new String[0]));
@@ -230,6 +240,22 @@ public class RedisReservationRepository {
         }
 
         if (!foundBudget) {
+            // Distinguish "wrong unit" from "truly missing" — symmetric with reserve.lua probe.
+            // If any affected scope has a budget in a different unit, throw UNIT_MISMATCH (400)
+            // so the client can self-correct. Otherwise fall through to the DENY + BUDGET_NOT_FOUND
+            // dry_run response.
+            for (String scope : affectedScopes) {
+                List<String> altUnits = new ArrayList<>();
+                for (Enums.UnitEnum u : Enums.UnitEnum.values()) {
+                    if (u.name().equals(unit)) continue;
+                    if (jedis.exists("budget:" + scope + ":" + u.name())) {
+                        altUnits.add(u.name());
+                    }
+                }
+                if (!altUnits.isEmpty()) {
+                    throw CyclesProtocolException.unitMismatch(scope, unit, altUnits);
+                }
+            }
             return ReservationCreateResponse.builder()
                 .decision(Enums.DecisionEnum.DENY)
                 .reasonCode("BUDGET_NOT_FOUND")
@@ -808,7 +834,8 @@ public class RedisReservationRepository {
             args.add(scopePath);
             args.add(tenant);
             args.add(eventOveragePolicy);
-            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms, ARGV[12] = payload_hash, ARGV[13] = metadata_json; scopes start at ARGV[14]
+            // ARGV[10] = metrics_json, ARGV[11] = client_time_ms, ARGV[12] = payload_hash,
+            // ARGV[13] = metadata_json, ARGV[14] = units_csv; scopes start at ARGV[15]
             args.add(request.getMetrics() != null
                 ? objectMapper.writeValueAsString(request.getMetrics()) : "");
             args.add(request.getClientTimeMs() != null
@@ -816,6 +843,7 @@ public class RedisReservationRepository {
             args.add(computePayloadHash(request));
             args.add(request.getMetadata() != null
                 ? objectMapper.writeValueAsString(request.getMetadata()) : "");
+            args.add(UNIT_CSV);
             args.addAll(affectedScopes);
 
             Object result = luaScripts.eval(jedis, "event", eventScript, args.toArray(new String[0]));
@@ -1246,8 +1274,20 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.budgetClosed(closedScope);
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
-            case "UNIT_MISMATCH":
+            case "UNIT_MISMATCH": {
+                // reserve.lua and event.lua populate scope/requested_unit/available_units so the
+                // client can self-correct. commit.lua does not (legacy), so fall back to the
+                // no-detail factory when those fields are absent.
+                if (response.containsKey("requested_unit") || response.containsKey("available_units")) {
+                    String mismatchScope = response.containsKey("scope") ? response.get("scope").toString() : null;
+                    String requestedUnit = response.containsKey("requested_unit") ? response.get("requested_unit").toString() : null;
+                    @SuppressWarnings("unchecked")
+                    List<String> availableUnits = response.get("available_units") instanceof List
+                        ? (List<String>) response.get("available_units") : null;
+                    throw CyclesProtocolException.unitMismatch(mismatchScope, requestedUnit, availableUnits);
+                }
                 throw CyclesProtocolException.unitMismatch();
+            }
             case "RESERVATION_EXPIRED":
                 throw CyclesProtocolException.reservationExpired();
             case "RESERVATION_EXPIRATION_NOT_FOUND":
