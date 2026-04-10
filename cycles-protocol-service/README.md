@@ -70,7 +70,7 @@ docker run -d -p 6379:6379 redis:7-alpine
 
 # 4. Run
 REDIS_HOST=localhost REDIS_PORT=6379 \
-  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.5.jar
+  java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-0.1.25.6.jar
 ```
 
 The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
