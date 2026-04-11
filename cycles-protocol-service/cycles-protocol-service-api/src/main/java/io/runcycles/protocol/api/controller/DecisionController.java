@@ -62,7 +62,8 @@ public class DecisionController extends BaseController {
                                 .scope(scope)
                                 .unit(request.getEstimate() != null
                                         ? request.getEstimate().getUnit().name() : null)
-                                .reasonCode(response.getReasonCode())
+                                .reasonCode(response.getReasonCode() != null
+                                        ? response.getReasonCode().name() : null)
                                 .requestedAmount(request.getEstimate() != null
                                         ? request.getEstimate().getAmount() : null)
                                 .remaining(null)

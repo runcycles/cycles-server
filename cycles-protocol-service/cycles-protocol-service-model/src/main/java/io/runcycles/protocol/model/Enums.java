@@ -15,6 +15,26 @@ public class Enums {
         ALLOW, ALLOW_WITH_CAPS, DENY
     }
 
+    /**
+     * Stable machine-readable reason for decision=DENY on /v1/decide and reserve dry_run.
+     * Populated on DecisionResponse.reason_code and ReservationCreateResponse.reason_code.
+     * Mirrors the DecisionReasonCode schema in cycles-protocol-v0.yaml (runtime plane).
+     *
+     * Distinct from ErrorCode: these values appear only on 200 OK responses with decision=DENY.
+     * Some labels (e.g. BUDGET_EXCEEDED, BUDGET_NOT_FOUND) overlap conceptually with 4xx error
+     * conditions — same underlying budget state, reported two ways depending on the endpoint:
+     * /decide and dry_run surface it as a non-4xx DENY decision; non-dry reserve/event surfaces
+     * it as a 409/404 error.
+     */
+    public enum ReasonCode {
+        BUDGET_EXCEEDED,
+        BUDGET_FROZEN,
+        BUDGET_CLOSED,
+        BUDGET_NOT_FOUND,
+        OVERDRAFT_LIMIT_EXCEEDED,
+        DEBT_OUTSTANDING
+    }
+
     public enum CommitOveragePolicy {
         REJECT, ALLOW_IF_AVAILABLE, ALLOW_WITH_OVERDRAFT
     }

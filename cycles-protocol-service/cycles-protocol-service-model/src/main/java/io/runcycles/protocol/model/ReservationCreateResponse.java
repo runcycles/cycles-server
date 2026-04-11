@@ -19,7 +19,7 @@ public class ReservationCreateResponse {
     @JsonProperty("scope_path") private String scopePath;
     @Valid @JsonProperty("reserved") private Amount reserved;
     @Valid @JsonProperty("caps") private Caps caps;
-    @Size(max = 128) @JsonProperty("reason_code") private String reasonCode;
+    @JsonProperty("reason_code") private Enums.ReasonCode reasonCode;
     @Min(0) @JsonProperty("retry_after_ms") private Integer retryAfterMs;
     @Valid @JsonProperty("balances") private List<Balance> balances;
     /** Internal: per-scope pre-mutation remaining for transition detection. Not serialized. */

@@ -72,7 +72,8 @@ public class ReservationController extends BaseController{
                                 .scope(response.getScopePath())
                                 .unit(request.getEstimate() != null
                                         ? request.getEstimate().getUnit().name() : null)
-                                .reasonCode(response.getReasonCode())
+                                .reasonCode(response.getReasonCode() != null
+                                        ? response.getReasonCode().name() : null)
                                 .requestedAmount(request.getEstimate() != null
                                         ? request.getEstimate().getAmount() : null)
                                 .remaining(remaining)

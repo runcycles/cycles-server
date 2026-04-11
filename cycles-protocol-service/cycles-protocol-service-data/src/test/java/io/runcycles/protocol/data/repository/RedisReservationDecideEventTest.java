@@ -61,7 +61,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             DecisionResponse response = repository.decide(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_EXCEEDED");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_EXCEEDED);
         }
 
         @Test
@@ -82,7 +82,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             DecisionResponse response = repository.decide(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_CLOSED");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_CLOSED);
         }
 
         @Test
@@ -100,7 +100,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             DecisionResponse response = repository.decide(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_NOT_FOUND");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_NOT_FOUND);
         }
 
         @Test
@@ -169,7 +169,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             DecisionResponse response = repository.decide(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_FROZEN");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_FROZEN);
         }
 
         @Test
@@ -190,7 +190,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             DecisionResponse response = repository.decide(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED);
         }
 
         @Test
@@ -211,7 +211,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             DecisionResponse response = repository.decide(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("DEBT_OUTSTANDING");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.DEBT_OUTSTANDING);
         }
 
         @Test
