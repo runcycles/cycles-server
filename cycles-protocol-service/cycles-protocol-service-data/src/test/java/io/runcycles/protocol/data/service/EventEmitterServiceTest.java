@@ -30,16 +30,14 @@ class EventEmitterServiceTest {
     @InjectMocks private EventEmitterService service;
 
     @Test
-    void emit_createsEventAndDelegates() throws Exception {
+    void emit_createsEventAndDelegates() {
         service.emit(EventType.RESERVATION_DENIED, "t1", "scope/path",
                 Actor.builder().type(ActorType.API_KEY).build(),
                 EventDataReservationDenied.builder().reasonCode("BUDGET_EXCEEDED").build(),
                 "corr-1", "req-1");
 
-        // Async — wait briefly for the executor to process
-        Thread.sleep(200);
-
-        verify(repository).emit(argThat(e ->
+        // Async — poll the mock until the executor callback runs (deadline 5s).
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.RESERVATION_DENIED &&
                 e.getTenantId().equals("t1") &&
                 e.getSource().equals("cycles-server") &&
@@ -48,25 +46,25 @@ class EventEmitterServiceTest {
     }
 
     @Test
-    void emit_nullData_works() throws Exception {
+    void emit_nullData_works() {
         service.emit(EventType.SYSTEM_WEBHOOK_TEST, "t1", null, null, null, null, null);
 
-        Thread.sleep(200);
-
-        verify(repository).emit(argThat(e ->
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.SYSTEM_WEBHOOK_TEST &&
                 e.getData() == null));
     }
 
     @Test
-    void emit_exceptionInRepo_doesNotThrow() throws Exception {
+    void emit_exceptionInRepo_doesNotThrow() {
         doThrow(new RuntimeException("fail")).when(repository).emit(any());
 
-        // Should not throw
+        // Sync call MUST NOT throw — async callback's try/catch swallows the repo failure.
         service.emit(EventType.RESERVATION_DENIED, "t1", null, null, null, null, null);
 
-        Thread.sleep(200);
-        // No exception propagated — verified by test not failing
+        // Wait until the async callback actually executes repository.emit so we know the
+        // catch branch was exercised. If the exception leaked, this verify would still pass
+        // but the test would have thrown synchronously above.
+        verify(repository, timeout(5000)).emit(any());
     }
 
     @Test
@@ -90,9 +88,8 @@ class EventEmitterServiceTest {
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
 
         service.emitBalanceEvents(List.of(b), "t1", actor, null, null);
-        Thread.sleep(200);
 
-        verify(repository).emit(argThat(e ->
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_EXHAUSTED &&
                 e.getTenantId().equals("t1") &&
                 e.getScope().equals("tenant:t1") &&
@@ -115,9 +112,8 @@ class EventEmitterServiceTest {
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
 
         service.emitBalanceEvents(List.of(b), "t1", actor, "corr-1", "req-1");
-        Thread.sleep(200);
 
-        verify(repository).emit(argThat(e ->
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_OVER_LIMIT_ENTERED &&
                 e.getTenantId().equals("t1") &&
                 e.getData() != null));
@@ -137,9 +133,8 @@ class EventEmitterServiceTest {
 
         service.emitBalanceEvents(List.of(b), "t1", actor,
                 null, null, scopeDebt, null, null);
-        Thread.sleep(200);
 
-        verify(repository).emit(argThat(e ->
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
                 e.getTenantId().equals("t1")));
     }
@@ -158,9 +153,9 @@ class EventEmitterServiceTest {
 
         // No scopeDebtIncurred entry — debt existed from prior operation
         service.emitBalanceEvents(List.of(b), "t1", actor, null, null);
-        Thread.sleep(200);
 
-        verify(repository, never()).emit(argThat(e ->
+        // Wait 200ms for the async to have a chance to run, then assert it did NOT emit.
+        verify(repository, after(200).never()).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_DEBT_INCURRED));
     }
 
@@ -178,9 +173,8 @@ class EventEmitterServiceTest {
 
         service.emitBalanceEvents(List.of(b), "t1", actor,
                 "res-123", "ALLOW_WITH_OVERDRAFT", scopeDebt, null, null);
-        Thread.sleep(200);
 
-        verify(repository).emit(argThat(e ->
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
                 e.getData() != null &&
                 "res-123".equals(e.getData().get("reservation_id")) &&
@@ -201,9 +195,8 @@ class EventEmitterServiceTest {
 
         service.emitBalanceEvents(List.of(b), "t1", actor,
                 "res-456", "ALLOW_WITH_OVERDRAFT", scopeDebt, null, null);
-        Thread.sleep(200);
 
-        verify(repository).emit(argThat(e ->
+        verify(repository, timeout(5000)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_DEBT_INCURRED &&
                 e.getData() != null &&
                 Long.valueOf(150L).equals(((Number) e.getData().get("debt_incurred")).longValue()) &&
@@ -227,9 +220,9 @@ class EventEmitterServiceTest {
 
         service.emitBalanceEvents(List.of(b), "t1", actor,
                 null, null, null, preRem, null, null, null);
-        Thread.sleep(200);
 
-        verify(repository, never()).emit(argThat(e ->
+        // Wait 200ms for the async to have a chance to run, then assert it did NOT emit.
+        verify(repository, after(200).never()).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_EXHAUSTED));
     }
 
@@ -249,9 +242,9 @@ class EventEmitterServiceTest {
 
         service.emitBalanceEvents(List.of(b), "t1", actor,
                 null, null, null, null, preOvl, null, null);
-        Thread.sleep(200);
 
-        verify(repository, never()).emit(argThat(e ->
+        // Wait 200ms for the async to have a chance to run, then assert it did NOT emit.
+        verify(repository, after(200).never()).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_OVER_LIMIT_ENTERED));
     }
 
@@ -265,18 +258,18 @@ class EventEmitterServiceTest {
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
 
         service.emitBalanceEvents(List.of(b), "t1", actor, null, null);
-        Thread.sleep(200);
 
-        verify(repository, never()).emit(any());
+        // Wait 200ms for the async to have a chance to run, then assert it did NOT emit.
+        verify(repository, after(200).never()).emit(any());
     }
 
     @Test
-    void emitBalanceEvents_nullOrEmptyBalances_noOp() throws Exception {
+    void emitBalanceEvents_nullOrEmptyBalances_noOp() {
         service.emitBalanceEvents(null, "t1", null, null, null);
         service.emitBalanceEvents(List.of(), "t1", null, null, null);
-        Thread.sleep(200);
 
-        verify(repository, never()).emit(any());
+        // Wait 200ms for the async to have a chance to run, then assert it did NOT emit.
+        verify(repository, after(200).never()).emit(any());
     }
 
     @Test
@@ -292,9 +285,8 @@ class EventEmitterServiceTest {
         Actor actor = Actor.builder().type(ActorType.API_KEY).build();
 
         service.emitBalanceEvents(List.of(b1, b2), "t1", actor, null, null);
-        Thread.sleep(200);
 
-        verify(repository, times(2)).emit(argThat(e ->
+        verify(repository, timeout(5000).times(2)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_EXHAUSTED));
     }
 }
