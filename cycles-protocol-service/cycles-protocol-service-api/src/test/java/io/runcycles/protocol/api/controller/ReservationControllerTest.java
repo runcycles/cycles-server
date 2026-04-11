@@ -93,7 +93,7 @@ class ReservationControllerTest {
                 .decision(Enums.DecisionEnum.DENY)
                 .affectedScopes(List.of("tenant:acme-corp"))
                 .scopePath("tenant:acme-corp")
-                .reasonCode("BUDGET_EXCEEDED")
+                .reasonCode(Enums.ReasonCode.BUDGET_EXCEEDED)
                 .build();
     }
 

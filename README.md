@@ -136,7 +136,7 @@ Pre-built images are published to GitHub Container Registry on each release:
 
 ```
 ghcr.io/runcycles/cycles-server:latest
-ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.6
+ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.7
 ```
 
 ## Testing

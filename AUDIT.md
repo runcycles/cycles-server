@@ -1,10 +1,63 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
 
 ---
+
+### 2026-04-11 — v0.1.25.7: Typed `Enums.ReasonCode` + flaky `EventEmitterServiceTest` fix
+
+Two quality improvements bundled into a point release. No wire-format change; byte-identical JSON output to v0.1.25.6 on every response. No client impact.
+
+**Change 1 — Typed `Enums.ReasonCode` (#83):**
+
+`DecisionResponse.reasonCode` and `ReservationCreateResponse.reasonCode` were declared as free-form `@Size(max=128) String`, but the reference server has only ever emitted 6 distinct values across the `evaluateDryRun` and `decide` paths in `RedisReservationRepository`. Codified as a new Java enum `Enums.ReasonCode` with compile-time safety:
+
+- `BUDGET_EXCEEDED`
+- `BUDGET_FROZEN`
+- `BUDGET_CLOSED`
+- `BUDGET_NOT_FOUND`
+- `OVERDRAFT_LIMIT_EXCEEDED`
+- `DEBT_OUTSTANDING`
+
+Mirrors the `DecisionReasonCode` schema added to `cycles-protocol-v0.yaml` in runcycles/cycles-protocol#26. Jackson's default enum serialization produces the `name()` string, so JSON output is byte-identical to the previous String-typed field — zero wire change, zero client impact.
+
+Class-level javadoc on `Enums.ReasonCode` clarifies the relationship to `Enums.ErrorCode`: some labels overlap (e.g. `BUDGET_EXCEEDED` appears in both sets), but they live on different response types — `ReasonCode` on 200 DENY responses, `ErrorCode` on 4xx/5xx error bodies — surfacing the same underlying budget state differently depending on the endpoint.
+
+**Modified files (change 1):**
+
+- `Enums.java` — added `ReasonCode` enum with 6 values and cross-enum javadoc
+- `DecisionResponse.java` — `reasonCode` field retyped from `String` to `Enums.ReasonCode`; `@Size(max=128)` dropped
+- `ReservationCreateResponse.java` — same retyping
+- `RedisReservationRepository.java` — 10 `.reasonCode(...)` call sites updated (5 in `evaluateDryRun`, 5 in `decide`); the two dynamic `"BUDGET_" + budgetStatus` concatenations converted to ternaries gated by the preceding `if ("FROZEN".equals() || "CLOSED".equals())` check, so exhaustive by construction
+- `DecisionController.java`, `ReservationController.java` — the two `.reasonCode(response.getReasonCode())` call sites that feed `EventDataReservationDenied.builder()` (webhook event payload model, which keeps its own `String`-typed `reasonCode` as that's its wire contract with webhook consumers) now convert explicitly via `response.getReasonCode() != null ? response.getReasonCode().name() : null` — preserves the webhook payload shape exactly
+- `RedisReservationCrudTest.java`, `RedisReservationDecideEventTest.java` — 11 unit-test assertions (5 + 6) that compared `.getReasonCode()` against string literals now compare against the `Enums.ReasonCode` constant; integration tests that parse `resp.getBody().get("reason_code")` as a String from JSON are unchanged (Jackson serializes the enum to its name)
+- `ReservationControllerTest.java` — one test fixture builder updated
+
+**Not touched:** `EventDataReservationDenied.reasonCode` stays `String`-typed — it's the webhook event payload contract (admin/webhook plane), wire-independent from `DecisionResponse`, with its own serialization target and consumers. Tightening it is a separate concern.
+
+**Change 2 — De-flaked `EventEmitterServiceTest` (#82):**
+
+`EventEmitterServiceTest` used `Thread.sleep(200); verify(repository)...` in 13 places to wait for async `CompletableFuture.runAsync` emissions before asserting on the mock. On loaded GitHub-hosted CI runners 200ms is not guaranteed to be enough for the executor callback to complete, causing intermittent `"Wanted but not invoked: ... zero interactions with this mock"` failures. Observed on run `24269168945` (the `docs: add v0.1.25.6 benchmarks` direct-to-main commit — a BENCHMARKS.md-only change, so the failure was obviously pre-existing flake, not a regression).
+
+Fixed by replacing all 13 occurrences with Mockito's built-in `VerificationMode`s — no new test dependencies:
+
+- Positive assertions (9 sites): `verify(mock, timeout(5000)).method(...)` — polls the mock, returns as soon as the condition is met, 5s deadline. Deterministic.
+- Negative assertions (5 sites via 4 shared): `verify(mock, after(200).never()).method(...)` — waits fixed 200ms then asserts zero interactions. Preserves the "give the async a chance to emit, then confirm it didn't" semantics; can't use `timeout()` here because it'd succeed immediately at t=0.
+- `emit_exceptionInRepo_doesNotThrow` (1 no-verify sleep): now explicitly `verify(mock, timeout(5000)).emit(any())` to prove the async catch branch was exercised, instead of relying on timing luck.
+
+**Verification:** 10 consecutive local runs of `EventEmitterServiceTest` — 10/10 pass, stable 4.8–5.1s timing band. Full `mvn verify` on the reactor — all tests green, coverage met. Also ~1.7s faster per run (removing unnecessary positive-path sleeps).
+
+**Modified files (change 2):**
+
+- `EventEmitterServiceTest.java` — all 13 `Thread.sleep(200)` calls removed; replaced with `timeout()` / `after()` verification modes
+
+**Version bump:** `0.1.25.6` → `0.1.25.7` (`cycles-protocol-service/pom.xml`).
+
+**No wire-format change.** No spec update needed on this release (the companion `DecisionReasonCode` schema addition in runcycles/cycles-protocol#26 is tracked separately and is forward-compatible regardless of merge order).
+
+**Closes:** runcycles/cycles-server#81 (flaky test). Companion to runcycles/cycles-protocol#26 (spec enum).
 
 ### 2026-04-10 — v0.1.25.6: Distinguish UNIT_MISMATCH from BUDGET_NOT_FOUND on reserve/event
 

@@ -205,7 +205,9 @@ public class RedisReservationRepository {
             if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("BUDGET_" + budgetStatus)
+                    .reasonCode("FROZEN".equals(budgetStatus)
+                        ? Enums.ReasonCode.BUDGET_FROZEN
+                        : Enums.ReasonCode.BUDGET_CLOSED)
                     .affectedScopes(affectedScopes)
                     .scopePath(scopePath)
                     .build();
@@ -213,7 +215,7 @@ public class RedisReservationRepository {
             if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
+                    .reasonCode(Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED)
                     .affectedScopes(affectedScopes)
                     .scopePath(scopePath)
                     .build();
@@ -223,7 +225,7 @@ public class RedisReservationRepository {
             if (debt > 0 && overdraftLimit == 0) {
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("DEBT_OUTSTANDING")
+                    .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
                     .affectedScopes(affectedScopes)
                     .scopePath(scopePath)
                     .build();
@@ -232,7 +234,7 @@ public class RedisReservationRepository {
             if (remaining < estimateAmount) {
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("BUDGET_EXCEEDED")
+                    .reasonCode(Enums.ReasonCode.BUDGET_EXCEEDED)
                     .affectedScopes(affectedScopes)
                     .scopePath(scopePath)
                     .build();
@@ -252,7 +254,7 @@ public class RedisReservationRepository {
             }
             return ReservationCreateResponse.builder()
                 .decision(Enums.DecisionEnum.DENY)
-                .reasonCode("BUDGET_NOT_FOUND")
+                .reasonCode(Enums.ReasonCode.BUDGET_NOT_FOUND)
                 .affectedScopes(affectedScopes)
                 .scopePath(scopePath)
                 .build();
@@ -726,7 +728,9 @@ public class RedisReservationRepository {
                 if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
                     response = DecisionResponse.builder()
                         .decision(Enums.DecisionEnum.DENY)
-                        .reasonCode("BUDGET_" + budgetStatus)
+                        .reasonCode("FROZEN".equals(budgetStatus)
+                            ? Enums.ReasonCode.BUDGET_FROZEN
+                            : Enums.ReasonCode.BUDGET_CLOSED)
                         .affectedScopes(affectedScopes)
                         .build();
                     break;
@@ -734,7 +738,7 @@ public class RedisReservationRepository {
                 if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
                     response = DecisionResponse.builder()
                         .decision(Enums.DecisionEnum.DENY)
-                        .reasonCode("OVERDRAFT_LIMIT_EXCEEDED")
+                        .reasonCode(Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED)
                         .affectedScopes(affectedScopes)
                         .build();
                     break;
@@ -744,7 +748,7 @@ public class RedisReservationRepository {
                 if (debt > 0 && overdraftLimit == 0) {
                     response = DecisionResponse.builder()
                         .decision(Enums.DecisionEnum.DENY)
-                        .reasonCode("DEBT_OUTSTANDING")
+                        .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
                         .affectedScopes(affectedScopes)
                         .build();
                     break;
@@ -753,7 +757,7 @@ public class RedisReservationRepository {
                 if (remaining < estimateAmount) {
                     response = DecisionResponse.builder()
                         .decision(Enums.DecisionEnum.DENY)
-                        .reasonCode("BUDGET_EXCEEDED")
+                        .reasonCode(Enums.ReasonCode.BUDGET_EXCEEDED)
                         .affectedScopes(affectedScopes)
                         .build();
                     break;
@@ -774,7 +778,7 @@ public class RedisReservationRepository {
                 }
                 response = DecisionResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("BUDGET_NOT_FOUND")
+                    .reasonCode(Enums.ReasonCode.BUDGET_NOT_FOUND)
                     .affectedScopes(affectedScopes)
                     .build();
             }

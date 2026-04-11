@@ -9,6 +9,57 @@ Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 
 ---
 
+## v0.1.25.7 — Typed `Enums.ReasonCode` refactor + flaky test fix
+
+**Date:** 2026-04-11
+**Tag:** `v0.1.25.7`
+**Base commit:** *(to be tagged after PR merge)*
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X 64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Changes from v0.1.25.6:**
+- `DecisionResponse.reasonCode` / `ReservationCreateResponse.reasonCode` retyped from free-form `String` to typed `Enums.ReasonCode` (6 values). Compile-time safety against drift from the companion spec enum in runcycles/cycles-protocol#26.
+- 10 `.reasonCode(...)` call sites in `RedisReservationRepository` (5 in `evaluateDryRun`, 5 in `decide`) updated to pass enum constants; 2 controller boundaries that feed `EventDataReservationDenied` (which keeps its String-typed `reasonCode` as that's its own webhook wire contract) now convert via `.name()` with a null guard.
+- `EventEmitterServiceTest` de-flaked (#82): 13 `Thread.sleep(200)` + `verify()` patterns replaced with Mockito `timeout(5000)` / `after(200).never()` verification modes.
+- **No wire-format change.** Jackson's default enum serialization produces the same JSON strings as the previous String-typed field. Zero runtime path impact expected, and observed — all deltas below are within environmental noise.
+
+### Single-Threaded Write-Path Latency
+
+| Operation         |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|-------------------|--------|--------|--------|--------|--------|--------|
+| Reserve           |  5.3ms |  6.6ms |  7.3ms |  3.8ms | 14.5ms |  5.3ms |
+| Commit            |  4.6ms |  5.4ms |  5.8ms |  3.1ms | 14.4ms |  4.6ms |
+| Release           |  4.8ms |  5.8ms |  6.5ms |  3.4ms |  6.9ms |  4.8ms |
+| Extend            |  7.5ms |  9.4ms | 11.0ms |  5.7ms | 11.8ms |  7.5ms |
+| Decide            |  4.7ms |  5.8ms |  6.3ms |  3.3ms |  6.8ms |  4.7ms |
+| Event             |  4.3ms |  5.3ms |  6.2ms |  3.2ms |  8.9ms |  4.3ms |
+| Reserve + Commit  | 14.0ms | 16.5ms | 17.6ms |  9.7ms | 20.6ms | 14.0ms |
+| Reserve + Release | 12.1ms | 14.1ms | 14.9ms |  8.1ms | 25.0ms | 12.1ms |
+
+**Write-path analysis:** All operations equal-or-faster than v0.1.25.6 within ±1ms (Reserve 5.3ms vs 6.0ms, Commit 4.6ms vs 5.0ms, Release 4.8ms vs 4.8ms, Extend 7.5ms vs 7.5ms, Decide 4.7ms vs 5.9ms, Event 4.3ms vs 5.0ms, Reserve+Commit 14.0ms vs 14.3ms, Reserve+Release 12.1ms vs 12.2ms). Deltas are environmental/warmth variance — the refactor is pure compile-time Java typing with Jackson serializing the enum to the same `name()` string the previous code emitted as a literal. No Redis calls, no Lua, no new allocation on the hot path. No regressions.
+
+### Single-Threaded Read-Path Latency
+
+| Operation           |  p50   |  p95   |  p99   |  min   |  max   |  mean  |
+|---------------------|--------|--------|--------|--------|--------|--------|
+| GET reservation     |  4.4ms |  5.3ms |  5.8ms |  2.1ms |  7.2ms |  4.4ms |
+| GET balances        |  4.1ms |  5.4ms |  5.7ms |  2.3ms |  5.7ms |  4.1ms |
+| LIST reservations   |  4.5ms |  5.5ms |  5.8ms |  2.5ms |  7.0ms |  4.4ms |
+| Decide (pipelined)  |  5.8ms |  6.9ms |  7.1ms |  3.9ms | 12.0ms |  5.8ms |
+
+**Read-path analysis:** Read paths are unchanged in code; numbers within ±1.2ms of v0.1.25.6 (GET reservation 4.4ms vs 3.7ms, GET balances 4.1ms vs 3.9ms, LIST reservations 4.5ms vs 3.9ms, Decide pipelined 5.8ms vs 4.6ms). Environmental noise on a loaded dev box, not a structural change. The Decide (pipelined) read path's slight uptick (+1.2ms) is worth watching but has no code explanation — likely JVM warmup variance since the benchmark doesn't pin CPU affinity.
+
+### Concurrent Throughput (Reserve+Commit lifecycle)
+
+| Threads | Total Ops | Ops/sec  |  p50    |  p95    |  p99    | Errors |
+|---------|-----------|----------|---------|---------|---------|--------|
+|       8 |     3,933 |    786.6 |   9.9ms |  12.0ms |  21.9ms |      0 |
+|      16 |     5,382 |  1,076.4 |  14.7ms |  20.4ms |  24.5ms |      0 |
+|      32 |    13,158 |  2,631.6 |  11.8ms |  16.6ms |  20.7ms |      0 |
+
+**Concurrency analysis:** Throughput at 32 threads is **2,632 ops/s** — essentially identical to v0.1.25.6's 2,624 ops/s (+0.3%, within noise). Scaling ratio from 8→32 threads is 3.3x (787 → 2,632), matching v0.1.25.6 and v0.1.25.5. p50/p95/p99 latencies at every concurrency level are within ±1.5ms of v0.1.25.6. **Zero errors at all concurrency levels.** The typed-enum refactor has zero runtime cost on the hot path — confirmed.
+
+---
+
 ## v0.1.25.6 — UNIT_MISMATCH vs BUDGET_NOT_FOUND detection on reserve/event/decide
 
 **Date:** 2026-04-10

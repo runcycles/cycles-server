@@ -12,7 +12,7 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class DecisionResponse {
     @NotNull @JsonProperty("decision") private Enums.DecisionEnum decision;
-    @Size(max = 128) @JsonProperty("reason_code") private String reasonCode;
+    @JsonProperty("reason_code") private Enums.ReasonCode reasonCode;
     @Valid @JsonProperty("caps") private Caps caps;
     @Min(0) @JsonProperty("retry_after_ms") private Integer retryAfterMs;
     @JsonProperty("affected_scopes") private List<String> affectedScopes;

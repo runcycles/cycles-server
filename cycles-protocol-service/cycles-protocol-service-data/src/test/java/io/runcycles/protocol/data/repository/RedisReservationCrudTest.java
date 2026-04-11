@@ -370,7 +370,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             ReservationCreateResponse response = repository.createReservation(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_EXCEEDED");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_EXCEEDED);
         }
 
         @Test
@@ -392,7 +392,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             ReservationCreateResponse response = repository.createReservation(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_FROZEN");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_FROZEN);
         }
 
         @Test
@@ -412,7 +412,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             ReservationCreateResponse response = repository.createReservation(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("BUDGET_NOT_FOUND");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_NOT_FOUND);
         }
 
         @Test
@@ -434,7 +434,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             ReservationCreateResponse response = repository.createReservation(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("DEBT_OUTSTANDING");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.DEBT_OUTSTANDING);
         }
 
         @Test
@@ -480,7 +480,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             ReservationCreateResponse response = repository.createReservation(request, "acme");
 
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(response.getReasonCode()).isEqualTo("OVERDRAFT_LIMIT_EXCEEDED");
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED);
         }
     }
 
