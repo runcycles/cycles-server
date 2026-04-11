@@ -59,6 +59,16 @@ Fixed by replacing all 13 occurrences with Mockito's built-in `VerificationMode`
 
 **Closes:** runcycles/cycles-server#81 (flaky test). Companion to runcycles/cycles-protocol#26 (spec enum).
 
+**Compliance re-verification (2026-04-11, post-runcycles/cycles-protocol#28):** After v0.1.25.7 shipped, `cycles-protocol#28` reopened the `DecisionReasonCode` schema from a closed 6-value enum back to `type: string, maxLength: 128` with documented `KNOWN VALUES` to enable v0.1.26 extension codes (`ACTION_QUOTA_EXCEEDED`, `ACTION_KIND_DENIED`, `ACTION_KIND_NOT_ALLOWED`) without dual-population workarounds. The reopened schema added normative clauses: *"Clients MUST gracefully handle unknown values"* and *"SDK code MUST NOT reject unknown values at the deserialization boundary."*
+
+v0.1.25.7 was re-verified against the reopened spec and is **fully compliant**. The normative consumption clauses target CLIENT consumers of server responses (language SDKs, downstream services, dashboards), not the reference server itself which is the EMITTER of `reason_code`. The server's only deserialization path is the idempotency replay cache at `RedisReservationRepository.java:179` (dry_run) and `:695` (decide), which reads back values the server itself previously wrote via `Enums.ReasonCode` constants — by construction the cache contents ⊆ emission set ⊆ enum constants, so the typed Jackson deserialization never encounters an unknown value.
+
+**A typed closed enum is the correct implementation for a well-defined emitter-owned set** — tighter than the spec's wire type, not looser. The spec's openness enables client-side forward-tolerance for extension-plane reason codes; it does not require the server to consume its own emissions with relaxed types. Companion clarification landed in runcycles/cycles-protocol#29 which adds a non-normative "SERVER IMPLEMENTATION NOTE" bullet to the v0.1.25 changelog capturing this reasoning in the authoritative spec.
+
+When v0.1.26 extension reason codes are eventually implemented on the base server, `Enums.ReasonCode` will be extended with those constants **before** the corresponding emission sites are wired (standard "update-enum-before-emit" discipline). Until then, v0.1.25.7 stays in production unchanged.
+
+This compliance note is backed by an explicit Jackson round-trip unit test: `cycles-protocol-service-data/src/test/java/io/runcycles/protocol/data/model/ReasonCodeJacksonRoundTripTest.java` — serializes every `Enums.ReasonCode` constant through `DecisionResponse` and `ReservationCreateResponse`, reads the JSON back, and asserts byte-exact round-trip fidelity. Any future accidental change to enum naming or Jackson configuration that would alter the wire format will fail this test at build time.
+
 ### 2026-04-10 — v0.1.25.6: Distinguish UNIT_MISMATCH from BUDGET_NOT_FOUND on reserve/event
 
 **Bug (runcycles/cycles-client-rust#8):** `POST /v1/reservations` with `Amount::tokens(1000)` against a scope whose budget was stored in `USD_MICROCENTS` returned `404 BUDGET_NOT_FOUND`. The client could not distinguish "no budget at this scope" from "budget exists but in a different unit" and had no hint toward the fix. `/v1/events` had the same latent bug.
