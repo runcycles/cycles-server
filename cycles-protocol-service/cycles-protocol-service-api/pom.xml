@@ -64,6 +64,20 @@
             <artifactId>testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Contract testing: runtime response schema validation on MockMvc -->
+        <dependency>
+            <groupId>com.atlassian.oai</groupId>
+            <artifactId>swagger-request-validator-mockmvc</artifactId>
+            <version>2.44.9</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Contract testing: structural diff between SpringDoc /api-docs and pinned spec -->
+        <dependency>
+            <groupId>org.openapitools.openapidiff</groupId>
+            <artifactId>openapi-diff-core</artifactId>
+            <version>2.1.7</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <plugins>

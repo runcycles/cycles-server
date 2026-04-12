@@ -3,6 +3,7 @@ package io.runcycles.protocol.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.api.auth.ApiKeyAuthenticationFilter;
+import io.runcycles.protocol.api.contract.ContractValidationConfig;
 import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
@@ -40,7 +41,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 classes = {ApiKeyAuthenticationFilter.class, ReservationExpiryService.class})
 )
 @AutoConfigureMockMvc(addFilters = false)
-@Import(GlobalExceptionHandler.class)
+@Import({GlobalExceptionHandler.class, ContractValidationConfig.class})
 @DisplayName("ReservationController")
 class ReservationControllerTest {
 
@@ -217,7 +218,24 @@ class ReservationControllerTest {
         @Test
         void shouldGetReservationById() throws Exception {
             when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
+            Subject subject = new Subject();
+            subject.setTenant(TENANT);
+            Action action = new Action();
+            action.setKind("llm.completion");
+            action.setName("test-model");
+            Amount reserved = new Amount();
+            reserved.setUnit(Enums.UnitEnum.TOKENS);
+            reserved.setAmount(100L);
             ReservationDetail detail = new ReservationDetail();
+            detail.setReservationId("res_123");
+            detail.setStatus(Enums.ReservationStatus.ACTIVE);
+            detail.setSubject(subject);
+            detail.setAction(action);
+            detail.setReserved(reserved);
+            detail.setCreatedAtMs(1_700_000_000_000L);
+            detail.setExpiresAtMs(1_700_000_060_000L);
+            detail.setScopePath("tenant:" + TENANT);
+            detail.setAffectedScopes(java.util.List.of("tenant:" + TENANT));
             when(repository.getReservationById("res_123")).thenReturn(detail);
 
             mockMvc.perform(get("/v1/reservations/res_123"))

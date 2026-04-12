@@ -1,8 +1,39 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
+**Date:** 2026-04-12 (spec contract validation added),
+2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-12 — Spec contract validation (drift detection)
+
+Ported the two-phase contract-testing pattern from `cycles-server-admin` into the protocol server so CI fails on drift between the authoritative `cycles-protocol-v0.yaml` spec and the Spring controllers.
+
+**Phase 1 — Runtime response schema validation** (`ContractValidationConfig`)
+- Registers an Atlassian `swagger-request-validator-mockmvc` `MockMvcBuilderCustomizer` that validates every JSON response body produced by `@WebMvcTest` controller tests against the pinned spec (2xx → success schemas, 4xx/5xx → `ErrorResponse`).
+- Request-side validation levels are IGNOREd (tests deliberately send malformed input); responses on infrastructure paths (`/api-docs`, `/swagger-ui`, `/actuator`) and empty/non-JSON bodies are skipped.
+- Wired into `BalanceControllerTest`, `ReservationControllerTest`, `DecisionControllerTest`, `EventControllerTest` via `@Import(ContractValidationConfig.class)`.
+
+**Phase 2 — Structural diff** (`OpenApiContractDiffTest`)
+- `@SpringBootTest(MOCK)` boots the full app with `JedisPool` mocked, fetches SpringDoc's generated `/api-docs`, and diffs it against the pinned spec via `openapi-diff-core`.
+- Fails on missing endpoints, extra (undocumented) endpoints, and operation-level `INCOMPATIBLE` signature divergence. Benign COMPATIBLE / metadata drift is ignored.
+
+**Spec loading** (`ContractSpecLoader`) — fetches `cycles-protocol-v0.yaml` from `cycles-protocol@main`, caches to `target/contract/spec.yaml` with a 1-hour TTL. Override with `-Dcontract.spec.url=file:///...` for offline dev. Supports `file:` URLs natively.
+
+**Enablement gate** — `-Dcontract.validation.enabled=false` (or env `CONTRACT_VALIDATION_ENABLED=false`) disables both phases cleanly for air-gapped builds.
+
+**Test stub hardening** — `ReservationControllerTest.shouldGetReservationById` now populates all `ReservationDetail` required fields from the spec (previously returned `new ReservationDetail()`, which silently violated the documented response shape).
+
+**Modified files:**
+- `cycles-protocol-service-api/pom.xml` — added test-scope deps `com.atlassian.oai:swagger-request-validator-mockmvc:2.44.9` and `org.openapitools.openapidiff:openapi-diff-core:2.1.7`
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/contract/ContractSpecLoader.java` (new)
+- `.../contract/ContractValidationConfig.java` (new)
+- `.../contract/OpenApiContractDiffTest.java` (new)
+- `.../controller/BalanceControllerTest.java`, `ReservationControllerTest.java`, `DecisionControllerTest.java`, `EventControllerTest.java` — `@Import` extended to include `ContractValidationConfig.class`
+
+**Verification:** `mvn -B test -pl cycles-protocol-service-api -Dtest='*ControllerTest,OpenApiContractDiffTest'` → 61 tests, 0 failures, 0 errors.
 
 ---
 
