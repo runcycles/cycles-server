@@ -15,21 +15,22 @@ import org.springframework.test.web.servlet.ResultMatcher;
  * conform to the pinned protocol spec fails the test.
  *
  * <p>Import from controller tests via {@code @Import(ContractValidationConfig.class)}.
+ * For integration tests ({@code TestRestTemplate}-based) use
+ * {@link ContractValidatingRestTemplateInterceptor} — it shares the same
+ * validator via {@link #sharedValidator()}.
  *
  * <p><b>Enablement gate:</b> ON by default. Disable with
  * {@code -Dcontract.validation.enabled=false} (or env
  * {@code CONTRACT_VALIDATION_ENABLED=false}) for offline / air-gapped
- * dev where the cycles-protocol@main fetch would fail.
+ * dev where the cycles-protocol fetch would fail.
  *
- * <p>When the gate is OFF the customizer is a no-op — no spec fetch, no
- * matcher attached — so tests are unaffected by network or cache state.
- *
- * <p>The spec itself is fetched by {@link ContractSpecLoader} from
- * cycles-protocol@main ({@code cycles-protocol-v0.yaml}) and cached to
- * {@code target/contract/}.
+ * <p>The spec is fetched by {@link ContractSpecLoader} from a pinned
+ * commit SHA in cycles-protocol and cached to {@code target/contract/}.
  */
 @TestConfiguration
 public class ContractValidationConfig {
+
+    private static OpenApiInteractionValidator cachedValidator;
 
     /**
      * Defaults to true. Disable for offline dev with
@@ -43,49 +44,53 @@ public class ContractValidationConfig {
         return true;
     }
 
+    /**
+     * Shared validator reused across MockMvc (Phase 1 unit) and
+     * {@code TestRestTemplate} (integration) contract checks. Built once
+     * per JVM to avoid reparsing the spec. Noise filters are applied
+     * centrally here so both harnesses enforce identical semantics.
+     */
+    public static synchronized OpenApiInteractionValidator sharedValidator() {
+        if (cachedValidator != null) return cachedValidator;
+        LevelResolver levels = LevelResolver.create()
+                // Request-side is entirely noisy: integration/unit tests deliberately
+                // send malformed input to exercise 400/410/etc. error paths. Bean
+                // Validation (@Valid/@Size/@Min on DTOs) is the production gate,
+                // and DtoConstraintContractTest verifies required fields statically.
+                // So: IGNORE every request-side rule. The validator's value here
+                // is enforcing RESPONSE shape only.
+                .withLevel("validation.request", ValidationReport.Level.IGNORE)
+                // As of cycles-protocol@208a7be (#34), all 9 runtime operations
+                // document 400. Strict enforcement: any response whose status code
+                // isn't listed in the spec for that operation now fails the build.
+                .build();
+        cachedValidator = OpenApiInteractionValidator
+                .createForInlineApiSpecification(ContractSpecLoader.loadSpec())
+                .withLevelResolver(levels)
+                .build();
+        return cachedValidator;
+    }
+
+    /** True when the URI is owned by the spec (not infrastructure). */
+    public static boolean isSpecPath(String path) {
+        return !(path.startsWith("/api-docs")
+                || path.startsWith("/v3/api-docs")
+                || path.startsWith("/swagger-ui")
+                || path.startsWith("/actuator"));
+    }
+
     @Bean
     public MockMvcBuilderCustomizer contractValidatingCustomizer() {
         if (!validationEnabled()) {
             return builder -> { };
         }
-        // Request-side validation is noisy: tests deliberately send bad inputs to
-        // exercise error handling. We enforce RESPONSE shape only — 2xx bodies
-        // match success schemas, 4xx/5xx JSON bodies match ErrorResponse.
-        LevelResolver levels = LevelResolver.create()
-                .withLevel("validation.request.parameter.schema.maximum", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.parameter.schema.minimum", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.parameter.schema.invalidJson", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.parameter.schema.enum", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.security.missing", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.missing", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.required", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.invalidJson", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.enum", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.pattern", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.additionalProperties", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.anyOf", ValidationReport.Level.IGNORE)
-                .withLevel("validation.request.body.schema.oneOf", ValidationReport.Level.IGNORE)
-                // Allow responses with statuses not documented in the spec
-                // (e.g. 400 on malformed JSON) to pass through unvalidated.
-                .withLevel("validation.response.status.unknown", ValidationReport.Level.IGNORE)
-                .build();
-        OpenApiInteractionValidator validator = OpenApiInteractionValidator
-                .createForInlineApiSpecification(ContractSpecLoader.loadSpec())
-                .withLevelResolver(levels)
-                .build();
-        ResultMatcher full = new OpenApiMatchers().isValid(validator);
+        ResultMatcher full = new OpenApiMatchers().isValid(sharedValidator());
         // Validate every JSON response on spec-defined paths. Skip:
-        //   - infrastructure paths not in the spec (/api-docs, /v3/api-docs,
-        //     /swagger-ui, /actuator)
+        //   - infrastructure paths not in the spec
         //   - responses with no JSON body (204, empty 401, non-JSON content types)
         ResultMatcher onSpecPaths = result -> {
             String path = result.getRequest().getRequestURI();
-            if (path.startsWith("/api-docs")
-                    || path.startsWith("/v3/api-docs")
-                    || path.startsWith("/swagger-ui")
-                    || path.startsWith("/actuator")) {
-                return;
-            }
+            if (!isSpecPath(path)) return;
             String contentType = result.getResponse().getContentType();
             if (contentType == null || !contentType.contains("json")) return;
             byte[] body = result.getResponse().getContentAsByteArray();

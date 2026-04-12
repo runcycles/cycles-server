@@ -2,6 +2,7 @@ package io.runcycles.protocol.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.runcycles.protocol.api.contract.ContractValidatingRestTemplateInterceptor;
 import io.runcycles.protocol.model.auth.ApiKey;
 import io.runcycles.protocol.model.auth.ApiKeyStatus;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,6 +64,21 @@ public abstract class BaseIntegrationTest {
 
     protected final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new JavaTimeModule());
+
+    @BeforeEach
+    void attachContractValidator() {
+        // Integration tests go through real controller/service/Redis/Lua paths,
+        // so wiring the interceptor here validates every response against the
+        // pinned spec with zero per-test changes. Idempotent — adding the same
+        // interceptor twice across tests has no ill effect in Spring's internal
+        // list, but we guard to keep the list small.
+        var interceptors = restTemplate.getRestTemplate().getInterceptors();
+        boolean present = interceptors.stream()
+                .anyMatch(i -> i instanceof ContractValidatingRestTemplateInterceptor);
+        if (!present) {
+            interceptors.add(new ContractValidatingRestTemplateInterceptor());
+        }
+    }
 
     @BeforeEach
     void seedTestData() throws Exception {

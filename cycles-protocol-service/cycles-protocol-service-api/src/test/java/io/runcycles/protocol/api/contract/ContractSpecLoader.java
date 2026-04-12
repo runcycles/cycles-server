@@ -12,22 +12,30 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * Loads the authoritative protocol OpenAPI spec from cycles-protocol@main for
+ * Loads the authoritative protocol OpenAPI spec from cycles-protocol for
  * contract tests. Caches per-build to {@code target/contract/spec.yaml} so
  * repeated test runs within the same build don't re-download.
  *
+ * <p><b>Pinning:</b> {@link #PINNED_SPEC_SHA} is an immutable commit SHA in
+ * {@code runcycles/cycles-protocol}. Bumping the pin is an explicit PR — that
+ * way CI can't be broken (or silently loosened) by a spec change the server
+ * hasn't reviewed. To advance the pin, update the constant and run the build;
+ * any new drift will surface immediately.
+ *
  * <p>Refresh policy: if the cached file exists and was written within the
- * last {@link #CACHE_TTL}, use it; otherwise re-fetch. This lets local
- * {@code mvn test} cycles skip the download while still catching drift on CI
- * (fresh workspace => cache miss => fresh fetch).
+ * last {@link #CACHE_TTL}, use it; otherwise re-fetch.
  *
  * <p>Override via system property {@code contract.spec.url} for local spec
  * development (e.g. {@code -Dcontract.spec.url=file:///path/to/spec.yaml}).
  */
 public final class ContractSpecLoader {
 
+    /** Pinned commit in runcycles/cycles-protocol. Bump via explicit PR. */
+    public static final String PINNED_SPEC_SHA = "208a7be51837b35d58e993d26a18f6eecba26d24";
+
     public static final String DEFAULT_SPEC_URL =
-            "https://raw.githubusercontent.com/runcycles/cycles-protocol/main/cycles-protocol-v0.yaml";
+            "https://raw.githubusercontent.com/runcycles/cycles-protocol/"
+                    + PINNED_SPEC_SHA + "/cycles-protocol-v0.yaml";
     public static final Duration CACHE_TTL = Duration.ofHours(1);
     private static final Path CACHE_PATH = Path.of("target", "contract", "spec.yaml");
 
