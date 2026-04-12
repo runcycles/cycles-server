@@ -31,7 +31,7 @@ import java.time.Instant;
 public final class ContractSpecLoader {
 
     /** Pinned commit in runcycles/cycles-protocol. Bump via explicit PR. */
-    public static final String PINNED_SPEC_SHA = "424dbf92aeda2281ed43cafda0cb6b904eeca658";
+    public static final String PINNED_SPEC_SHA = "208a7be51837b35d58e993d26a18f6eecba26d24";
 
     public static final String DEFAULT_SPEC_URL =
             "https://raw.githubusercontent.com/runcycles/cycles-protocol/"

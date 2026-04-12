@@ -60,10 +60,9 @@ public class ContractValidationConfig {
                 // So: IGNORE every request-side rule. The validator's value here
                 // is enforcing RESPONSE shape only.
                 .withLevel("validation.request", ValidationReport.Level.IGNORE)
-                // Responses with undocumented statuses (e.g. 400 on malformed JSON
-                // for paths where spec only documents 401/404) are allowed to pass.
-                // TODO flip to ERROR after cycles-protocol adds 400 responses to all paths.
-                .withLevel("validation.response.status.unknown", ValidationReport.Level.IGNORE)
+                // As of cycles-protocol@208a7be (#34), all 9 runtime operations
+                // document 400. Strict enforcement: any response whose status code
+                // isn't listed in the spec for that operation now fails the build.
                 .build();
         cachedValidator = OpenApiInteractionValidator
                 .createForInlineApiSpecification(ContractSpecLoader.loadSpec())

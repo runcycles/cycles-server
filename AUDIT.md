@@ -1,10 +1,27 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-12 (spec compliance hardening — full-coverage contract validation),
+**Date:** 2026-04-12 (strict response-status enforcement — Gap 2 closed),
+2026-04-12 (spec compliance hardening — full-coverage contract validation),
 2026-04-12 (spec contract validation added),
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-12 — Strict response-status enforcement (Gap 2 closed)
+
+Closes the last remaining compliance gap from the hardening round. With `runcycles/cycles-protocol#34` merged (all 9 runtime operations now document 400), the server-side `validation.response.status.unknown` IGNORE escape hatch is no longer needed and has been removed.
+
+**What this catches:** any response whose HTTP status code isn't documented in the spec for that operation now fails the build. Previously undocumented-status responses slid through unchecked.
+
+**Changes:**
+- `ContractSpecLoader.PINNED_SPEC_SHA` bumped to `208a7be5…` (cycles-protocol@main after PR #34).
+- `ContractValidationConfig.sharedValidator()` — dropped `withLevel("validation.response.status.unknown", IGNORE)`. All response-status levels now default to ERROR.
+
+**Verification:** 64 unit/contract tests + 191 integration tests pass under strict response-status enforcement — confirms the server emits only documented statuses on every path exercised in the build.
+
+**All 7 gaps from the Gap 2 list are now closed.**
 
 ---
 
