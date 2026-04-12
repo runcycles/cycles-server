@@ -7,8 +7,35 @@ on:
     branches: [main]
 
 jobs:
-  ci:
+  unit:
+    name: Unit & Contract
     uses: runcycles/.github/.github/workflows/ci-java.yml@main
     with:
       pom-file: cycles-protocol-service/pom.xml
       maven-args: "-Dtest=!*IntegrationTest,!*BenchmarkTest -Dsurefire.failIfNoSpecifiedTests=false"
+
+  integration:
+    name: Integration (with contract validation)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+      # Integration tests use Testcontainers — Docker is preinstalled on
+      # ubuntu-latest. The integration-tests profile un-excludes *IntegrationTest;
+      # BaseIntegrationTest registers the contract-validating interceptor on
+      # TestRestTemplate, so every response from these tests is validated
+      # against the pinned cycles-protocol-v0.yaml.
+      - name: Run integration tests with contract validation
+        run: >
+          mvn -B verify
+          --file cycles-protocol-service/pom.xml
+          -Pintegration-tests
+          -Dtest=!*BenchmarkTest
+          -Dsurefire.failIfNoSpecifiedTests=false
