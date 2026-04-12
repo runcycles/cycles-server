@@ -16,26 +16,39 @@ import java.time.Instant;
  * contract tests. Caches per-build to {@code target/contract/spec.yaml} so
  * repeated test runs within the same build don't re-download.
  *
- * <p><b>Pinning:</b> {@link #PINNED_SPEC_SHA} is an immutable commit SHA in
- * {@code runcycles/cycles-protocol}. Bumping the pin is an explicit PR — that
- * way CI can't be broken (or silently loosened) by a spec change the server
- * hasn't reviewed. To advance the pin, update the constant and run the build;
- * any new drift will surface immediately.
+ * <p><b>Tracking policy:</b> this loader tracks {@code cycles-protocol@main}.
+ * Any spec change merged to main will be picked up on the next CI run (cache
+ * expires after {@link #CACHE_TTL}; CI workspaces are always fresh), so spec
+ * drift is caught as soon as the spec changes — not when somebody remembers
+ * to bump a pin. The trade-off: a breaking spec change on {@code main} can
+ * red-light unrelated server PRs. That's deliberate — the server is expected
+ * to be spec-compliant at all times, and drift should surface immediately.
+ *
+ * <p>{@link #LAST_KNOWN_GOOD_SHA} records the most recent spec commit this
+ * loader was explicitly verified against. It's informational only (not used
+ * at runtime) — useful for forensics if a spec change breaks the build, and
+ * as a reference point for "what the server was compliant with when this
+ * file was last touched."
  *
  * <p>Refresh policy: if the cached file exists and was written within the
  * last {@link #CACHE_TTL}, use it; otherwise re-fetch.
  *
  * <p>Override via system property {@code contract.spec.url} for local spec
- * development (e.g. {@code -Dcontract.spec.url=file:///path/to/spec.yaml}).
+ * development (e.g. {@code -Dcontract.spec.url=file:///path/to/spec.yaml})
+ * or to temporarily pin to a specific SHA while investigating a failure.
  */
 public final class ContractSpecLoader {
 
-    /** Pinned commit in runcycles/cycles-protocol. Bump via explicit PR. */
-    public static final String PINNED_SPEC_SHA = "208a7be51837b35d58e993d26a18f6eecba26d24";
+    /**
+     * Most recent spec commit this loader was explicitly verified against.
+     * Informational only; runtime always fetches {@code main}. Update when
+     * making changes to this loader or to contract-test behavior so the
+     * reference stays fresh.
+     */
+    public static final String LAST_KNOWN_GOOD_SHA = "208a7be51837b35d58e993d26a18f6eecba26d24";
 
     public static final String DEFAULT_SPEC_URL =
-            "https://raw.githubusercontent.com/runcycles/cycles-protocol/"
-                    + PINNED_SPEC_SHA + "/cycles-protocol-v0.yaml";
+            "https://raw.githubusercontent.com/runcycles/cycles-protocol/main/cycles-protocol-v0.yaml";
     public static final Duration CACHE_TTL = Duration.ofHours(1);
     private static final Path CACHE_PATH = Path.of("target", "contract", "spec.yaml");
 
