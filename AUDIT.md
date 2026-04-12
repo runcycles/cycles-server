@@ -1,11 +1,30 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-12 (strict response-status enforcement — Gap 2 closed),
+**Date:** 2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
+2026-04-12 (strict response-status enforcement — Gap 2 closed),
 2026-04-12 (spec compliance hardening — full-coverage contract validation),
 2026-04-12 (spec contract validation added),
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-12 — Spec tracking policy: pinned SHA → cycles-protocol@main
+
+Reverses Gap 7's immutable-SHA pinning in favor of tracking `cycles-protocol@main` directly. Trade-off explicitly chosen by the team:
+
+- **Benefit:** any spec change — a new required field, a renamed enum value, a tightened constraint — fails the next CI run on the next server PR, not whenever somebody remembers to bump a pin. Drift detection becomes immediate rather than manual.
+- **Cost:** a breaking spec change on `main` can red-light unrelated server PRs. This is deliberate — the server is expected to be spec-compliant at all times, so a broken build is the correct signal. Fixing the server (or reverting the spec) becomes the unblocking step.
+
+**Changes:**
+- `ContractSpecLoader.DEFAULT_SPEC_URL` → `https://raw.githubusercontent.com/runcycles/cycles-protocol/main/cycles-protocol-v0.yaml`.
+- `PINNED_SPEC_SHA` renamed to `LAST_KNOWN_GOOD_SHA` — informational only (runtime always fetches `main`). Useful for forensics ("what was the spec last verified against when this loader was touched?") and as a pointer when debugging a drift failure. Still points at `208a7be5…`.
+- Cache TTL unchanged (1h). CI workspaces are always fresh so cache only matters locally.
+
+**Escape hatch preserved:** `-Dcontract.spec.url=https://raw.githubusercontent.com/runcycles/cycles-protocol/<sha>/cycles-protocol-v0.yaml` lets anyone temporarily pin to a specific commit while investigating a failure — no code change needed.
+
+**Verification:** 64 unit/contract tests pass against live `main` fetch.
 
 ---
 
