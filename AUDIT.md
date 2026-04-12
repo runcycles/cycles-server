@@ -1,9 +1,48 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-12 (spec contract validation added),
+**Date:** 2026-04-12 (spec compliance hardening — full-coverage contract validation),
+2026-04-12 (spec contract validation added),
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-12 — Spec compliance hardening (full-coverage automated drift detection)
+
+Extends the two-phase contract validation landed earlier today into a full-build compliance guarantee: every response the server produces — across unit tests, integration tests, and SpringDoc's self-declared surface — is now validated against the pinned spec on every CI run.
+
+**Gap 1 — Integration-test coverage** (`ContractValidatingRestTemplateInterceptor`): a `ClientHttpRequestInterceptor` registered on `TestRestTemplate` in `BaseIntegrationTest` captures every request/response pair, converts to the Atlassian validator's model, and fails the test if the response body doesn't match the spec. Validation now covers 191 integration tests (real controller → service → Redis → Lua path) in addition to 64 unit tests — ~255 validated observations per build. Zero per-test code changes required.
+
+**Gap 3 — Optional-field branch coverage**: `ReservationControllerTest` now has `shouldGetCommittedReservationWithFinalizedFields` and `shouldGetReleasedReservation`, exercising the `committed` / `finalized_at_ms` optional fields that only appear on COMMITTED/RELEASED reservations (previously only ACTIVE responses were validated).
+
+**Gap 4 — COMPATIBLE drift visibility**: `OpenApiContractDiffTest` now prints a summary of COMPATIBLE (non-breaking) drift to stdout so it's visible in CI logs. Still not a build failure — prevents noise — but stops silent accumulation.
+
+**Gap 5 — CI integration-tests job**: `.github/workflows/ci.yml` now has two jobs: `unit` (unchanged) and `integration` which runs `mvn verify -Pintegration-tests` on ubuntu-latest. Previously CI excluded `*IntegrationTest` entirely, so contract validation never ran against real Redis-backed paths in CI.
+
+**Gap 6 — DTO static check** (`DtoConstraintContractTest`): reflects over every `@RequestBody` DTO (`DecisionRequest`, `EventCreateRequest`, `ReservationCreateRequest`, `CommitRequest`, `ReleaseRequest`, `ReservationExtendRequest`) and asserts that every spec-required property has a corresponding `@NotNull`/`@NotBlank`/`@NotEmpty` annotation on the matching Java field. Catches the class of drift where the spec tightens a field to required but the DTO still accepts null.
+
+**Gap 7 — Immutable spec pinning**: `ContractSpecLoader.DEFAULT_SPEC_URL` now pins to commit SHA `424dbf92…` in `runcycles/cycles-protocol` instead of `main`. Spec bumps become explicit one-line PRs; CI can't be broken (or silently loosened) by an unreviewed spec change.
+
+**Gap 2 — Undocumented response statuses (follow-up)**: `validation.response.status.unknown` is still IGNORE because the spec doesn't document 400 on most paths. Needs a companion PR in `runcycles/cycles-protocol` adding `400: $ref '#/components/responses/ErrorResponse400'` to every path, followed by a pin-bump PR here that flips the level to ERROR.
+
+**Noise filter refactor**: request-side validation rules collapsed from 14 individual IGNOREs to a single prefix `withLevel("validation.request", IGNORE)`. Request shape is deliberately not enforced (tests send bad input on purpose); Bean Validation in prod and `DtoConstraintContractTest` are the request-side gates.
+
+**Shared validator**: `ContractValidationConfig.sharedValidator()` now exposes a singleton `OpenApiInteractionValidator` reused by both the MockMvc customizer (Phase 1) and the `TestRestTemplate` interceptor — one spec parse per JVM, identical noise filters.
+
+**Modified files:**
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/contract/ContractSpecLoader.java` — pinned commit SHA, `file:` URL support
+- `.../contract/ContractValidationConfig.java` — sharedValidator() singleton, isSpecPath() helper, prefix-based request IGNORE
+- `.../contract/ContractValidatingRestTemplateInterceptor.java` (new) — integration-test response validator
+- `.../contract/DtoConstraintContractTest.java` (new) — static DTO ↔ spec required-field check
+- `.../contract/OpenApiContractDiffTest.java` — COMPATIBLE drift logged to stdout
+- `.../controller/ReservationControllerTest.java` — +2 tests for COMMITTED/RELEASED states
+- `.../BaseIntegrationTest.java` — registers contract interceptor in `@BeforeEach`
+- `.github/workflows/ci.yml` — added `integration` job running `mvn verify -Pintegration-tests`
+
+**Verification:**
+- `mvn test -pl cycles-protocol-service-api -Dtest='*ControllerTest,*ContractTest,OpenApiContractDiffTest'` → 64 tests, 0 failures.
+- `mvn verify -Pintegration-tests -Dtest='*IntegrationTest'` → 191 tests, 0 failures — every response validated against spec.
 
 ---
 

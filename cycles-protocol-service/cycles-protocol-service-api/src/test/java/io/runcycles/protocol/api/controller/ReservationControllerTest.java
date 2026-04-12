@@ -262,6 +262,72 @@ class ReservationControllerTest {
         }
 
         @Test
+        void shouldGetCommittedReservationWithFinalizedFields() throws Exception {
+            // Exercises the spec's optional `committed` + `finalized_at_ms`
+            // branches which don't appear on ACTIVE reservations.
+            when(repository.findReservationTenantById("res_committed")).thenReturn(TENANT);
+            Subject subject = new Subject();
+            subject.setTenant(TENANT);
+            Action action = new Action();
+            action.setKind("llm.completion");
+            action.setName("test-model");
+            Amount reserved = new Amount();
+            reserved.setUnit(Enums.UnitEnum.TOKENS);
+            reserved.setAmount(100L);
+            Amount committed = new Amount();
+            committed.setUnit(Enums.UnitEnum.TOKENS);
+            committed.setAmount(90L);
+            ReservationDetail detail = new ReservationDetail();
+            detail.setReservationId("res_committed");
+            detail.setStatus(Enums.ReservationStatus.COMMITTED);
+            detail.setSubject(subject);
+            detail.setAction(action);
+            detail.setReserved(reserved);
+            detail.setCommitted(committed);
+            detail.setFinalizedAtMs(1_700_000_030_000L);
+            detail.setCreatedAtMs(1_700_000_000_000L);
+            detail.setExpiresAtMs(1_700_000_060_000L);
+            detail.setScopePath("tenant:" + TENANT);
+            detail.setAffectedScopes(java.util.List.of("tenant:" + TENANT));
+            when(repository.getReservationById("res_committed")).thenReturn(detail);
+
+            mockMvc.perform(get("/v1/reservations/res_committed"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("COMMITTED"))
+                    .andExpect(jsonPath("$.committed.amount").value(90))
+                    .andExpect(jsonPath("$.finalized_at_ms").value(1_700_000_030_000L));
+        }
+
+        @Test
+        void shouldGetReleasedReservation() throws Exception {
+            when(repository.findReservationTenantById("res_released")).thenReturn(TENANT);
+            Subject subject = new Subject();
+            subject.setTenant(TENANT);
+            Action action = new Action();
+            action.setKind("llm.completion");
+            action.setName("test-model");
+            Amount reserved = new Amount();
+            reserved.setUnit(Enums.UnitEnum.TOKENS);
+            reserved.setAmount(100L);
+            ReservationDetail detail = new ReservationDetail();
+            detail.setReservationId("res_released");
+            detail.setStatus(Enums.ReservationStatus.RELEASED);
+            detail.setSubject(subject);
+            detail.setAction(action);
+            detail.setReserved(reserved);
+            detail.setFinalizedAtMs(1_700_000_020_000L);
+            detail.setCreatedAtMs(1_700_000_000_000L);
+            detail.setExpiresAtMs(1_700_000_060_000L);
+            detail.setScopePath("tenant:" + TENANT);
+            detail.setAffectedScopes(java.util.List.of("tenant:" + TENANT));
+            when(repository.getReservationById("res_released")).thenReturn(detail);
+
+            mockMvc.perform(get("/v1/reservations/res_released"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("RELEASED"));
+        }
+
+        @Test
         void shouldReturn410ForExpiredReservation() throws Exception {
             when(repository.findReservationTenantById("res_expired")).thenReturn(TENANT);
             when(repository.getReservationById("res_expired"))

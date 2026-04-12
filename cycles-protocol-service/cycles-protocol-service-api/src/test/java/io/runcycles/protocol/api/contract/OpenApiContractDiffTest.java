@@ -83,6 +83,17 @@ class OpenApiContractDiffTest {
                 .filter(op -> op.isCoreChanged() == DiffResult.INCOMPATIBLE)
                 .collect(Collectors.toList());
 
+        // COMPATIBLE drift (new optional fields, description tweaks, etc.) is
+        // not a build failure but is worth visibility in CI logs — silent
+        // accumulation is how spec/server drift apart over time.
+        List<ChangedOperation> compatibleOps = diff.getChangedOperations().stream()
+                .filter(op -> op.isCoreChanged() == DiffResult.COMPATIBLE)
+                .collect(Collectors.toList());
+        if (!compatibleOps.isEmpty()) {
+            System.out.println("[contract] COMPATIBLE (non-breaking) drift on " + compatibleOps.size()
+                    + " operation(s) — consider updating the spec: " + formatChanged(compatibleOps));
+        }
+
         assertAll("structural diff between spec (cycles-protocol@main) and server /api-docs",
                 () -> assertTrue(missing.isEmpty(),
                         "Spec operations MISSING on server (server doesn't implement these): " + formatEndpoints(missing)),
