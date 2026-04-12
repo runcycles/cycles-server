@@ -2,6 +2,7 @@ package io.runcycles.protocol.api.controller;
 
 import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.api.auth.ApiKeyAuthenticationFilter;
+import io.runcycles.protocol.api.contract.ContractValidationConfig;
 import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
@@ -33,7 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 classes = {ApiKeyAuthenticationFilter.class, ReservationExpiryService.class})
 )
 @AutoConfigureMockMvc(addFilters = false)
-@Import(GlobalExceptionHandler.class)
+@Import({GlobalExceptionHandler.class, ContractValidationConfig.class})
 @DisplayName("BalanceController")
 class BalanceControllerTest {
 
