@@ -31,6 +31,7 @@ import java.util.UUID;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -52,6 +53,7 @@ class ReservationControllerTest {
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
+    @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
 
     @BeforeEach
     void setAuth() {
@@ -560,6 +562,204 @@ class ReservationControllerTest {
 
             // No tenant param — should use auth tenant
             mockMvc.perform(get("/v1/reservations"))
+                    .andExpect(status().isOk());
+        }
+    }
+
+    // v0.1.25.8 (cycles-protocol revision 2026-04-13): admin-on-behalf-of
+    // dual-auth on list/get/release. Tests cover the controller-level
+    // branching only — filter-level admin-key validation is exercised
+    // separately in AdminApiKeyAuthenticationFilterTest.
+    @Nested @DisplayName("admin-on-behalf-of")
+    class AdminOnBehalfOf {
+        @org.junit.jupiter.api.BeforeEach
+        void setAdminAuth() {
+            SecurityContextHolder.getContext().setAuthentication(
+                new io.runcycles.protocol.api.auth.AdminApiKeyAuthentication("admin-secret"));
+        }
+
+        @Test @DisplayName("listReservations with admin auth + tenant filter returns 200")
+        void adminListWithTenantFilter() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq("any-tenant"), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations").param("tenant", "any-tenant"))
+                    .andExpect(status().isOk());
+        }
+
+        @Test @DisplayName("listReservations with admin auth requires tenant param — 400 INVALID_REQUEST")
+        void adminListWithoutTenantRejected() throws Exception {
+            // Admin has no effective tenant — must specify explicitly.
+            mockMvc.perform(get("/v1/reservations"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("tenant query parameter is required")));
+        }
+
+        @Test @DisplayName("getReservation with admin auth bypasses tenant ownership check")
+        void adminGetCrossTenant() throws Exception {
+            // Reservation belongs to "other-tenant" — under tenant auth this
+            // would 403, under admin auth it should 200. ReservationDetail
+            // doesn't have @Builder (parent has it but child doesn't
+            // re-expose), so set fields imperatively.
+            ReservationDetail detail = new ReservationDetail();
+            detail.setReservationId("res-x");
+            detail.setStatus(Enums.ReservationStatus.ACTIVE);
+            Subject subj = new Subject();
+            subj.setTenant("other-tenant");
+            detail.setSubject(subj);
+            Action act = new Action();
+            act.setKind("test");
+            act.setName("t");
+            detail.setAction(act);
+            Amount amt = new Amount();
+            amt.setUnit(Enums.UnitEnum.TOKENS);
+            amt.setAmount(100L);
+            detail.setReserved(amt);
+            detail.setCreatedAtMs(1L);
+            detail.setExpiresAtMs(2L);
+            detail.setScopePath("tenant:other-tenant");
+            detail.setAffectedScopes(List.of("tenant:other-tenant"));
+            when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
+            when(repository.getReservationById("res-x")).thenReturn(detail);
+            mockMvc.perform(get("/v1/reservations/res-x"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.reservation_id").value("res-x"));
+        }
+
+        @Test @DisplayName("releaseReservation with admin auth bypasses tenant ownership check")
+        void adminReleaseCrossTenant() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
+            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] hung\"}";
+            mockMvc.perform(post("/v1/reservations/res-x/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+        }
+
+        @Test @DisplayName("admin release writes audit-log entry with actor_type=admin_on_behalf_of")
+        void adminReleaseWritesAuditEntry() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-audit")).thenReturn("tenant-target");
+            when(repository.releaseReservation(eq("res-audit"), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] stuck reservation\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-audit/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+
+            // Verify audit entry was written with the spec-required tag.
+            // This is the NORMATIVE satisfaction per cycles-protocol
+            // revision 2026-04-13: admin-driven releases MUST record
+            // actor_type=admin_on_behalf_of in the audit log.
+            org.mockito.ArgumentCaptor<io.runcycles.protocol.model.audit.AuditLogEntry> captor =
+                org.mockito.ArgumentCaptor.forClass(
+                    io.runcycles.protocol.model.audit.AuditLogEntry.class);
+            verify(auditRepository).log(captor.capture());
+            io.runcycles.protocol.model.audit.AuditLogEntry entry = captor.getValue();
+            org.assertj.core.api.Assertions.assertThat(entry.getOperation()).isEqualTo("releaseReservation");
+            org.assertj.core.api.Assertions.assertThat(entry.getResourceType()).isEqualTo("reservation");
+            org.assertj.core.api.Assertions.assertThat(entry.getResourceId()).isEqualTo("res-audit");
+            org.assertj.core.api.Assertions.assertThat(entry.getTenantId()).isEqualTo("tenant-target");
+            org.assertj.core.api.Assertions.assertThat(entry.getStatus()).isEqualTo(200);
+            org.assertj.core.api.Assertions.assertThat(entry.getMetadata())
+                .containsEntry("actor_type", "admin_on_behalf_of");
+            org.assertj.core.api.Assertions.assertThat(entry.getMetadata().get("reason").toString())
+                .contains("[INCIDENT_FORCE_RELEASE]");
+        }
+
+        @Test @DisplayName("tenant-auth release does NOT write an audit entry (audit is admin-only)")
+        void tenantReleaseDoesNotWriteAudit() throws Exception {
+            // Reset to tenant auth (parent @BeforeEach already did, but
+            // the nested @BeforeEach switched to admin — switch back).
+            SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live", TENANT, "key-test", PERMISSIONS));
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(50L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-t")).thenReturn(TENANT);
+            when(repository.releaseReservation(eq("res-t"), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-t/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+
+            // Tenant self-service shouldn't pollute the audit log —
+            // that's admin-only. Tenant actions are visible in the
+            // existing tenant-facing audit surfaces.
+            verify(auditRepository, org.mockito.Mockito.never()).log(any());
+        }
+
+        @Test @DisplayName("audit CR/LF in reason is sanitized before being recorded in metadata")
+        void adminReleaseSanitizesAuditReasonCrlf() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-x")).thenReturn("t");
+            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"line1\\nFAKE_ENTRY\\nline3\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-x/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(maliciousBody))
+                    .andExpect(status().isOk());
+
+            org.mockito.ArgumentCaptor<io.runcycles.protocol.model.audit.AuditLogEntry> captor =
+                org.mockito.ArgumentCaptor.forClass(
+                    io.runcycles.protocol.model.audit.AuditLogEntry.class);
+            verify(auditRepository).log(captor.capture());
+            String storedReason = captor.getValue().getMetadata().get("reason").toString();
+            // No raw newlines in the recorded reason — attackers can't
+            // forge audit entries by embedding line breaks.
+            org.assertj.core.api.Assertions.assertThat(storedReason).doesNotContain("\n");
+            org.assertj.core.api.Assertions.assertThat(storedReason).doesNotContain("\r");
+            org.assertj.core.api.Assertions.assertThat(storedReason).contains("line1");
+            org.assertj.core.api.Assertions.assertThat(storedReason).contains("line3");
+        }
+
+        @Test @DisplayName("admin release with CR/LF in reason still succeeds (log sanitization happens server-side)")
+        void adminReleaseSanitizesLogReason() throws Exception {
+            // The reason is user-controlled (max 256 chars per spec).
+            // Including \r\n in it must NOT crash the server and the
+            // controller must sanitize before logging — verified
+            // structurally here (response is 200), not by inspecting log
+            // output (which would couple the test to slf4j internals).
+            // The sanitization itself is a one-line replaceAll in the
+            // controller; this test is a smoke check that the path
+            // doesn't throw.
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
+            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"line1\\nFAKE_ADMIN_LOG\\nline3\"}";
+            mockMvc.perform(post("/v1/reservations/res-x/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(maliciousBody))
                     .andExpect(status().isOk());
         }
     }

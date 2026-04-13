@@ -24,11 +24,18 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
+            AdminApiKeyAuthenticationFilter adminFilter,
             ApiKeyAuthenticationFilter apiKeyFilter) throws Exception {
 
+        // Filter order matters: AdminApiKeyAuthenticationFilter runs FIRST.
+        // On dual-auth-allowlisted paths with X-Admin-API-Key, it sets the
+        // admin authentication and marks the request so apiKeyFilter
+        // skips it. On every other request it's a no-op and apiKeyFilter
+        // takes over (existing tenant-key behavior unchanged).
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .addFilterBefore(apiKeyFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(adminFilter, ApiKeyAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         .anyRequest().authenticated())
