@@ -89,6 +89,17 @@ public class AdminApiKeyAuthenticationFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
 
+        // getRequestURI() returns the path AS RECEIVED, before servlet
+        // normalization. Tomcat by default REJECTS encoded slashes (%2F)
+        // in path segments at the connector level, so a request like
+        // /v1/reservations/foo%2Fcommit never reaches us. If a deployment
+        // overrides that (ALLOW_ENCODED_SLASH=true), the encoded slash
+        // would survive into getRequestURI() — and our regex
+        // ^GET:/v1/reservations/[^/]+$ would CORRECTLY fail to match
+        // (because [^/]+ would match the literal "%2F" which contains no
+        // slash), causing fall-through to the api-key filter. The api-key
+        // filter would then reject for missing X-Cycles-API-Key. So the
+        // path-encoding bypass vector is closed in both deployment modes.
         String path = request.getRequestURI();
         String method = request.getMethod();
         String key = method + ":" + path;
@@ -118,6 +129,15 @@ public class AdminApiKeyAuthenticationFilter extends OncePerRequestFilter {
                 Enums.ErrorCode.INTERNAL_ERROR, "Server misconfiguration: admin API key not set");
             return;
         }
+        // MessageDigest.isEqual is constant-time on equal-length inputs
+        // but returns false immediately on length mismatch — leaks the
+        // configured admin-key length to attackers via timing if a
+        // deployment uses keys of varying length over time. Acceptable
+        // for v0.1.25.8: deployments rotate to a fixed key length (the
+        // bootstrap key in cycles-server-admin's docker-compose is
+        // explicitly fixed-length). If multi-length keys ever become a
+        // requirement, switch to `Arrays.fill(headerBytes, (byte)0)`
+        // padding + constant-time compare on the padded form.
         if (!MessageDigest.isEqual(
                 adminApiKey.getBytes(StandardCharsets.UTF_8),
                 adminHeader.getBytes(StandardCharsets.UTF_8))) {

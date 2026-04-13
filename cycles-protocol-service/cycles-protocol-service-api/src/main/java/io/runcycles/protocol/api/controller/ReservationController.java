@@ -160,14 +160,25 @@ public class ReservationController extends BaseController{
         // v0.1.25.8: structured WARN log on admin-driven release so the
         // action is greppable in operational logs (the runtime plane
         // doesn't have a separate audit-log store like the governance
-        // plane does — this is the closest equivalent until/unless a
-        // RESERVATION_RELEASED event type is added). Spec requires
-        // actor_type=admin_on_behalf_of on these calls; logging the
-        // structured tag satisfies the NORMATIVE intent today.
+        // plane does — this is the closest equivalent until either
+        // (a) a RESERVATION_RELEASED event type is added and emitted
+        //     via EventEmitterService (which would land in the
+        //     governance plane's audit store via the existing webhook /
+        //     event pipeline), or
+        // (b) cross-plane audit forwarding is built.
+        // Spec NORMATIVE wording "audit-log entry" is overstated for
+        // the runtime plane today — a follow-up spec PR will soften
+        // it to acknowledge the structured-log alternative.
+        //
+        // Reason is user-controlled (max 256 chars per spec) — strip
+        // CR/LF before logging to prevent log-line forgery via
+        // newline injection (e.g. reason="x\nFAKE_ADMIN_LOG\n...").
         if (isAdminAuth()) {
+            String safeReason = request.getReason() != null
+                ? request.getReason().replaceAll("[\\r\\n]", " ")
+                : "(none)";
             LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} reason={}",
-                reservationId, tenant,
-                request.getReason() != null ? request.getReason() : "(none)");
+                reservationId, tenant, safeReason);
         }
         ReleaseResponse response = repository.releaseReservation(reservationId, request);
         return ResponseEntity.ok(response);

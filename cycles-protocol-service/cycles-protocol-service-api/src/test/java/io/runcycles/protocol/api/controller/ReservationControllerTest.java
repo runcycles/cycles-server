@@ -642,5 +642,30 @@ class ReservationControllerTest {
                             .contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isOk());
         }
+
+        @Test @DisplayName("admin release with CR/LF in reason still succeeds (log sanitization happens server-side)")
+        void adminReleaseSanitizesLogReason() throws Exception {
+            // The reason is user-controlled (max 256 chars per spec).
+            // Including \r\n in it must NOT crash the server and the
+            // controller must sanitize before logging — verified
+            // structurally here (response is 200), not by inspecting log
+            // output (which would couple the test to slf4j internals).
+            // The sanitization itself is a one-line replaceAll in the
+            // controller; this test is a smoke check that the path
+            // doesn't throw.
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
+            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"line1\\nFAKE_ADMIN_LOG\\nline3\"}";
+            mockMvc.perform(post("/v1/reservations/res-x/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(maliciousBody))
+                    .andExpect(status().isOk());
+        }
     }
 }
