@@ -55,6 +55,10 @@ public class ContractValidatingRestTemplateInterceptor implements ClientHttpRequ
         byte[] responseBody = StreamUtils.copyToByteArray(response.getBody());
         ClientHttpResponse buffered = new BufferedResponse(response, responseBody);
 
+        // Coverage: record the hit regardless of response body. A 204 or empty
+        // 401 still counts — the test exercised the endpoint.
+        ContractValidationConfig.recordCoverage(request.getMethod().name(), path);
+
         String contentType = response.getHeaders().getFirst("Content-Type");
         if (contentType == null || !contentType.contains("json") || responseBody.length == 0) {
             return buffered;
