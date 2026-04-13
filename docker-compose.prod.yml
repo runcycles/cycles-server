@@ -1,6 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -13,16 +14,30 @@ services:
       retries: 5
 
   cycles-server:
-    image: ghcr.io/runcycles/cycles-server:0.1.25.1
+    image: ghcr.io/runcycles/cycles-server:0.1.25.8
+    restart: unless-stopped
     ports:
       - "7878:7878"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      REDIS_PASSWORD: ""
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # ADMIN_API_KEY is REQUIRED for the admin-on-behalf-of dual-auth
+      # paths (listReservations / getReservation / releaseReservation).
+      # Fails fast if unset rather than defaulting to a well-known key.
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
+      # CORS origin(s) for browser clients (dashboard). Comma-separated.
+      # Same var name as cycles-server-admin for one-knob rotation.
+      DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-}
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
