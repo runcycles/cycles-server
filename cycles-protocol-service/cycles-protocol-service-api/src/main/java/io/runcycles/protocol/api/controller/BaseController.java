@@ -1,5 +1,6 @@
 package io.runcycles.protocol.api.controller;
 
+import io.runcycles.protocol.api.auth.AdminApiKeyAuthentication;
 import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.Enums;
@@ -9,29 +10,53 @@ import io.runcycles.protocol.model.event.ActorType;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 abstract public class BaseController {
     private static final Logger LOG = LoggerFactory.getLogger(BaseController.class);
 
     public String extractAuthTenantId(){
-        ApiKeyAuthentication auth = (ApiKeyAuthentication) SecurityContextHolder
-                .getContext()
-                .getAuthentication();
-        if (auth != null){
-            return auth.getTenantId();
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth instanceof ApiKeyAuthentication apiAuth) {
+            return apiAuth.getTenantId();
         }
+        // Admin auth has no effective tenant — admin callers must
+        // specify it explicitly (e.g. via the ?tenant query param on
+        // listReservations) or implicitly via a path-templated id.
         return null;
     }
 
     /**
-     * Build Actor from current auth context and request, populating keyId and sourceIp.
+     * v0.1.25.8 (cycles-protocol revision 2026-04-13): admin-on-behalf-of
+     * marker. True when this request was authenticated via X-Admin-API-Key
+     * on a dual-auth-allowlisted endpoint. Controllers branch on this to:
+     *   - skip tenant ownership checks (admin can act across tenants)
+     *   - require explicit tenant in query params (no effective tenant)
+     *   - tag emitted events with ActorType.ADMIN_ON_BEHALF_OF
+     */
+    protected boolean isAdminAuth() {
+        return SecurityContextHolder.getContext().getAuthentication()
+            instanceof AdminApiKeyAuthentication;
+    }
+
+    /**
+     * Build Actor from current auth context and request. For tenant-key
+     * callers: ActorType.API_KEY with the resolved key_id. For admin
+     * callers: ActorType.ADMIN_ON_BEHALF_OF with no key_id (admin keys
+     * aren't persisted as ApiKey records — they're a server-config
+     * value compared in the filter).
      */
     protected Actor buildActor(HttpServletRequest request) {
-        ApiKeyAuthentication auth = (ApiKeyAuthentication) SecurityContextHolder
-                .getContext().getAuthentication();
-        String keyId = auth != null ? auth.getKeyId() : null;
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         String sourceIp = request != null ? request.getRemoteAddr() : null;
+        if (auth instanceof AdminApiKeyAuthentication) {
+            return Actor.builder()
+                    .type(ActorType.ADMIN_ON_BEHALF_OF)
+                    .sourceIp(sourceIp)
+                    .build();
+        }
+        String keyId = auth instanceof ApiKeyAuthentication apiAuth ? apiAuth.getKeyId() : null;
         return Actor.builder()
                 .type(ActorType.API_KEY)
                 .keyId(keyId)
@@ -39,6 +64,12 @@ abstract public class BaseController {
                 .build();
     }
     public void authorizeTenant (String tenantFromRequest){
+        // Admin callers bypass tenant ownership checks — they're allowed
+        // to act across tenants on the small allowlisted set of
+        // reservation endpoints. The filter has already validated the
+        // admin key; controllers handle the explicit tenant scoping
+        // (e.g. listReservations requires ?tenant when admin).
+        if (isAdminAuth()) return;
         LOG.debug("Authorizing tenant: tenantFromRequest={}",tenantFromRequest);
         String tenantFromAuthorization = extractAuthTenantId ();
         if (tenantFromRequest != null && !tenantFromRequest.isBlank()){

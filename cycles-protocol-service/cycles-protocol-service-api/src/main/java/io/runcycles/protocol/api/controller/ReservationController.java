@@ -157,6 +157,18 @@ public class ReservationController extends BaseController{
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
+        // v0.1.25.8: structured WARN log on admin-driven release so the
+        // action is greppable in operational logs (the runtime plane
+        // doesn't have a separate audit-log store like the governance
+        // plane does — this is the closest equivalent until/unless a
+        // RESERVATION_RELEASED event type is added). Spec requires
+        // actor_type=admin_on_behalf_of on these calls; logging the
+        // structured tag satisfies the NORMATIVE intent today.
+        if (isAdminAuth()) {
+            LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} reason={}",
+                reservationId, tenant,
+                request.getReason() != null ? request.getReason() : "(none)");
+        }
         ReleaseResponse response = repository.releaseReservation(reservationId, request);
         return ResponseEntity.ok(response);
     }
@@ -197,10 +209,27 @@ public class ReservationController extends BaseController{
                     "Invalid status filter: " + status + ". Must be one of: ACTIVE, COMMITTED, RELEASED, EXPIRED", 400);
             }
         }
-        // Spec: if tenant provided it must match auth; if omitted, use auth tenant
-        String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
-        LOG.info("GET /v1/reservations - tenant: {}", effectiveTenant);
-        authorizeTenant(effectiveTenant);
+        // v0.1.25.8 (cycles-protocol revision 2026-04-13): tenant param
+        // semantics differ by auth type. ApiKeyAuth: optional, falls
+        // back to authenticated tenant, validation-only when present.
+        // AdminKeyAuth: REQUIRED as a filter (admin has no effective
+        // tenant), 400 INVALID_REQUEST when missing — same semantic as
+        // listBudgets / listPolicies in the governance-admin spec.
+        String effectiveTenant;
+        if (isAdminAuth()) {
+            if (tenant == null || tenant.isBlank()) {
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                    "tenant query parameter is required when using admin key authentication", 400);
+            }
+            effectiveTenant = tenant;
+            // No authorizeTenant() — admin can read any tenant's
+            // reservations.
+        } else {
+            // Spec: if tenant provided it must match auth; if omitted, use auth tenant
+            effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
+            authorizeTenant(effectiveTenant);
+        }
+        LOG.info("GET /v1/reservations - tenant: {}, admin: {}", effectiveTenant, isAdminAuth());
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
                 status, workspace, app, workflow, agent, toolset, limit, cursor));
     }

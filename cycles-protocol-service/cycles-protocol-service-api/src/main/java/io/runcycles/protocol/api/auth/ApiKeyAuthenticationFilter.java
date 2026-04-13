@@ -73,6 +73,17 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     }
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
+        // v0.1.25.8 (cycles-protocol revision 2026-04-13): when the
+        // AdminApiKeyAuthenticationFilter has already authenticated this
+        // request via X-Admin-API-Key on a dual-auth-allowlisted path,
+        // skip the tenant-key validation entirely. Without this skip,
+        // the tenant-key filter would reject the request with 401
+        // "Missing API key" because admin callers don't (and shouldn't)
+        // send X-Cycles-API-Key.
+        if (Boolean.TRUE.equals(request.getAttribute(
+                AdminApiKeyAuthenticationFilter.ADMIN_AUTH_HANDLED_ATTR))) {
+            return true;
+        }
         String path = request.getRequestURI();
         for (String pattern : SecurityConfig.PUBLIC_PATHS) {
             if (PATH_MATCHER.match(pattern, path)) {

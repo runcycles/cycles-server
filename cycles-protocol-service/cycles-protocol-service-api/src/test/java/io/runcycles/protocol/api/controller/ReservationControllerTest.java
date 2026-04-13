@@ -563,4 +563,84 @@ class ReservationControllerTest {
                     .andExpect(status().isOk());
         }
     }
+
+    // v0.1.25.8 (cycles-protocol revision 2026-04-13): admin-on-behalf-of
+    // dual-auth on list/get/release. Tests cover the controller-level
+    // branching only — filter-level admin-key validation is exercised
+    // separately in AdminApiKeyAuthenticationFilterTest.
+    @Nested @DisplayName("admin-on-behalf-of")
+    class AdminOnBehalfOf {
+        @org.junit.jupiter.api.BeforeEach
+        void setAdminAuth() {
+            SecurityContextHolder.getContext().setAuthentication(
+                new io.runcycles.protocol.api.auth.AdminApiKeyAuthentication("admin-secret"));
+        }
+
+        @Test @DisplayName("listReservations with admin auth + tenant filter returns 200")
+        void adminListWithTenantFilter() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq("any-tenant"), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations").param("tenant", "any-tenant"))
+                    .andExpect(status().isOk());
+        }
+
+        @Test @DisplayName("listReservations with admin auth requires tenant param — 400 INVALID_REQUEST")
+        void adminListWithoutTenantRejected() throws Exception {
+            // Admin has no effective tenant — must specify explicitly.
+            mockMvc.perform(get("/v1/reservations"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("tenant query parameter is required")));
+        }
+
+        @Test @DisplayName("getReservation with admin auth bypasses tenant ownership check")
+        void adminGetCrossTenant() throws Exception {
+            // Reservation belongs to "other-tenant" — under tenant auth this
+            // would 403, under admin auth it should 200. ReservationDetail
+            // doesn't have @Builder (parent has it but child doesn't
+            // re-expose), so set fields imperatively.
+            ReservationDetail detail = new ReservationDetail();
+            detail.setReservationId("res-x");
+            detail.setStatus(Enums.ReservationStatus.ACTIVE);
+            Subject subj = new Subject();
+            subj.setTenant("other-tenant");
+            detail.setSubject(subj);
+            Action act = new Action();
+            act.setKind("test");
+            act.setName("t");
+            detail.setAction(act);
+            Amount amt = new Amount();
+            amt.setUnit(Enums.UnitEnum.TOKENS);
+            amt.setAmount(100L);
+            detail.setReserved(amt);
+            detail.setCreatedAtMs(1L);
+            detail.setExpiresAtMs(2L);
+            detail.setScopePath("tenant:other-tenant");
+            detail.setAffectedScopes(List.of("tenant:other-tenant"));
+            when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
+            when(repository.getReservationById("res-x")).thenReturn(detail);
+            mockMvc.perform(get("/v1/reservations/res-x"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.reservation_id").value("res-x"));
+        }
+
+        @Test @DisplayName("releaseReservation with admin auth bypasses tenant ownership check")
+        void adminReleaseCrossTenant() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
+            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] hung\"}";
+            mockMvc.perform(post("/v1/reservations/res-x/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+        }
+    }
 }
