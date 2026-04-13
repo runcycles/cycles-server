@@ -2,9 +2,11 @@ package io.runcycles.protocol.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
+import io.runcycles.protocol.data.repository.AuditRepository;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.EventEmitterService;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.audit.AuditLogEntry;
 import io.runcycles.protocol.model.event.*;
 
 import java.util.Map;
@@ -34,6 +36,12 @@ public class ReservationController extends BaseController{
 
     @Autowired
     private EventEmitterService eventEmitter;
+
+    // v0.1.25.8: writes admin-driven release audit entries to the
+    // shared Redis store. Same repo the governance plane reads from
+    // via /v1/admin/audit/logs.
+    @Autowired
+    private AuditRepository auditRepository;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -152,35 +160,57 @@ public class ReservationController extends BaseController{
     public ResponseEntity<ReleaseResponse> release(
             @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
-            @Valid @RequestBody ReleaseRequest request) {
+            @Valid @RequestBody ReleaseRequest request,
+            HttpServletRequest httpRequest) {
         LOG.info("POST /v1/reservations/{}/release", reservationId);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        // v0.1.25.8: structured WARN log on admin-driven release so the
-        // action is greppable in operational logs (the runtime plane
-        // doesn't have a separate audit-log store like the governance
-        // plane does — this is the closest equivalent until either
-        // (a) a RESERVATION_RELEASED event type is added and emitted
-        //     via EventEmitterService (which would land in the
-        //     governance plane's audit store via the existing webhook /
-        //     event pipeline), or
-        // (b) cross-plane audit forwarding is built.
-        // Spec NORMATIVE wording "audit-log entry" is overstated for
-        // the runtime plane today — a follow-up spec PR will soften
-        // it to acknowledge the structured-log alternative.
+        ReleaseResponse response = repository.releaseReservation(reservationId, request);
+
+        // v0.1.25.8: on admin-driven release, write an audit-log entry
+        // to the shared Redis store. Entry surfaces in the governance
+        // dashboard's Audit view via cycles-server-admin's existing
+        // GET /v1/admin/audit/logs endpoint — both services point at
+        // the same Redis and use the same audit:log:* key layout.
         //
-        // Reason is user-controlled (max 256 chars per spec) — strip
-        // CR/LF before logging to prevent log-line forgery via
-        // newline injection (e.g. reason="x\nFAKE_ADMIN_LOG\n...").
+        // Satisfies cycles-protocol revision 2026-04-13 NORMATIVE:
+        //   "audit-log entry ... MUST record actor_type=admin_on_behalf_of"
+        // Audit failure is non-fatal (repository swallows exceptions);
+        // the release itself has already succeeded by the time we get
+        // here, so a failed audit write doesn't affect the response.
+        //
+        // `reason` is user-controlled and stored in metadata. Strip
+        // CR/LF before recording to prevent log-line forgery via
+        // newline injection in any consumer that naively concatenates
+        // audit entries (e.g. operator-facing grep output).
         if (isAdminAuth()) {
             String safeReason = request.getReason() != null
                 ? request.getReason().replaceAll("[\\r\\n]", " ")
-                : "(none)";
+                : null;
+            auditRepository.log(AuditLogEntry.builder()
+                .tenantId(tenant)
+                .operation("releaseReservation")
+                .resourceType("reservation")
+                .resourceId(reservationId)
+                .status(200)
+                .sourceIp(httpRequest != null ? httpRequest.getRemoteAddr() : null)
+                .userAgent(httpRequest != null ? httpRequest.getHeader("User-Agent") : null)
+                .requestId(httpRequest != null && httpRequest.getAttribute(
+                    io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE) != null
+                    ? httpRequest.getAttribute(
+                        io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString()
+                    : null)
+                .metadata(java.util.Map.of(
+                    "actor_type", "admin_on_behalf_of",
+                    "reason", safeReason != null ? safeReason : ""))
+                .build());
+            // Keep the structured log too — ops teams watching
+            // stdout (dev, incident response) see admin actions in
+            // real time without having to query the audit endpoint.
             LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} reason={}",
-                reservationId, tenant, safeReason);
+                reservationId, tenant, safeReason != null ? safeReason : "(none)");
         }
-        ReleaseResponse response = repository.releaseReservation(reservationId, request);
         return ResponseEntity.ok(response);
     }
 

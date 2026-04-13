@@ -31,6 +31,7 @@ import java.util.UUID;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -52,6 +53,7 @@ class ReservationControllerTest {
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
+    @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
 
     @BeforeEach
     void setAuth() {
@@ -641,6 +643,99 @@ class ReservationControllerTest {
             mockMvc.perform(post("/v1/reservations/res-x/release")
                             .contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isOk());
+        }
+
+        @Test @DisplayName("admin release writes audit-log entry with actor_type=admin_on_behalf_of")
+        void adminReleaseWritesAuditEntry() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-audit")).thenReturn("tenant-target");
+            when(repository.releaseReservation(eq("res-audit"), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] stuck reservation\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-audit/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+
+            // Verify audit entry was written with the spec-required tag.
+            // This is the NORMATIVE satisfaction per cycles-protocol
+            // revision 2026-04-13: admin-driven releases MUST record
+            // actor_type=admin_on_behalf_of in the audit log.
+            org.mockito.ArgumentCaptor<io.runcycles.protocol.model.audit.AuditLogEntry> captor =
+                org.mockito.ArgumentCaptor.forClass(
+                    io.runcycles.protocol.model.audit.AuditLogEntry.class);
+            verify(auditRepository).log(captor.capture());
+            io.runcycles.protocol.model.audit.AuditLogEntry entry = captor.getValue();
+            org.assertj.core.api.Assertions.assertThat(entry.getOperation()).isEqualTo("releaseReservation");
+            org.assertj.core.api.Assertions.assertThat(entry.getResourceType()).isEqualTo("reservation");
+            org.assertj.core.api.Assertions.assertThat(entry.getResourceId()).isEqualTo("res-audit");
+            org.assertj.core.api.Assertions.assertThat(entry.getTenantId()).isEqualTo("tenant-target");
+            org.assertj.core.api.Assertions.assertThat(entry.getStatus()).isEqualTo(200);
+            org.assertj.core.api.Assertions.assertThat(entry.getMetadata())
+                .containsEntry("actor_type", "admin_on_behalf_of");
+            org.assertj.core.api.Assertions.assertThat(entry.getMetadata().get("reason").toString())
+                .contains("[INCIDENT_FORCE_RELEASE]");
+        }
+
+        @Test @DisplayName("tenant-auth release does NOT write an audit entry (audit is admin-only)")
+        void tenantReleaseDoesNotWriteAudit() throws Exception {
+            // Reset to tenant auth (parent @BeforeEach already did, but
+            // the nested @BeforeEach switched to admin — switch back).
+            SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live", TENANT, "key-test", PERMISSIONS));
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(50L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-t")).thenReturn(TENANT);
+            when(repository.releaseReservation(eq("res-t"), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-t/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+
+            // Tenant self-service shouldn't pollute the audit log —
+            // that's admin-only. Tenant actions are visible in the
+            // existing tenant-facing audit surfaces.
+            verify(auditRepository, org.mockito.Mockito.never()).log(any());
+        }
+
+        @Test @DisplayName("audit CR/LF in reason is sanitized before being recorded in metadata")
+        void adminReleaseSanitizesAuditReasonCrlf() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            when(repository.findReservationTenantById("res-x")).thenReturn("t");
+            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"line1\\nFAKE_ENTRY\\nline3\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-x/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(maliciousBody))
+                    .andExpect(status().isOk());
+
+            org.mockito.ArgumentCaptor<io.runcycles.protocol.model.audit.AuditLogEntry> captor =
+                org.mockito.ArgumentCaptor.forClass(
+                    io.runcycles.protocol.model.audit.AuditLogEntry.class);
+            verify(auditRepository).log(captor.capture());
+            String storedReason = captor.getValue().getMetadata().get("reason").toString();
+            // No raw newlines in the recorded reason — attackers can't
+            // forge audit entries by embedding line breaks.
+            org.assertj.core.api.Assertions.assertThat(storedReason).doesNotContain("\n");
+            org.assertj.core.api.Assertions.assertThat(storedReason).doesNotContain("\r");
+            org.assertj.core.api.Assertions.assertThat(storedReason).contains("line1");
+            org.assertj.core.api.Assertions.assertThat(storedReason).contains("line3");
         }
 
         @Test @DisplayName("admin release with CR/LF in reason still succeeds (log sanitization happens server-side)")
