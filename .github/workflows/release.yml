@@ -11,6 +11,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout
@@ -62,3 +64,107 @@ jobs:
             || echo "Note: Could not set package visibility. Set it manually in GitHub package settings."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Smoke-test the *published* image, not a rebuild. Catches failure
+  # modes that unit/integration tests can't see — wrong entry point,
+  # missing files in the image, startup script typos, multi-arch
+  # manifest issues.
+  smoke-test-published:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 8
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create network and start redis
+        run: |
+          docker network create smoke-net
+          docker run -d --name smoke-redis --network smoke-net --network-alias redis redis:7-alpine
+          for i in $(seq 1 10); do
+            if docker exec smoke-redis redis-cli ping >/dev/null 2>&1; then
+              echo "redis ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run the published cycles-server image
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+        run: >
+          docker run -d
+          --name smoke-server
+          --network smoke-net
+          -p 7878:7878
+          -e REDIS_HOST=redis
+          -e REDIS_PORT=6379
+          -e REDIS_PASSWORD=
+          -e ADMIN_API_KEY=smoke-test-admin-key
+          ghcr.io/runcycles/cycles-server:${VERSION}
+
+      - name: Wait for /actuator/health
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7878/actuator/health || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "cycles-server healthy after $((i*2))s"
+              curl -s http://localhost:7878/actuator/health
+              echo
+              exit 0
+            fi
+            echo "waiting ($i/30) — status=$code"
+            sleep 2
+          done
+          echo "ERROR: cycles-server did not become healthy in 60s"
+          docker logs smoke-server | tail -50
+          exit 1
+
+      - name: Smoke probe — admin dual-auth allowlist works
+        run: |
+          # /v1/reservations is in the admin-dual-auth allowlist (v0.1.25.8)
+          # and REQUIRED tenant under admin. Missing tenant should return 400
+          # INVALID_REQUEST with a specific message, not HTML / 500.
+          body=$(curl -s -H "X-Admin-API-Key: smoke-test-admin-key" http://localhost:7878/v1/reservations)
+          echo "Body: $body"
+          echo "$body" | python -c "
+          import sys, json
+          d = json.loads(sys.stdin.read())
+          assert d.get('error') == 'INVALID_REQUEST', f'unexpected: {d}'
+          assert 'tenant' in d.get('message', '').lower(), f'unexpected message: {d}'
+          "
+
+      - name: Smoke probe — missing API key returns structured 401
+        run: |
+          body=$(curl -s http://localhost:7878/v1/reservations)
+          echo "Body: $body"
+          echo "$body" | python -c "
+          import sys, json
+          d = json.loads(sys.stdin.read())
+          assert d.get('error') == 'UNAUTHORIZED', f'unexpected: {d}'
+          "
+
+      - name: Capture logs on failure
+        if: failure()
+        run: docker logs smoke-server > smoke-server.log 2>&1 || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: smoke-test-logs
+          path: smoke-server.log
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f smoke-server smoke-redis || true
+          docker network rm smoke-net || true
