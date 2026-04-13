@@ -1,12 +1,36 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
+**Date:** 2026-04-12 (spec endpoint-coverage report — parity with admin),
+2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
 2026-04-12 (strict response-status enforcement — Gap 2 closed),
 2026-04-12 (spec compliance hardening — full-coverage contract validation),
 2026-04-12 (spec contract validation added),
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-12 — Spec endpoint-coverage report (parity with cycles-admin)
+
+Ports the `SpecCoverageCollector` pattern from `cycles-server-admin`. Closes the remaining capability gap identified in the sibling-repo comparison: the existing contract validators catch drift on *exercised* endpoints, but an endpoint with no test slides past every check (the response validator only fires on requests that actually happen).
+
+**How it works:**
+- `SpecCoverageCollector` — JVM-static set of `"METHOD /path/template"` keys.
+- `ContractValidationConfig` — new `specOperations()` parses the spec into method+path-template entries; `recordCoverage(method, path)` resolves a concrete URI (e.g. `GET /v1/reservations/res_123`) to its template (`GET /v1/reservations/{reservation_id}`) via regex match and records it.
+- Both the MockMvc matcher (`contractValidatingCustomizer`) and the `TestRestTemplate` interceptor now call `recordCoverage` on every spec-path request, regardless of response body (a 204 still counts as coverage).
+- `SpecCoverageReportTest` in the `zzz` sub-package runs last (thanks to `<runOrder>alphabetical</runOrder>` added to surefire), diffs covered vs declared operations, and fails the build on any gap.
+
+**Current state:** `declared=9 covered=9 missing=0` — every runtime operation is exercised by at least one contract-validated test.
+
+**Modified files:**
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/contract/SpecCoverageCollector.java` (new)
+- `.../contract/ContractValidationConfig.java` — `specOperations()`, `recordCoverage()`, `SpecOperation` inner class; MockMvc customizer now records coverage
+- `.../contract/ContractValidatingRestTemplateInterceptor.java` — calls `recordCoverage` on every spec-path hit
+- `.../zzz/SpecCoverageReportTest.java` (new)
+- `cycles-protocol-service-api/pom.xml` — added `<runOrder>alphabetical</runOrder>` to surefire so the zzz-package report runs last
+
+**Feature parity with cycles-server-admin:** all 7 hardening capabilities now match, plus the coverage collector. Only remaining delta is the spec-filename convention (`cycles-protocol-v0.yaml` vs `cycles-governance-admin-v0.1.25.yaml`), which is driven by how the spec repo names its files and isn't a philosophical difference.
 
 ---
 

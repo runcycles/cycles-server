@@ -101,6 +101,10 @@
                         <exclude>**/*IntegrationTest.java</exclude>
                     </excludes>
                     <excludedGroups>benchmark</excludedGroups>
+                    <!-- Alphabetical runOrder so SpecCoverageReportTest in the
+                         zzz sub-package runs after all other api-module tests,
+                         with the coverage collector fully populated. -->
+                    <runOrder>alphabetical</runOrder>
                 </configuration>
             </plugin>
         </plugins>
