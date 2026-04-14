@@ -121,7 +121,7 @@ public class ReservationController extends BaseController{
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        CommitResponse response = repository.commitReservation(reservationId, request);
+        CommitResponse response = repository.commitReservation(reservationId, request, tenant);
         try {
             Actor actor = buildActor(httpRequest);
             // Spec: emit commit_overage when committed actual > estimated amount
@@ -166,7 +166,8 @@ public class ReservationController extends BaseController{
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        ReleaseResponse response = repository.releaseReservation(reservationId, request);
+        String actorType = isAdminAuth() ? "admin_on_behalf_of" : "tenant";
+        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType);
 
         // v0.1.25.8: on admin-driven release, write an audit-log entry
         // to the shared Redis store. Entry surfaces in the governance

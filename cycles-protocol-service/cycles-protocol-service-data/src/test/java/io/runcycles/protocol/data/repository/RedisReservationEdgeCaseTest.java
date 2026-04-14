@@ -52,7 +52,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("commit-wrap");
 
-            assertThatThrownBy(() -> repository.commitReservation("res-wrap", request))
+            assertThatThrownBy(() -> repository.commitReservation("res-wrap", request, "tenant-a"))
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(IllegalStateException.class);
         }
@@ -66,7 +66,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-wrap").build();
 
-            assertThatThrownBy(() -> repository.releaseReservation("res-wrap", request))
+            assertThatThrownBy(() -> repository.releaseReservation("res-wrap", request, "tenant-a", "tenant"))
                 .isInstanceOf(RuntimeException.class)
                 .hasCauseInstanceOf(IllegalStateException.class);
         }
@@ -477,7 +477,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("no-bal");
 
-            CommitResponse response = repository.commitReservation("res-no-bal", request);
+            CommitResponse response = repository.commitReservation("res-no-bal", request, "tenant-a");
             assertThat(response.getBalances()).isEmpty();
         }
 
@@ -499,7 +499,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("bad-bal");
 
-            CommitResponse response = repository.commitReservation("res-bad-bal", request);
+            CommitResponse response = repository.commitReservation("res-bad-bal", request, "tenant-a");
             assertThat(response.getBalances()).isEmpty();
         }
 
@@ -520,7 +520,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("empty-bal");
 
-            CommitResponse response = repository.commitReservation("res-empty-bal", request);
+            CommitResponse response = repository.commitReservation("res-empty-bal", request, "tenant-a");
             assertThat(response.getBalances()).isEmpty();
         }
 
@@ -547,7 +547,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("partial-bal");
 
-            CommitResponse response = repository.commitReservation("res-partial", request);
+            CommitResponse response = repository.commitReservation("res-partial", request, "tenant-a");
             assertThat(response.getBalances()).hasSize(1);
             Balance b = response.getBalances().get(0);
             assertThat(b.getRemaining().getAmount()).isEqualTo(100L);
@@ -578,7 +578,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("over-limit");
 
-            CommitResponse response = repository.commitReservation("res-overlimit", request);
+            CommitResponse response = repository.commitReservation("res-overlimit", request, "tenant-a");
             assertThat(response.getBalances()).hasSize(2);
             assertThat(response.getBalances().get(0).getIsOverLimit()).isTrue();
             assertThat(response.getBalances().get(0).getDebt().getAmount()).isEqualTo(500L);
@@ -609,7 +609,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("no-est-amt");
 
-            CommitResponse response = repository.commitReservation("res-noamt", request);
+            CommitResponse response = repository.commitReservation("res-noamt", request, "tenant-a");
             assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
             assertThat(response.getReleased()).isNull();
         }
@@ -628,7 +628,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("no-unit").build();
-            ReleaseResponse response = repository.releaseReservation("res-nounit", request);
+            ReleaseResponse response = repository.releaseReservation("res-nounit", request, "tenant-a", "tenant");
 
             assertThat(response.getReleased().getAmount()).isZero();
             assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);

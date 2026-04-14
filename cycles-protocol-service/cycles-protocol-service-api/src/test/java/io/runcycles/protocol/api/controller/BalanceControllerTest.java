@@ -43,6 +43,7 @@ class BalanceControllerTest {
     @Autowired private MockMvc mockMvc;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
 
     @BeforeEach
     void setAuth() {

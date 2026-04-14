@@ -1,6 +1,7 @@
 package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
@@ -30,6 +31,7 @@ abstract class BaseRedisReservationRepositoryTest {
     @Mock protected Pipeline pipeline;
     @Mock protected ScopeDerivationService scopeService;
     @Mock protected LuaScriptRegistry luaScripts;
+    @Mock protected CyclesMetrics metrics;
     @InjectMocks protected RedisReservationRepository repository;
 
     protected final ObjectMapper objectMapper = new ObjectMapper();

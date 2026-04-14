@@ -1,6 +1,7 @@
 package io.runcycles.protocol.data.repository;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
+import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
@@ -29,6 +30,7 @@ public class RedisReservationRepository {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private ScopeDerivationService scopeService;
     @Autowired private LuaScriptRegistry luaScripts;
+    @Autowired private CyclesMetrics metrics;
     @Autowired @Qualifier("reserveLuaScript") private String reserveScript;
     @Autowired @Qualifier("commitLuaScript") private String commitScript;
     @Autowired @Qualifier("releaseLuaScript") private String releaseScript;
@@ -52,6 +54,7 @@ public class RedisReservationRepository {
 
     public ReservationCreateResponse createReservation(ReservationCreateRequest request, String tenant) {
         LOG.debug("Creating reservation for tenant: {}", tenant);
+        String overagePolicyTag = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "DEFAULT";
 
         try (Jedis jedis = jedisPool.getResource()) {
             Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
@@ -107,6 +110,7 @@ public class RedisReservationRepository {
                 }
                 ReservationSummary existing = buildReservationSummary(existingFields);
                 List<Balance> idempotencyBalances = fetchBalancesForScopes(jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
+                metrics.recordReserve(tenant, Enums.DecisionEnum.ALLOW.name(), "IDEMPOTENT_REPLAY", overagePolicyTag);
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.ALLOW)
                     .reservationId(existingId)
@@ -131,6 +135,7 @@ public class RedisReservationRepository {
                 decision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
             }
 
+            metrics.recordReserve(tenant, decision.name(), "OK", overagePolicyTag);
             return ReservationCreateResponse.builder()
                 .decision(decision)
                 .reservationId(reservationId)
@@ -144,9 +149,11 @@ public class RedisReservationRepository {
                 .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
         } catch (CyclesProtocolException e) {
+            metrics.recordReserve(tenant, "DENY", e.getErrorCode().name(), overagePolicyTag);
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to create reservation", e);
+            metrics.recordReserve(tenant, "DENY", "INTERNAL_ERROR", overagePolicyTag);
             throw new RuntimeException(e);
         }
     }
@@ -316,7 +323,7 @@ public class RedisReservationRepository {
         return dryRunResponse;
     }
 
-    public CommitResponse commitReservation(String reservationId, CommitRequest request) {
+    public CommitResponse commitReservation(String reservationId, CommitRequest request, String tenant) {
         LOG.debug("Committing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -358,6 +365,12 @@ public class RedisReservationRepository {
             Number luaDebt = (Number) response.get("debt_incurred");
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
 
+            long debtIncurredAmount = luaDebt != null ? luaDebt.longValue() : 0L;
+            metrics.recordCommit(tenant, "COMMITTED", "OK",
+                overagePolicy != null ? overagePolicy : "DEFAULT");
+            if (debtIncurredAmount > 0) {
+                metrics.recordOverdraftIncurred(tenant);
+            }
             return CommitResponse.builder()
                 .status(Enums.CommitStatus.COMMITTED)
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
@@ -373,14 +386,17 @@ public class RedisReservationRepository {
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
+            metrics.recordCommit(tenant, "DENY", e.getErrorCode().name(), "UNKNOWN");
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to commit reservation", e);
+            metrics.recordCommit(tenant, "DENY", "INTERNAL_ERROR", "UNKNOWN");
             throw new RuntimeException(e);
         }
     }
 
-    public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request) {
+    public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
+                                               String tenant, String actorType) {
         LOG.debug("Releasing reservation: {}", reservationId);
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -416,6 +432,7 @@ public class RedisReservationRepository {
             Enums.UnitEnum unitForBalances = luaUnit != null ? Enums.UnitEnum.valueOf(luaUnit) : Enums.UnitEnum.USD_MICROCENTS;
             List<Balance> balances = parseLuaBalances(response, unitForBalances);
 
+            metrics.recordRelease(tenant, actorType, "RELEASED", "OK");
             return ReleaseResponse.builder()
                 .status(Enums.ReleaseStatus.RELEASED)
                 .released(releasedAmount)
@@ -423,9 +440,11 @@ public class RedisReservationRepository {
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to release reservation:reservationId={},req={}",reservationId,request,e);
+            metrics.recordRelease(tenant, actorType, "DENY", e.getErrorCode().name());
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to release reservation:reservationId={},req={}",reservationId,request,e);
+            metrics.recordRelease(tenant, actorType, "DENY", "INTERNAL_ERROR");
             throw new RuntimeException(e);
         }
     }
@@ -459,6 +478,7 @@ public class RedisReservationRepository {
             }
             List<Balance> balances = parseLuaBalances(response, unitForBalances);
 
+            metrics.recordExtend(tenant, "ACTIVE", "OK");
             return ReservationExtendResponse.builder()
                 .status(Enums.ExtendStatus.ACTIVE)
                 .expiresAtMs(((Number) response.get("expires_at_ms")).longValue())
@@ -466,9 +486,11 @@ public class RedisReservationRepository {
                 .build();
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to extend reservation:reservationId={},req={}",reservationId,request,e);
+            metrics.recordExtend(tenant, "DENY", e.getErrorCode().name());
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to extend reservation: reservationId={},request={},msg={}",reservationId,request,e.getMessage(),e);
+            metrics.recordExtend(tenant, "DENY", "INTERNAL_ERROR");
             throw new RuntimeException(e);
         }
     }
@@ -824,6 +846,7 @@ public class RedisReservationRepository {
 
     public EventCreateResponse createEvent(EventCreateRequest request, String tenant) {
         LOG.debug("Creating event for tenant: {}", tenant);
+        String overagePolicyTag = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "DEFAULT";
 
         try (Jedis jedis = jedisPool.getResource()) {
             Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
@@ -879,6 +902,14 @@ public class RedisReservationRepository {
 
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
 
+            metrics.recordEvent(tenant, "APPLIED", "OK", overagePolicyTag);
+            // Any scope that actually accrued debt counts as overdraft incurred
+            // (event path creates debt the same way commit does).
+            boolean anyDebt = scopeDebtIncurred != null
+                && scopeDebtIncurred.values().stream().anyMatch(v -> v != null && v > 0);
+            if (anyDebt) {
+                metrics.recordOverdraftIncurred(tenant);
+            }
             return EventCreateResponse.builder()
                 .status(Enums.EventStatus.APPLIED)
                 .eventId(responseEventId)
@@ -889,9 +920,11 @@ public class RedisReservationRepository {
                 .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
         } catch (CyclesProtocolException e) {
+            metrics.recordEvent(tenant, "DENY", e.getErrorCode().name(), overagePolicyTag);
             throw e;
         } catch (Exception e) {
             LOG.error("Failed to create event", e);
+            metrics.recordEvent(tenant, "DENY", "INTERNAL_ERROR", overagePolicyTag);
             throw new RuntimeException(e);
         }
     }

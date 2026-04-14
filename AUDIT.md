@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
+**Date:** 2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
+2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
 2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
 2026-04-12 (spec endpoint-coverage report — parity with admin),
 2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
@@ -10,6 +11,59 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — v0.1.25.10: custom business metrics + resilience test
+
+Addresses the largest remaining gap flagged in the v0.1.25.9 retrospective: the service emitted no domain-level metrics, only Spring Boot's generic `http.server.requests` timer. Operators answering "how many denials in the last 5 minutes by reason and tenant" could only infer it from HTTP status codes. This release wires domain counters through a new shared component and extends the existing Micrometer integration test to cover them.
+
+**New class: `CyclesMetrics` (`cycles-protocol-service-data/.../metrics/`)**
+Centralised Micrometer instrumentation. One `record*` method per operation, each mapping to a counter under the `cycles.*` namespace. Tag set prioritises operational signal (tenant, decision, reason, overage_policy, actor_type) while keeping cardinality bounded; the only high-card tag (`tenant`) is toggleable via `cycles.metrics.tenant-tag.enabled` for deployments with many thousands of tenants.
+
+**Counters emitted:**
+- `cycles.reservations.reserve` — every reserve outcome, tagged {tenant, decision, reason, overage_policy}. Idempotent replays record `reason=IDEMPOTENT_REPLAY` so an operator can tell real ALLOWs from cached replays.
+- `cycles.reservations.commit` — every commit outcome, same tag set.
+- `cycles.reservations.release` — every release, tagged {tenant, actor_type=tenant|admin_on_behalf_of, decision, reason}. The actor_type split was v0.1.25.8's dual-auth surface — now directly queryable.
+- `cycles.reservations.extend` — every extend outcome.
+- `cycles.reservations.expired` — one per actual ACTIVE→EXPIRED transition from the sweep. Does NOT bump for grace-period skips or already-finalised candidates.
+- `cycles.events` — every event outcome, same four-tag shape as reserve/commit.
+- `cycles.overdraft.incurred` — incremented whenever a commit or event actually accrued non-zero debt. Unit-free (the amount is in the balance store; this is "how often did we go into overdraft").
+
+**Modified:**
+- `RedisReservationRepository` — wraps each of `createReservation`, `commitReservation`, `releaseReservation`, `extendReservation`, `createEvent` so the counter emits on both success and exception paths. Method signatures for `commitReservation` and `releaseReservation` gained a `tenant` parameter (and `releaseReservation` an `actorType`); callers in `ReservationController` updated.
+- `ReservationExpiryService` — increments `cycles.reservations.expired` for each Lua-reported EXPIRED result (not per sweep candidate).
+- `cycles-protocol-service-data/pom.xml` — added `io.micrometer:micrometer-core`.
+
+**Dormant bug surfaced and fixed:** `ReservationExpiryService.emitExpiredEvent` was reading `reservation:<id>` instead of `reservation:res_<id>`. Because `jedis.hgetAll` on a missing key returns an empty map (not an error), the method silently no-op'd on every expiry in production — the `reservation.expired` event was never actually emitted. The new counter test exposed it immediately. Existing unit tests (`ReservationExpiryServiceTest`) used mocks keyed to the same wrong prefix so they were self-consistent but didn't catch the real path divergence; test mocks aligned to production in the same commit.
+
+**New integration test: `RedisDisconnectResilienceIntegrationTest`**
+Uses a dedicated Testcontainers Redis (not the shared one from `BaseIntegrationTest`, to avoid breaking parallel tests). Pauses the container mid-request via Docker pause, asserts the commit operation fails with a structured error (not a hang, not a silent 200), resumes the container, asserts a retry succeeds using the still-valid pre-outage reservation, and verifies the TTL index has no orphaned entry post-recovery. Guards the failure class this codebase's positioning claims to prevent (silent failures under a paused downstream).
+
+**Extended: `MetricsCorrectnessIntegrationTest`**
+Adds five nested classes covering every new counter. Each test seeds a clean state, reads the aggregate counter count, drives a known workload, and asserts the exact delta. Uses `Search.counters().stream().mapToDouble(...).sum()` rather than `Search.counter()` because multiple counters can match a partial tag filter (e.g. same tenant+decision but different overage_policy) and `.counter()` on ambiguous searches returns an arbitrary one — the aggregate is what the test needs.
+
+**New unit test: `CyclesMetricsTest`**
+10 tests in `cycles-protocol-service-data` covering every `record*` method's tag shape, null/blank normalisation to the `UNKNOWN` sentinel, and the `cycles.metrics.tenant-tag.enabled=false` path (verifies `tenant` tag is omitted for high-cardinality deployments).
+
+**Wire format:** Unchanged. Response bodies, Lua scripts, error codes, idempotency semantics all identical to v0.1.25.9.
+
+**Verification:**
+- `mvn -B verify --file cycles-protocol-service/pom.xml`: 133 api + 320 data = 453 tests, 0 failures. JaCoCo coverage met (≥95%). Spec coverage 9/9.
+- Property-tests profile unchanged, still passes.
+
+**Modified files:**
+- `cycles-protocol-service/pom.xml` — `<revision>` → `0.1.25.10`.
+- `cycles-protocol-service/cycles-protocol-service-data/pom.xml` — `micrometer-core` dep.
+- `cycles-protocol-service/cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/metrics/CyclesMetrics.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/repository/RedisReservationRepository.java` — instrumented; commit/release signatures gained `tenant`/`actorType`.
+- `cycles-protocol-service/cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/service/ReservationExpiryService.java` — counter emission + `res_` prefix fix.
+- `cycles-protocol-service/cycles-protocol-service-api/src/main/java/io/runcycles/protocol/api/controller/ReservationController.java` — pass `tenant` + `actorType` to repo.
+- `cycles-protocol-service/cycles-protocol-service-data/src/test/java/io/runcycles/protocol/data/metrics/CyclesMetricsTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/MetricsCorrectnessIntegrationTest.java` — extended with 8 new tests.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/RedisDisconnectResilienceIntegrationTest.java` — NEW.
+- Updated mocks/test signatures in `ReservationControllerTest`, `RedisReservationCommitReleaseTest`, `RedisReservationEdgeCaseTest`, `ReservationExpiryServiceTest`, `BaseRedisReservationRepositoryTest`, `BalanceControllerTest`, `DecisionControllerTest`, `EventControllerTest` to match new signatures / provide `CyclesMetrics` mock bean.
+- `AUDIT.md`, `README.md` — this entry + version bump.
 
 ---
 

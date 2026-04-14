@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.model.event.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ public class ReservationExpiryService {
     @Autowired private LuaScriptRegistry luaScripts;
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
     @Autowired private EventEmitterService eventEmitter;
+    @Autowired private CyclesMetrics metrics;
 
     /** Max candidates per sweep to avoid OOM after prolonged outages. */
     private static final int SWEEP_BATCH_SIZE = 1000;
@@ -75,12 +77,21 @@ public class ReservationExpiryService {
             String resultStr = luaResult != null ? luaResult.toString() : "";
             if (!resultStr.contains("EXPIRED")) return;
 
-            // Fetch reservation hash for event payload — one HGETALL per expired reservation
-            Map<String, String> hash = jedis.hgetAll("reservation:" + reservationId);
+            // Fetch reservation hash for event payload — one HGETALL per expired reservation.
+            // Hash key has the "res_" prefix (consistent with expire.lua and all other scripts);
+            // the TTL zset stores plain ids, so we must re-add the prefix here. This was
+            // previously wrong (missing prefix) — dormant because hgetAll on a non-existent key
+            // returns an empty map rather than throwing, so the method just silently no-op'd.
+            // Surfaced by the new cycles.reservations.expired counter test in v0.1.25.10.
+            Map<String, String> hash = jedis.hgetAll("reservation:res_" + reservationId);
             if (hash == null || hash.isEmpty()) return;
 
             String tenantId = hash.get("tenant");
             if (tenantId == null) return;
+
+            // Counter is bumped once per actual EXPIRED transition (SKIP results from
+            // still-in-grace or already-finalised reservations are filtered out above).
+            metrics.recordExpired(tenantId);
 
             String scopePath = hash.get("scope_path");
             String unit = hash.get("estimate_unit");
