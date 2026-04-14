@@ -6,7 +6,146 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Performance regression gate. Runs the benchmark profile three times,
+  # medians the results, compares against benchmarks/baseline.json. On
+  # regression (> 25% worse than baseline on any headline metric), fails
+  # the release before any Docker build runs.
+  #
+  # Bypass: include `[benchmark-skip]` anywhere in the release notes body
+  # (for test-only / infra-only releases where benchmarks only measure
+  # environmental noise — precedent: v0.1.25.9, .10, .11 were all
+  # legitimately benchmark-skip'd).
+  #
+  # On successful non-bypass gate, atomically updates baseline.json
+  # with the new numbers and commits to main.
+  benchmark-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write   # needed to push updated baseline.json
+    outputs:
+      skipped: ${{ steps.decide.outputs.skipped }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+
+      # Decide whether to run the gate. Skip for workflow_dispatch (manual
+      # Docker re-builds don't need regression check — the tag is already
+      # pinned). Skip also if [benchmark-skip] in release notes.
+      - name: Decide skip
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          if [ "$EVENT" != "release" ]; then
+            echo "Event is '$EVENT' (not 'release') — skipping benchmark gate."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$RELEASE_BODY" | grep -qF "[benchmark-skip]"; then
+            echo "Release notes contain [benchmark-skip] — skipping benchmark gate."
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Running benchmark gate."
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 21
+        if: steps.decide.outputs.skipped == 'false'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Set up Python
+        if: steps.decide.outputs.skipped == 'false'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # Reactor install first (release-workflow memory gotcha: benchmarks
+      # need the new version in ~/.m2 before -Pbenchmark can resolve it).
+      - name: Install reactor
+        if: steps.decide.outputs.skipped == 'false'
+        run: |
+          mvn -B install -DskipTests --file cycles-protocol-service/pom.xml
+          rm -rf cycles-protocol-service/cycles-protocol-service-api/target/surefire-reports
+
+      - name: Benchmark trials (3×)
+        if: steps.decide.outputs.skipped == 'false'
+        run: |
+          for i in 1 2 3; do
+            mvn -B test -Pbenchmark \
+              --file cycles-protocol-service/pom.xml \
+              -pl cycles-protocol-service-api
+            python3 scripts/parse-benchmarks.py \
+              cycles-protocol-service/cycles-protocol-service-api/target/surefire-reports \
+              --trial-of $i \
+              --tag "${{ github.event.release.tag_name || '' }}" \
+              > /tmp/trial${i}.json
+            echo "--- trial $i ---"
+            cat /tmp/trial${i}.json
+            rm -rf cycles-protocol-service/cycles-protocol-service-api/target/surefire-reports
+          done
+
+      - name: Median-aggregate
+        if: steps.decide.outputs.skipped == 'false'
+        run: |
+          python3 scripts/median-benchmarks.py /tmp/trial1.json /tmp/trial2.json /tmp/trial3.json \
+            > /tmp/current.json
+          echo '--- release candidate ---'
+          cat /tmp/current.json
+
+      - name: Regression check
+        if: steps.decide.outputs.skipped == 'false'
+        shell: bash
+        run: |
+          # pipefail so the non-zero exit from check-regression (on
+          # regression) isn't swallowed by `tee`.
+          set -o pipefail
+          python3 scripts/check-regression.py release \
+            --current /tmp/current.json \
+            --baseline benchmarks/baseline.json \
+            --threshold 0.25 \
+            | tee /tmp/gate-summary.md
+
+      - name: Attach summary to job
+        if: steps.decide.outputs.skipped == 'false' && always()
+        run: |
+          if [ -f /tmp/gate-summary.md ]; then
+            cat /tmp/gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # On successful gate, the new median becomes the baseline for the
+      # next release. Also appended to history.jsonl for trend continuity.
+      # Switch to main for the commit because the workflow checked out
+      # the release tag; baseline/history always live on main (tags are
+      # immutable).
+      - name: Update baseline + history on main
+        if: steps.decide.outputs.skipped == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp /tmp/current.json benchmarks/baseline.json
+          cat /tmp/current.json >> benchmarks/history.jsonl
+          echo "" >> benchmarks/history.jsonl
+          git add benchmarks/baseline.json benchmarks/history.jsonl
+          if git diff --cached --quiet; then
+            echo "no baseline/history changes to commit"
+            exit 0
+          fi
+          git commit -m "chore(bench): update baseline for ${{ github.event.release.tag_name }}
+
+          [skip ci]"
+          git push origin main
+
   build-and-push:
+    needs: benchmark-gate
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
+**Date:** 2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
+2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
 2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
 2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
 2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
@@ -13,6 +14,63 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — Automated performance regression detection (no version bump)
+
+Closes the last remaining gap in the v0.1.25.11 scorecard: **performance regression detection was 6/10** because BENCHMARKS.md tracked trends but nothing failed automatically on a regression. A 2× p99 slowdown could merge, tag, and ship through the release workflow with only human review to catch it. This change adds an automated gate.
+
+**Shape:** two workflows, one baseline file, three small Python scripts, 25% release-gate threshold with a bypass mechanism. Ships Phase 1 (trend) and Phase 2 (gate) together per review consensus that phasing added delay without real safety.
+
+**New scripts (`scripts/`):**
+
+- `parse-benchmarks.py` — parses surefire XML CDATA from `CyclesProtocol*BenchmarkTest` outputs into a JSON record with 7 headline metrics (reserve p50/p99, commit p50/p99, release p50, event p50, concurrent throughput @ 32 threads). Uses the same extraction patterns documented in the release-workflow memory. Exits non-zero if any metric can't be parsed so a silent-skip run can't land in history.
+- `median-benchmarks.py` — median-aggregates N trial JSON records into one. Dampens GH runner noise.
+- `check-regression.py` — two modes: `release` (compare current to `baseline.json`, 25% threshold, exit non-zero on regression) and `trend` (compare current to rolling-window median of `history.jsonl`, 30% threshold, warn-only by default). Bootstrap-tolerant: empty or missing baseline accepts the current record as the initial baseline and exits 0.
+
+**New data directory (`benchmarks/`):**
+
+- `history.jsonl` — append-only, one JSON object per nightly + release run. Initially empty; populated over time.
+- `baseline.json` — current accepted reference for the release gate. Initially `{}` (bootstrap state); the first post-landing release establishes real numbers.
+- `README.md` — format documentation, metric inventory, noise-handling rationale, bypass convention.
+
+**New workflow: `.github/workflows/nightly-benchmark.yml`**
+
+Cron at 07:00 UTC (after property + soak nightlies). Runs 3 trials, medians them, compares the result to the rolling 7-run median from `history.jsonl` with a 30% threshold. Trend detection only — **does not fail the workflow**, just annotates the job summary. Appends the result to `history.jsonl` and commits it to main with `[skip ci]` so the nightly doesn't kick itself.
+
+**Modified: `.github/workflows/release.yml`**
+
+New `benchmark-gate` job runs before `build-and-push`. Skips automatically when:
+- Event is `workflow_dispatch` (manual Docker rebuilds don't need a gate — the tag is already pinned).
+- Release notes body contains `[benchmark-skip]` (for test-only / infra-only releases where benchmarks only measure environmental noise).
+
+Otherwise: installs the reactor (release-workflow memory gotcha — benchmarks need the new version in `~/.m2` first), runs the benchmark profile 3×, medians, compares against `baseline.json` with 25% threshold. On pass, atomically updates `baseline.json` on main and commits. On fail, the job fails and `build-and-push` doesn't run — no Docker image published.
+
+**Bypass convention documented:** include `[benchmark-skip]` anywhere in the GitHub release notes body. Precedent for this use: v0.1.25.9 (test-only), v0.1.25.10 (metrics instrumentation, not hot-path), v0.1.25.11 (test-only) would all have legitimately used it. Going forward, release PR authors decide whether their release is perf-material and include the marker in the release notes if not.
+
+**Noise handling (stacked):**
+
+1. 3 trials, median taken per run
+2. Rolling 7-run baseline for trend (drifts with environment; real regressions show as sustained steps)
+3. Generous thresholds (25% gate, 30% trend flag)
+
+Expected false-positive rate: < 1 per month. If higher, threshold tuning or self-hosted runners.
+
+**Scorecard impact:** Performance regression detection **6/10 → 8.5/10**. Won't reach 10/10 without dedicated perf hardware (pinned CPU, no tenant contention) but 8.5 is a very high ceiling for GH-hosted CI.
+
+**Test plan / validation:**
+- Script unit-test: synthetic records fed through bootstrap / no-regression / regressed paths. All three paths produce correct exit codes (0/0/1) and correct summary output. Verified locally before push.
+- First nightly run will establish the initial `history.jsonl` data point.
+- First release post-merge will bootstrap `baseline.json` (accept current numbers as the reference).
+- Second release onwards: real gate enforcement.
+
+**Modified files:**
+- `benchmarks/README.md`, `benchmarks/history.jsonl` (empty), `benchmarks/baseline.json` (empty) — NEW.
+- `scripts/parse-benchmarks.py`, `scripts/median-benchmarks.py`, `scripts/check-regression.py` — NEW.
+- `.github/workflows/nightly-benchmark.yml` — NEW.
+- `.github/workflows/release.yml` — added `benchmark-gate` job upstream of `build-and-push`.
+- `AUDIT.md` — this entry.
 
 ---
 
