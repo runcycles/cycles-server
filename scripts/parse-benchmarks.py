@@ -29,32 +29,39 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
-# Each (metric_name, regex) pair extracts one headline number.
+# Each (metric_name, regex, group_idx) pair extracts one headline number.
 # The surefire XML wraps benchmark stdout in <system-out>...</system-out>
-# with CDATA blocks, which we read verbatim as a string. The benchmark
-# tests print a pipe-delimited table like:
+# with CDATA blocks; we read verbatim as a string.
 #
-#   | Reserve                   |   5.3ms|   8.1ms|  18.2ms| ...
+# The benchmark tests print BOTH a pipe-delimited summary table AND a
+# per-operation line like:
 #
-# We match on operation name followed by the first three latency
-# columns (p50, p95, p99).
+#   [Benchmark] Reserve               p50=3.0ms  p95=4.9ms  p99=7.0ms  min=2.5ms  max=12.3ms
 #
-# Concurrent throughput comes from:
-#   [Concurrent] 32 threads: 78960 ops in 30s = 2632.0 ops/s  p50=...
-BENCH_TABLE_ROW = (
-    r"\|\s*{op}\s*\|"
-    r"\s*([0-9.]+)ms\|"  # p50
-    r"\s*([0-9.]+)ms\|"  # p95
-    r"\s*([0-9.]+)ms\|"  # p99
+# We match on the `[Benchmark]` line because it's unambiguous — the pipe
+# table has whitespace quirks in surefire's CDATA output that proved
+# brittle in the first nightly run (all table metrics missed, throughput
+# extracted fine because it uses a `[Concurrent]` prefix line too).
+#
+# Word-boundary note: "Reserve" is a prefix of "Reserve→Commit" and
+# "Reserve→Release". The trailing \s+ requires WHITESPACE immediately
+# after the operation name, which `→` is not — so `Reserve\s+p50=`
+# naturally fails to match the multi-op lines. Same for other short
+# names vs. long names.
+BENCH_LINE = (
+    r"\[Benchmark\]\s*{op}\s+"
+    r"p50=([0-9.]+)ms\s+"
+    r"p95=([0-9.]+)ms\s+"
+    r"p99=([0-9.]+)ms"
 )
 
 EXTRACTORS = [
-    ("reserve_p50_ms", BENCH_TABLE_ROW.format(op="Reserve"), 1),
-    ("reserve_p99_ms", BENCH_TABLE_ROW.format(op="Reserve"), 3),
-    ("commit_p50_ms",  BENCH_TABLE_ROW.format(op="Commit"),  1),
-    ("commit_p99_ms",  BENCH_TABLE_ROW.format(op="Commit"),  3),
-    ("release_p50_ms", BENCH_TABLE_ROW.format(op="Release"), 1),
-    ("event_p50_ms",   BENCH_TABLE_ROW.format(op="Event"),   1),
+    ("reserve_p50_ms", BENCH_LINE.format(op="Reserve"), 1),
+    ("reserve_p99_ms", BENCH_LINE.format(op="Reserve"), 3),
+    ("commit_p50_ms",  BENCH_LINE.format(op="Commit"),  1),
+    ("commit_p99_ms",  BENCH_LINE.format(op="Commit"),  3),
+    ("release_p50_ms", BENCH_LINE.format(op="Release"), 1),
+    ("event_p50_ms",   BENCH_LINE.format(op="Event"),   1),
 ]
 
 CONCURRENT_32T_RE = re.compile(
