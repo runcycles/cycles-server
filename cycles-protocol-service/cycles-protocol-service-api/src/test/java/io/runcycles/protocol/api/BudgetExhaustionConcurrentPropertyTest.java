@@ -109,9 +109,11 @@ class BudgetExhaustionConcurrentPropertyTest extends BaseIntegrationTest {
      * Main property: under any interleaving of reserve/commit/release/decide operations
      * against a REJECT-policy budget, the three invariants hold.
      *
-     * tries = 20 for PR-feedback speed; bump via -Djqwik.tries.default=100 nightly.
+     * The try count is NOT fixed on the annotation so it can be overridden at runtime via
+     * -Djqwik.defaultTries=<N>. Default is 20 (set in src/test/resources/jqwik.properties)
+     * for PR-feedback speed; nightly CI runs with 100 for ~5x deeper interleaving coverage.
      */
-    @Property(tries = 20, shrinking = ShrinkingMode.FULL)
+    @Property(shrinking = ShrinkingMode.FULL)
     void concurrentOpsNeverOverdrawUnderReject(
             @ForAll("threadCounts") int threadCount,
             @ForAll("initialBudgets") long initialBudget,
