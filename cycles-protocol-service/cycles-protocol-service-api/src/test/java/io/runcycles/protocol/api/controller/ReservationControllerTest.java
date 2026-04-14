@@ -54,6 +54,7 @@ class ReservationControllerTest {
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
     @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
 
     @BeforeEach
     void setAuth() {
@@ -354,7 +355,7 @@ class ReservationControllerTest {
                     .status(Enums.CommitStatus.COMMITTED)
                     .charged(new Amount(Enums.UnitEnum.TOKENS, 500L))
                     .build();
-            when(repository.commitReservation(eq("res_123"), any())).thenReturn(resp);
+            when(repository.commitReservation(eq("res_123"), any(), any())).thenReturn(resp);
 
             CommitRequest req = new CommitRequest();
             req.setActual(new Amount(Enums.UnitEnum.TOKENS, 500L));
@@ -375,7 +376,7 @@ class ReservationControllerTest {
                     .charged(new Amount(Enums.UnitEnum.TOKENS, 1500L))
                     .estimateAmount(1000L) // actual > estimate triggers overage event
                     .build();
-            when(repository.commitReservation(eq("res_123"), any())).thenReturn(resp);
+            when(repository.commitReservation(eq("res_123"), any(), any())).thenReturn(resp);
 
             CommitRequest req = new CommitRequest();
             req.setActual(new Amount(Enums.UnitEnum.TOKENS, 1500L));
@@ -416,7 +417,7 @@ class ReservationControllerTest {
                     .status(Enums.ReleaseStatus.RELEASED)
                     .released(new Amount(Enums.UnitEnum.TOKENS, 1000L))
                     .build();
-            when(repository.releaseReservation(eq("res_123"), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res_123"), any(), any(), any())).thenReturn(resp);
 
             ReleaseRequest req = ReleaseRequest.builder()
                     .idempotencyKey(UUID.randomUUID().toString()).build();
@@ -638,7 +639,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
-            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-x"), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] hung\"}";
             mockMvc.perform(post("/v1/reservations/res-x/release")
                             .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -654,7 +655,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-audit")).thenReturn("tenant-target");
-            when(repository.releaseReservation(eq("res-audit"), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-audit"), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] stuck reservation\"}";
 
@@ -695,7 +696,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-t")).thenReturn(TENANT);
-            when(repository.releaseReservation(eq("res-t"), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-t"), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\"}";
 
             mockMvc.perform(post("/v1/reservations/res-t/release")
@@ -717,7 +718,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-x")).thenReturn("t");
-            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-x"), any(), any(), any())).thenReturn(resp);
             String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"line1\\nFAKE_ENTRY\\nline3\"}";
 
@@ -755,7 +756,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
-            when(repository.releaseReservation(eq("res-x"), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-x"), any(), any(), any())).thenReturn(resp);
             String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"line1\\nFAKE_ADMIN_LOG\\nline3\"}";
             mockMvc.perform(post("/v1/reservations/res-x/release")

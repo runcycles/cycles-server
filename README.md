@@ -117,7 +117,7 @@ mvn clean install
 ./build-all.sh
 ```
 
-The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-<version>.jar` (where `<version>` is the `revision` property in `cycles-protocol-service/pom.xml` — e.g. `0.1.25.9`).
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-<version>.jar` (where `<version>` is the `revision` property in `cycles-protocol-service/pom.xml` — e.g. `0.1.25.10`).
 
 ## Docker Deployment
 
@@ -136,7 +136,7 @@ Pre-built images are published to GitHub Container Registry on each release:
 
 ```
 ghcr.io/runcycles/cycles-server:latest
-ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.9
+ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.10
 ```
 
 ## Testing

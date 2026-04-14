@@ -39,7 +39,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("commit-1");
 
-            CommitResponse response = repository.commitReservation("res1", request);
+            CommitResponse response = repository.commitReservation("res1", request, "tenant-a");
 
             assertThat(response.getStatus()).isEqualTo(Enums.CommitStatus.COMMITTED);
             assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
@@ -64,7 +64,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 5000L));
             request.setIdempotencyKey("commit-2");
 
-            CommitResponse response = repository.commitReservation("res2", request);
+            CommitResponse response = repository.commitReservation("res2", request, "tenant-a");
 
             assertThat(response.getReleased()).isNull();
         }
@@ -82,7 +82,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("commit-err");
 
-            assertThatThrownBy(() -> repository.commitReservation("res-done", request))
+            assertThatThrownBy(() -> repository.commitReservation("res-done", request, "tenant-a"))
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.RESERVATION_FINALIZED);
         }
@@ -99,7 +99,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("commit-noest");
 
-            CommitResponse response = repository.commitReservation("resNoEst", request);
+            CommitResponse response = repository.commitReservation("resNoEst", request, "tenant-a");
 
             assertThat(response.getStatus()).isEqualTo(Enums.CommitStatus.COMMITTED);
             assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
@@ -120,7 +120,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("commit-notfound");
 
-            assertThatThrownBy(() -> repository.commitReservation("res-notfound", request))
+            assertThatThrownBy(() -> repository.commitReservation("res-notfound", request, "tenant-a"))
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
         }
@@ -145,7 +145,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
             request.setIdempotencyKey("commit-replay");
 
-            CommitResponse response = repository.commitReservation("res-idem", request);
+            CommitResponse response = repository.commitReservation("res-idem", request, "tenant-a");
 
             assertThat(response.getStatus()).isEqualTo(Enums.CommitStatus.COMMITTED);
             assertThat(response.getCharged().getAmount()).isEqualTo(3000L);
@@ -176,7 +176,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-1").build();
 
-            ReleaseResponse response = repository.releaseReservation("res3", request);
+            ReleaseResponse response = repository.releaseReservation("res3", request, "tenant-a", "tenant");
 
             assertThat(response.getStatus()).isEqualTo(Enums.ReleaseStatus.RELEASED);
             assertThat(response.getReleased().getAmount()).isEqualTo(5000L);
@@ -197,7 +197,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-2").build();
 
-            ReleaseResponse response = repository.releaseReservation("res4", request);
+            ReleaseResponse response = repository.releaseReservation("res4", request, "tenant-a", "tenant");
 
             assertThat(response.getReleased().getAmount()).isEqualTo(0L);
             assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);
@@ -214,7 +214,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-err").build();
 
-            assertThatThrownBy(() -> repository.releaseReservation("res-gone", request))
+            assertThatThrownBy(() -> repository.releaseReservation("res-gone", request, "tenant-a", "tenant"))
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
         }
@@ -235,7 +235,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("release-replay").build();
 
-            ReleaseResponse response = repository.releaseReservation("res-idem-rel", request);
+            ReleaseResponse response = repository.releaseReservation("res-idem-rel", request, "tenant-a", "tenant");
 
             assertThat(response.getStatus()).isEqualTo(Enums.ReleaseStatus.RELEASED);
             assertThat(response.getReleased().getAmount()).isEqualTo(5000L);
@@ -262,7 +262,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
 
             ReleaseRequest request = ReleaseRequest.builder().idempotencyKey("rel-null").build();
-            ReleaseResponse response = repository.releaseReservation("res-null-est", request);
+            ReleaseResponse response = repository.releaseReservation("res-null-est", request, "tenant-a", "tenant");
 
             assertThat(response.getReleased().getAmount()).isZero();
             assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);

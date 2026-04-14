@@ -26,6 +26,7 @@ class ReservationExpiryServiceTest {
     @Mock private Jedis jedis;
     @Mock private LuaScriptRegistry luaScripts;
     @Mock private EventEmitterService eventEmitter;
+    @Mock private io.runcycles.protocol.data.metrics.CyclesMetrics metrics;
 
     private ReservationExpiryService service;
 
@@ -37,6 +38,7 @@ class ReservationExpiryServiceTest {
         setField(service, "luaScripts", luaScripts);
         setField(service, "expireScript", "-- expire lua script");
         setField(service, "eventEmitter", eventEmitter);
+        setField(service, "metrics", metrics);
         when(jedisPool.getResource()).thenReturn(jedis);
         // Mock Redis TIME — returns [seconds, microseconds].
         // Use lenient() because some tests override getResource() to throw before time() is called.
@@ -52,13 +54,13 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldExpireCandidatesFromSortedSet() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1", "res_2"));
+                .thenReturn(List.of("id1", "id2"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString())).thenReturn("OK");
 
         service.expireReservations();
 
-        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("res_1"));
-        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("res_2"));
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("id1"));
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("id2"));
     }
 
     @Test
@@ -74,9 +76,9 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldContinueOnPerReservationFailure() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1", "res_2", "res_3"));
-        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_1"))).thenReturn("OK");
-        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_2")))
+                .thenReturn(List.of("id1", "id2", "res_3"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1"))).thenReturn("OK");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id2")))
                 .thenThrow(new RuntimeException("Lua error"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_3"))).thenReturn("OK");
 
@@ -134,10 +136,10 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldEmitExpiredEventOnSuccessfulExpiry() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1"));
-        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_1")))
+                .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
-        when(jedis.hgetAll("reservation:res_1")).thenReturn(Map.of(
+        when(jedis.hgetAll("reservation:res_id1")).thenReturn(Map.of(
                 "tenant", "t1",
                 "scope_path", "tenant:t1/agent:bot",
                 "estimate_unit", "USD_MICROCENTS",
@@ -155,7 +157,7 @@ class ReservationExpiryServiceTest {
                 eq("tenant:t1/agent:bot"),
                 argThat(a -> a.getType() == io.runcycles.protocol.model.event.ActorType.SYSTEM),
                 argThat(d -> d instanceof io.runcycles.protocol.model.event.EventDataReservationExpired
-                        && ((io.runcycles.protocol.model.event.EventDataReservationExpired) d).getReservationId().equals("res_1")
+                        && ((io.runcycles.protocol.model.event.EventDataReservationExpired) d).getReservationId().equals("id1")
                         && ((io.runcycles.protocol.model.event.EventDataReservationExpired) d).getExtensionsUsed() == 2),
                 isNull(), isNull());
     }
@@ -163,8 +165,8 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldNotEmitEventForNonExpiredResult() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1"));
-        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_1")))
+                .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"SKIP\",\"reason\":\"in_grace_period\"}");
 
         service.expireReservations();
@@ -175,10 +177,10 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldNotEmitEventWhenHashMissingTenant() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1"));
-        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_1")))
+                .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
-        when(jedis.hgetAll("reservation:res_1")).thenReturn(Map.of(
+        when(jedis.hgetAll("reservation:res_id1")).thenReturn(Map.of(
                 "scope_path", "tenant:t1"
         ));
 
@@ -190,10 +192,10 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldNotEmitEventWhenHashEmpty() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1"));
-        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("res_1")))
+                .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
-        when(jedis.hgetAll("reservation:res_1")).thenReturn(Collections.emptyMap());
+        when(jedis.hgetAll("reservation:res_id1")).thenReturn(Collections.emptyMap());
 
         service.expireReservations();
 
@@ -203,12 +205,12 @@ class ReservationExpiryServiceTest {
     @Test
     void shouldContinueProcessingIfEmitFails() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
-                .thenReturn(List.of("res_1", "res_2"));
+                .thenReturn(List.of("id1", "id2"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
         // res_1 hash throws, res_2 hash succeeds
-        when(jedis.hgetAll("reservation:res_1")).thenThrow(new RuntimeException("Redis error"));
-        when(jedis.hgetAll("reservation:res_2")).thenReturn(Map.of(
+        when(jedis.hgetAll("reservation:res_id1")).thenThrow(new RuntimeException("Redis error"));
+        when(jedis.hgetAll("reservation:res_id2")).thenReturn(Map.of(
                 "tenant", "t2", "scope_path", "tenant:t2"
         ));
 
