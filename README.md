@@ -234,44 +234,15 @@ Exposes JVM, HTTP, and Spring Boot metrics in Prometheus format. Both endpoints 
 
 #### Domain counters (v0.1.25.10+)
 
-In addition to Spring Boot's auto-emitted `http_server_requests_seconds`, the service exposes domain-level counters for every reservation-lifecycle operation. Operators can alert on denial rates, overdraft incidence, and per-tenant activity without having to reverse-engineer it from HTTP status codes.
+In addition to Spring Boot's auto-emitted `http_server_requests_seconds`, the service exposes seven domain-level counters under the `cycles_*` namespace (reserve / commit / release / extend / expired / events / overdraft). Operators can alert on denial rates, overdraft incidence, and per-tenant activity without reverse-engineering it from HTTP status codes.
 
-| Metric | Tags | Incremented on |
-|---|---|---|
-| `cycles_reservations_reserve_total` | `tenant`, `decision` (`ALLOW`/`ALLOW_WITH_CAPS`/`DENY`), `reason` (`OK`/`IDEMPOTENT_REPLAY`/error code), `overage_policy` | every `POST /v1/reservations` outcome |
-| `cycles_reservations_commit_total` | `tenant`, `decision` (`COMMITTED`/`DENY`), `reason`, `overage_policy` | every `POST /v1/reservations/{id}/commit` outcome |
-| `cycles_reservations_release_total` | `tenant`, `actor_type` (`tenant`/`admin_on_behalf_of`), `decision`, `reason` | every `POST /v1/reservations/{id}/release` outcome |
-| `cycles_reservations_extend_total` | `tenant`, `decision` (`ACTIVE`/`DENY`), `reason` | every `POST /v1/reservations/{id}/extend` outcome |
-| `cycles_reservations_expired_total` | `tenant` | once per reservation the expiry sweep transitions ACTIVE→EXPIRED (grace-period skips and already-finalised candidates do NOT increment) |
-| `cycles_events_total` | `tenant`, `decision` (`APPLIED`/`DENY`), `reason`, `overage_policy` | every `POST /v1/events` outcome |
-| `cycles_overdraft_incurred_total` | `tenant` | every commit or event that actually accrued non-zero debt |
-
-**Reason codes** use the same error enum the API returns — `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`, `INTERNAL_ERROR`, `NOT_FOUND`. Successful outcomes report `reason=OK`; idempotent replays report `reason=IDEMPOTENT_REPLAY`.
-
-**Tag-cardinality control.** The `tenant` tag is the only high-cardinality dimension. For deployments with thousands of tenants it can be turned off:
-
-```properties
-# application.properties
-cycles.metrics.tenant-tag.enabled=false   # default: true
-```
-
-When disabled, the `tenant` tag is omitted from every `cycles_*_total` series. Per-tenant drill-down is lost, but the time-series count drops to O(decision × reason × overage_policy) which is bounded and small.
-
-**Example queries.**
-
-```promql
-# Denial rate by reason, last 5 minutes:
-sum by (reason) (rate(cycles_reservations_reserve_total{decision="DENY"}[5m]))
-
-# Overdraft incidence per tenant:
-sum by (tenant) (rate(cycles_overdraft_incurred_total[5m]))
-
-# Admin-driven releases (compliance signal):
-sum(rate(cycles_reservations_release_total{actor_type="admin_on_behalf_of"}[1h]))
-```
+Full metric inventory, tag semantics, ready-to-paste Prometheus alert rules, SLO definitions, and an incident playbook live in [`OPERATIONS.md`](OPERATIONS.md).
 
 ## Documentation
 
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes for downstream consumers (Docker / JAR)
+- [`OPERATIONS.md`](OPERATIONS.md) — operator runbook: metrics inventory, alert recipes, SLOs, incident playbook
+- [`AUDIT.md`](AUDIT.md) — engineering history and rationale for each release
 - [Cycles Documentation](https://runcycles.io) — full docs site
 - [Deploy the Full Stack](https://runcycles.io/quickstart/deploying-the-full-cycles-stack) — deployment guide with server setup
 - [Server Configuration Reference](https://runcycles.io/configuration/server-configuration-reference-for-cycles) — all server configuration options
