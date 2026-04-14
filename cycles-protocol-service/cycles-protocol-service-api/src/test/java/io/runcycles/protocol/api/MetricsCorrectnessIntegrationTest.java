@@ -329,4 +329,53 @@ class MetricsCorrectnessIntegrationTest extends BaseIntegrationTest {
                 .as("metric count should match observed successes (%d from threads)", ok.get())
                 .isEqualTo(ok.get());
     }
+
+    @Test
+    @DisplayName("custom cycles.reservations.reserve counter is accurate under concurrent load")
+    void concurrentCustomCounterIsAccurate() throws Exception {
+        // Sibling of concurrentRequestCountIsAccurate, but assert on the domain
+        // counter instead of Spring Boot's HTTP timer. Micrometer counters use
+        // AtomicLong underneath so this should be safe — the test guards against
+        // future refactors that might introduce locking or shared-builder races
+        // (e.g. an aspect that builds tags from a shared mutable map).
+        try (Jedis jedis = jedisPool.getResource()) {
+            seedBudget(jedis, TENANT_A, "TOKENS", 100_000_000);
+        }
+
+        double before = counterCount("cycles.reservations.reserve",
+                "tenant", TENANT_A, "decision", "ALLOW", "reason", "OK");
+
+        int threads = 8;
+        int perThread = 10;
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        var exec = Executors.newFixedThreadPool(threads);
+        AtomicInteger ok = new AtomicInteger();
+
+        for (int t = 0; t < threads; t++) {
+            exec.submit(() -> {
+                try {
+                    start.await();
+                    for (int i = 0; i < perThread; i++) {
+                        ResponseEntity<Map> resp = post("/v1/reservations", API_KEY_SECRET_A,
+                                reservationBody(TENANT_A, 100));
+                        if (resp.getStatusCode().value() == 200) ok.incrementAndGet();
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        start.countDown();
+        assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+        exec.shutdown();
+
+        double after = counterCount("cycles.reservations.reserve",
+                "tenant", TENANT_A, "decision", "ALLOW", "reason", "OK");
+        assertThat(after - before)
+                .as("cycles.reservations.reserve counter should match observed successes (%d)",
+                        ok.get())
+                .isEqualTo((double) ok.get());
+    }
 }
