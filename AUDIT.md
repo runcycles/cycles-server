@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-12 (spec endpoint-coverage report — parity with admin),
+**Date:** 2026-04-14 (property-based concurrent budget-exhaustion test),
+2026-04-12 (spec endpoint-coverage report — parity with admin),
 2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
 2026-04-12 (strict response-status enforcement — Gap 2 closed),
 2026-04-12 (spec compliance hardening — full-coverage contract validation),
@@ -8,6 +9,33 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — Property-based concurrent budget-exhaustion test
+
+Closes a gap surfaced by a test-quality audit: `CyclesProtocolConcurrentBenchmarkTest` runs concurrent reserve→commit lifecycles and measures latency, but it does not assert state invariants. `OverdraftIntegrationTest` covers REJECT/ALLOW_IF_AVAILABLE/ALLOW_WITH_OVERDRAFT in isolation but not under adversarial contention. The new test forces both the concurrency invariant and the overage-under-contention scenario under jqwik's generated interleavings.
+
+**What it tests:**
+Under REJECT overage policy (`overdraft_limit = 0`) with randomized (threadCount, initialBudget, workload) triples, asserts three invariants after the workload drains and the expiry sweep runs:
+
+1. **I1** — sum(`charged_amount` across COMMITTED reservations) ≤ `initial_budget`. Never overdraw under any interleaving.
+2. **I2** — Mutually exclusive terminal states. A COMMITTED reservation must not also carry `released_amount`, and vice versa.
+3. **I3** — Every reservation reaches a terminal state within TTL + grace + sweep. No leaked ACTIVE rows.
+
+Budgets are intentionally small (1K–50K TOKENS) with thread counts 2–16 and workloads of 30–200 ops, so exhaustion is frequent and the invariants are actually exercised. jqwik shrinks failing cases automatically.
+
+**New files:**
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/BudgetExhaustionConcurrentPropertyTest.java` (new)
+- `.github/workflows/nightly-property-tests.yml` (new) — scheduled 06:00 UTC daily with `-Djqwik.tries.default=100` for deeper coverage than the PR-speed default of 20. `workflow_dispatch` allows manual runs.
+
+**Modified files:**
+- `cycles-protocol-service-api/pom.xml` — add `net.jqwik:jqwik:1.9.1` and `net.jqwik:jqwik-spring:0.11.0` (test scope); add `property-tests` to default surefire `<excludedGroups>`; add `property-tests` Maven profile mirroring the existing `benchmark` profile pattern
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/BaseIntegrationTest.java` — add four `protected` helpers (`getReservationStateFromRedis`, `getBudgetFromRedis`, `scanReservationKeys`, `seedBudgetWithOverdraftLimit`) for direct Redis inspection under invariant checks
+
+**CI impact:** zero impact on default PR CI — the `property-tests` tag is in the default `<excludedGroups>`, so the test only runs when `-Pproperty-tests` is active. Nightly job runs against `main` only.
+
+**Runtime verification note:** the test compiles clean and is correctly discovered by the jqwik engine (verified via surefire test-listing on this branch). Full runtime execution requires Docker (Testcontainers Redis), which was not available in the authoring environment; first end-to-end runtime verification will occur on the first nightly workflow run after merge. If jqwik-spring injection of `@Autowired` fails for any reason, the failure mode is immediate in CI (NPE on `jedisPool`) and debuggable from the first run's surefire report.
 
 ---
 

@@ -23,10 +23,15 @@ import org.testcontainers.containers.GenericContainer;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
+
 import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -287,6 +292,67 @@ public abstract class BaseIntegrationTest {
             // Update TTL sorted set so the sweep can find it
             jedis.zadd("reservation:ttl", pastExpiresAt, reservationId);
         }
+    }
+
+    // ---- Redis inspection helpers (read-only; for invariant assertions) ----
+
+    /**
+     * Fetch a reservation's full hash from Redis. Returns empty map if not found.
+     * Pass the raw reservation id (e.g. "res_abc123") or just the suffix; both accepted.
+     */
+    protected Map<String, String> getReservationStateFromRedis(String reservationId) {
+        String key = reservationId.startsWith("res_")
+                ? "reservation:" + reservationId
+                : "reservation:res_" + reservationId;
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.hgetAll(key);
+        }
+    }
+
+    /**
+     * Fetch a budget's full hash from Redis for a given scope path and unit.
+     */
+    protected Map<String, String> getBudgetFromRedis(String scopePath, String unit) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.hgetAll("budget:" + scopePath + ":" + unit);
+        }
+    }
+
+    /**
+     * SCAN-based enumeration of all reservation:res_* keys. Non-blocking alternative to KEYS.
+     */
+    protected Set<String> scanReservationKeys() {
+        Set<String> out = new HashSet<>();
+        try (Jedis jedis = jedisPool.getResource()) {
+            ScanParams params = new ScanParams().match("reservation:res_*").count(200);
+            String cursor = "0";
+            do {
+                ScanResult<String> result = jedis.scan(cursor, params);
+                out.addAll(result.getResult());
+                cursor = result.getCursor();
+            } while (!"0".equals(cursor));
+        }
+        return out;
+    }
+
+    /**
+     * Seed a budget with a custom overdraft_limit (overrides the default allocated/10).
+     * Used by tests that need to force REJECT behavior (overdraft_limit=0).
+     */
+    protected void seedBudgetWithOverdraftLimit(Jedis jedis, String tenant, String unit,
+                                                 long allocated, long overdraftLimit) {
+        String key = "budget:tenant:" + tenant + ":" + unit;
+        jedis.hset(key, Map.of(
+                "scope", "tenant:" + tenant,
+                "unit", unit,
+                "allocated", String.valueOf(allocated),
+                "remaining", String.valueOf(allocated),
+                "reserved", "0",
+                "spent", "0",
+                "debt", "0",
+                "overdraft_limit", String.valueOf(overdraftLimit),
+                "is_over_limit", "false"
+        ));
     }
 
     /**

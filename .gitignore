@@ -1,6 +1,9 @@
 # Compiled class file
 *.class
 
+# jqwik local failure-replay database (per-module, should not be committed)
+.jqwik-database
+
 # Log file
 *.log
 
