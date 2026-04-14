@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
+**Date:** 2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
+2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
 2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
 2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
 2026-04-12 (spec endpoint-coverage report — parity with admin),
@@ -11,6 +12,39 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — v0.1.25.11: concurrent idempotency + metrics tests
+
+Closes two gaps flagged in the post-v0.1.25.10 review. Both are regression gates rather than live bug fixes — the existing code is correct because Redis Lua execution is single-threaded and Micrometer counters are lock-free — but without these tests a future refactor could silently violate those guarantees.
+
+**New test 1: thundering-herd retry on expired idempotency cache** (`IdempotencyCacheExpiryIntegrationTest.ThunderingHerd`)
+
+The v0.1.25.10 `IdempotencyCacheExpiryIntegrationTest` covered the sequential case: delete cache → retry → new reservation. The ops-realistic failure mode is different: N concurrent retries arriving at the server after cache expiry, all missing the idempotency cache, all racing into `reserve.lua`. New test fires 10 concurrent retries through the full HTTP path and asserts:
+
+- Exactly one distinct reservation id is returned across all 10 retries (Redis's Lua serialisation makes the winner's cache write visible to the others before they execute).
+- No HTTP errors; all 10 return 200.
+- The Redis hash state for the winning id is consistent (exactly one reservation, correct idempotency key stored).
+- Metric tags reflect reality: exactly 1 × `reason=OK` (the winner that actually ran the reserve body) + 9 × `reason=IDEMPOTENT_REPLAY` (the rest that took the idempotent-replay short-circuit). A wrong-tag regression would surface here.
+
+If a future change moves idempotency from `reserve.lua` into Java (e.g. a distributed lock), this test fails because Java-side races break the atomicity guarantee.
+
+**New test 2: concurrent custom-counter accuracy** (`MetricsCorrectnessIntegrationTest.concurrentCustomCounterIsAccurate`)
+
+Sibling of the existing `concurrentRequestCountIsAccurate` that tests Spring Boot's HTTP timer. The new test asserts on the domain counter `cycles.reservations.reserve` under the same 8-thread × 10-request load. Micrometer counters are lock-free atomic longs so this should be accurate, but we had no regression gate against a future refactor introducing locking or a shared-builder race (e.g. an aspect that builds tags from a mutable map).
+
+**Verification:**
+- `mvn -B verify --file cycles-protocol-service/pom.xml`: 135 api + 320 data = 455 tests (2 new), 0 failures, JaCoCo coverage met, spec coverage 9/9.
+
+**Wire format:** Unchanged. No production-code changes.
+
+**Modified files:**
+- `cycles-protocol-service/pom.xml` — `<revision>` → `0.1.25.11`.
+- `docker-compose.prod.yml`, `docker-compose.full-stack.prod.yml` — bump `cycles-server` pin to `0.1.25.11` per the release workflow.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/IdempotencyCacheExpiryIntegrationTest.java` — new `ThunderingHerd` nested class + MeterRegistry wiring.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/MetricsCorrectnessIntegrationTest.java` — new `concurrentCustomCounterIsAccurate` test.
+- `AUDIT.md`, `CHANGELOG.md`, `README.md` — release notes + version bump.
 
 ---
 

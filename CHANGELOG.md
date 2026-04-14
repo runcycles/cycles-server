@@ -14,6 +14,29 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.11] — 2026-04-14
+
+### Added
+
+- Thundering-herd test for idempotency cache expiry. Asserts that N
+  concurrent retries with the same idempotency key (arriving after the
+  cache has expired) produce exactly one reservation, not N. Also
+  verifies metric tags split correctly: 1 × `reason=OK` (the winner)
+  + (N-1) × `reason=IDEMPOTENT_REPLAY` (the replays).
+- Concurrent-accuracy test for the custom `cycles.reservations.reserve`
+  counter under 8-thread × 10-request load. Counter count must match
+  client-observed successes with zero lost increments.
+
+### Wire format
+
+Unchanged. Test-only release. No production-code changes.
+
+### Notes for upgraders
+
+No action required. These tests are regression gates — if you're not
+refactoring the reservation path or the metrics component, nothing
+changes for you.
+
 ## [0.1.25.10] — 2026-04-14
 
 ### Added
@@ -179,6 +202,7 @@ Unchanged. Test-only release.
 
 v0.1.x and earlier versions predating this changelog: see `AUDIT.md`.
 
+[0.1.25.11]: https://github.com/runcycles/cycles-server/compare/v0.1.25.10...v0.1.25.11
 [0.1.25.10]: https://github.com/runcycles/cycles-server/compare/v0.1.25.9...v0.1.25.10
 [0.1.25.9]: https://github.com/runcycles/cycles-server/compare/v0.1.25.8...v0.1.25.9
 [0.1.25.8]: https://github.com/runcycles/cycles-server/compare/v0.1.25.7...v0.1.25.8

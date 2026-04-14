@@ -117,7 +117,7 @@ mvn clean install
 ./build-all.sh
 ```
 
-The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-<version>.jar` (where `<version>` is the `revision` property in `cycles-protocol-service/pom.xml` — e.g. `0.1.25.10`).
+The fat JAR is produced at `cycles-protocol-service-api/target/cycles-protocol-service-api-<version>.jar` (where `<version>` is the `revision` property in `cycles-protocol-service/pom.xml` — e.g. `0.1.25.11`).
 
 ## Docker Deployment
 
@@ -136,7 +136,7 @@ Pre-built images are published to GitHub Container Registry on each release:
 
 ```
 ghcr.io/runcycles/cycles-server:latest
-ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.10
+ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.11
 ```
 
 ## Testing
@@ -235,7 +235,7 @@ GET /actuator/prometheus
 
 Exposes JVM, HTTP, and Spring Boot metrics in Prometheus format. Both endpoints are unauthenticated. Configure your Prometheus scrape target to `http://<host>:7878/actuator/prometheus`.
 
-#### Domain counters (v0.1.25.10+)
+#### Domain counters (v0.1.25.11+)
 
 In addition to Spring Boot's auto-emitted `http_server_requests_seconds`, the service exposes seven domain-level counters under the `cycles_*` namespace (reserve / commit / release / extend / expired / events / overdraft). Operators can alert on denial rates, overdraft incidence, and per-tenant activity without reverse-engineering it from HTTP status codes.
 
