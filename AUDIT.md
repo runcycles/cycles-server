@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
+**Date:** 2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
+2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
 2026-04-12 (spec endpoint-coverage report — parity with admin),
 2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
 2026-04-12 (strict response-status enforcement — Gap 2 closed),
@@ -9,6 +10,48 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — v0.1.25.9: second-wave test additions
+
+Follow-up to v0.1.25.8's `BudgetExhaustionConcurrentPropertyTest`. A test-quality review flagged eight further high-leverage gaps (ordered by expected bug-catch density). This release lands all eight in one PR. Every addition reuses the existing `BaseIntegrationTest` + Testcontainers Redis harness and the `@Tag("property-tests")` convention for long-running jqwik suites.
+
+**New test classes (`cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/`):**
+
+1. `OverdraftConcurrentPropertyTest` — two properties parameterised on overage policy. Asserts `debt == 0` and `Σcharged ≤ allocated` for ALLOW_IF_AVAILABLE; `debt ≤ overdraft_limit` and `Σcharged ≤ allocated + overdraft_limit` for ALLOW_WITH_OVERDRAFT. Ledger invariant (`allocated == remaining + spent + reserved + debt`) enforced on both.
+2. `ExpireLuaConformanceTest` — direct `EVAL expire.lua` via Jedis, bypassing the service layer. Eight tests across five nested groups verify only ACTIVE→EXPIRED transitions occur, reserved budget is released at all budgeted scopes, grace period is honoured, idempotent re-invocation is a no-op, NOT_FOUND cleans the TTL index, and the script uses `redis.call('TIME')` exclusively (proved by passing bogus client-supplied time via a second ARGV and confirming it is ignored).
+3. `AdminReleaseRaceIntegrationTest` — `@RepeatedTest(20)` racing a tenant commit against an admin-driven release on the same reservation. Asserts exactly-one-wins (XOR), loser returns `409 RESERVATION_FINALIZED`, and the reservation hash reflects the winner's terminal state with no cross-contamination. Gates the v0.1.25.8 dual-auth surface against state-machine regressions.
+4. `ScopeAttributionConcurrentPropertyTest` — generates scope chains at depths 1–6 (tenant → workspace → app → workflow → agent → toolset), seeds budgets at every derived level, fires concurrent reserves + commits, then asserts `spent[level] == Σcharged` at every level with no divergence between levels. Complements the single-threaded path in `ScopeAndExpiryIntegrationTest`.
+5. `IdempotencyCacheExpiryIntegrationTest` — deterministically simulates post-TTL replay by deleting the cache key via Jedis. Proves: (a) a reserve retry after `idem:{tenant}:reserve:{K}` expiry produces a NEW reservation id, (b) the pre-expiry case still replays to the same id, (c) a commit retry after scrubbing `committed_idempotency_key` returns 409 rather than a phantom second success.
+6. `ClockSkewIntegrationTest` — verifies every time-sensitive decision resolves against Redis TIME, not JVM time. Manipulates `expires_at` + `grace_ms` directly on the reservation hash, then drives commit/release/extend through the full HTTP path. Pins the spec contract that extend does NOT honour grace (only commit does) — a subtle asymmetry that could trip operators.
+7. `MetricsCorrectnessIntegrationTest` — asserts Micrometer's `http.server.requests` counters are accurate under concurrent load (no lost increments on contended counters). Injects `MeterRegistry` directly because the `/actuator/prometheus` endpoint isn't registered in the `@SpringBootTest(RANDOM_PORT)` context (the handler falls through to static-resource resolution). A known gap to revisit when custom business metrics are added.
+8. `AuditLogCompletenessPropertyTest` — generates mixed admin-release workloads (on ACTIVE, already-committed, already-released reservations), drains `audit:logs:_all` + `audit:logs:{tenant}`, asserts: (a) 1:1 between successful admin releases and audit entries, (b) tenant and global indexes hold the same set with matching scores, (c) global index is ordered ascending by timestamp, (d) every entry carries required fields including `metadata.actor_type = "admin_on_behalf_of"`.
+
+**Plan deviations (scope notes for maintainers):**
+- `ExpireLuaConformanceTest` placed in `-api` not `-data`. The `-data` module uses Mockito-only tests with no Testcontainers infrastructure; extending the `-api` harness is zero-cost, adding Testcontainers to `-data` is not.
+- `ClockSkewIntegrationTest` does not inject a Java `Clock` bean (none exists in production). It verifies the equivalent invariant — that decisions depend on Redis TIME only — by manipulating Redis-side timestamps. A future refactor that adds Java-side timestamping for any reservation decision will cause these tests to fail.
+- `MetricsCorrectnessIntegrationTest` asserts on HTTP-layer timer counts rather than custom per-operation counters (none exist yet). When operation-specific counters are introduced, extend the assertions rather than replacing them — the HTTP-layer coverage is the correct baseline.
+
+**Verification:**
+- `mvn -B verify --file cycles-protocol-service/pom.xml`: 133 tests pass across all modules, JaCoCo coverage check met (≥95%), spec coverage 9/9.
+- `mvn -B test -Pproperty-tests -Djqwik.tries.default=5`: 5 property tests, 0 failures.
+- Manual spot-check of `AdminReleaseRaceIntegrationTest` with 20 repetitions across several runs — exactly-one-wins invariant held in every iteration.
+
+**Modified files:**
+- `cycles-protocol-service/pom.xml` — `<revision>` bumped to `0.1.25.9`.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/OverdraftConcurrentPropertyTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/ExpireLuaConformanceTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/AdminReleaseRaceIntegrationTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/ScopeAttributionConcurrentPropertyTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/IdempotencyCacheExpiryIntegrationTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/ClockSkewIntegrationTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/MetricsCorrectnessIntegrationTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/AuditLogCompletenessPropertyTest.java` — NEW.
+- `AUDIT.md` — this entry + date header.
+- `README.md`, `cycles-protocol-service/README.md` — version bump in jar/image examples.
+
+**Test-only release:** No production-code changes. Wire format, Lua scripts, controllers, repositories, Spring config all identical to v0.1.25.8.
 
 ---
 
