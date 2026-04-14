@@ -204,8 +204,9 @@ def run_trend(args) -> int:
     history = load_history(args.history)
     if len(history) < 2:
         # Not enough history to compute a trend — succeed silently.
+        # ASCII-only so this works on Windows cp1252 + Linux CI alike.
         print(f"## Performance trend check\n\n"
-              f"Only {len(history)} prior run(s) in history; need ≥ 2 to "
+              f"Only {len(history)} prior run(s) in history; need >= 2 to "
               f"compute a rolling median. Skipping trend comparison.")
         return 0
 
