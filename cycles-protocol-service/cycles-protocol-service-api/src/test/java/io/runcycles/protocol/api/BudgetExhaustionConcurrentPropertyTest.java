@@ -9,7 +9,6 @@ import net.jqwik.api.Provide;
 import net.jqwik.api.ShrinkingMode;
 import net.jqwik.api.Tag;
 import net.jqwik.api.constraints.Size;
-import net.jqwik.api.lifecycle.BeforeProperty;
 import net.jqwik.spring.JqwikSpringSupport;
 import org.junit.jupiter.api.DisplayName;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,14 +67,18 @@ class BudgetExhaustionConcurrentPropertyTest extends BaseIntegrationTest {
     @Autowired
     private ReservationExpiryService expiryService;
 
-    @BeforeProperty
-    void resetRedis() throws Exception {
-        // BaseIntegrationTest.@BeforeEach doesn't fire for @Property methods, so we
-        // replicate the teardown/seed manually.
+    /**
+     * Per-try reset. Called from inside the property body (NOT from @BeforeProperty) because
+     * jqwik-spring's field injection runs inside AroundPropertyHook, which wraps the body —
+     * @BeforeProperty fires before injection and would see null @Autowired fields.
+     *
+     * Also runs on every try, not once per property, so each generated workload starts from a
+     * clean Redis state.
+     */
+    private void resetRedisAndSeedApiKey() throws Exception {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.flushAll();
-            // Re-seed api keys (needed for auth)
-            seedApiKeyReflection(jedis);
+            seedApiKey(jedis);
         }
     }
 
@@ -83,7 +86,7 @@ class BudgetExhaustionConcurrentPropertyTest extends BaseIntegrationTest {
      * Inline api-key seeding (BaseIntegrationTest.seedApiKey is private; we replicate the minimum
      * needed for this test's single tenant).
      */
-    private void seedApiKeyReflection(Jedis jedis) throws Exception {
+    private void seedApiKey(Jedis jedis) throws Exception {
         // Use the same mechanism as BaseIntegrationTest.seedTestData by reinvoking seedBudget
         // for minimal coverage, then writing an api-key entry directly.
         String prefix = API_KEY_SECRET_A.substring(0, Math.min(14, API_KEY_SECRET_A.length()));
@@ -114,7 +117,8 @@ class BudgetExhaustionConcurrentPropertyTest extends BaseIntegrationTest {
             @ForAll("initialBudgets") long initialBudget,
             @ForAll("workloads") @Size(min = 30, max = 200) List<ReservationOp> workload
     ) throws Exception {
-        // --- Arrange: seed budget with overdraft_limit=0 (forces REJECT) ---
+        // --- Arrange: per-try reset + seed budget with overdraft_limit=0 (forces REJECT) ---
+        resetRedisAndSeedApiKey();
         try (Jedis jedis = jedisPool.getResource()) {
             seedBudgetWithOverdraftLimit(jedis, TENANT, "TOKENS", initialBudget, 0L);
         }
