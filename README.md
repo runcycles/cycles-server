@@ -141,17 +141,49 @@ ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.8
 
 ## Testing
 
+The test suite is split into four categories, each gated by a surefire tag or Maven profile so PR CI stays fast while heavier suites run on demand or on a schedule.
+
 ```bash
 cd cycles-protocol-service
 
-# Unit tests only (no Docker required)
+# Unit tests only (no Docker required) — default PR CI feedback loop
 mvn test
 
 # Unit + integration tests (requires Docker for Testcontainers Redis)
 mvn clean install -Pintegration-tests
+
+# Concurrent load benchmarks (measures throughput + latency percentiles)
+mvn test -Pbenchmark
+
+# Property-based concurrent invariant checks (jqwik)
+mvn test -pl cycles-protocol-service-api -am -Pproperty-tests
 ```
 
-Integration tests (`*IntegrationTest.java`) use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically. They are excluded from the default build and enabled via the `-Pintegration-tests` Maven profile.
+### Integration tests
+
+`*IntegrationTest.java` classes use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically. Excluded from the default build; enabled via the `-Pintegration-tests` Maven profile.
+
+### Property-based tests
+
+`BudgetExhaustionConcurrentPropertyTest` is a [jqwik](https://jqwik.net/)-driven property test that forces concurrent reserve/commit/release/decide interleavings at the budget-exhaustion boundary and asserts three invariants under REJECT overage policy (`overdraft_limit = 0`):
+
+1. `sum(charged_amount)` across COMMITTED reservations **must not exceed** the initial budget, under any interleaving.
+2. No reservation may appear in two terminal states simultaneously (COMMITTED and RELEASED are mutually exclusive).
+3. Every reservation reaches a terminal state within TTL + grace + expiry sweep — no leaked ACTIVE reservations.
+
+Tagged `@Tag("property-tests")` and excluded from default PR CI. Run locally with `-Pproperty-tests`; a nightly GitHub Actions workflow (`.github/workflows/nightly-property-tests.yml`) runs at 06:00 UTC with deeper coverage.
+
+**Try count is configurable:**
+
+| Mode | Command | Try count | Runtime |
+|------|---------|-----------|---------|
+| PR-speed default (from `jqwik.properties`) | `mvn test -Pproperty-tests` | 20 | ~20 s |
+| Nightly CI (5× coverage) | `mvn test -Pproperty-tests -Djqwik.defaultTries=100` | 100 | ~2 min |
+| Manual deep run | `mvn test -Pproperty-tests -Djqwik.defaultTries=500` | 500 | ~10 min |
+
+The property annotation deliberately does **not** set `tries` — the count comes from `cycles-protocol-service-api/src/test/resources/jqwik.properties` (defaults to 20) and can be overridden with `-Djqwik.defaultTries=<N>`. An annotation literal would win over the system property and silently ignore the override.
+
+**Reproducing a failure:** jqwik prints a `seed = <number>` line on failure. Pass it back via `-Djqwik.seeds.tries.default=<number>` to replay the exact same interleaving against the fixed code.
 
 ## Configuration
 
