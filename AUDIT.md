@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
+**Date:** 2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
+2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
 2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
 2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
 2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
@@ -12,6 +13,46 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — Nightly soak test (no version bump)
+
+Closes the biggest remaining gap from the v0.1.25.11 quality review: **long-duration stability coverage scored 5/10** because no test ran for more than a minute or two. This change adds a soak test to nightly CI. No production-code changes, no version bump — this is purely test infrastructure sitting on a non-release path.
+
+**New test: `SoakIntegrationTest` (`cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/`)**
+
+Tagged `@Tag("soak")` — excluded from PR CI via the new `excludedGroups=...,soak` on the default surefire config.
+
+Drives a mixed reserve+commit/release workload at ~100 ops/s for 10 minutes (tunable via `-Dsoak.duration.minutes` / `-Dsoak.target.rps`). Alternates commit vs release so both cleanup paths are exercised symmetrically — a leak on only one path would still be detected. At the end of the run, asserts four invariants:
+
+- **S1 — Heap stability:** JVM heap used at end < 2× heap used at start (after forced GC on both endpoints). A real leak grows unboundedly; 2× tolerates normal GC churn and working-set growth.
+- **S2 — Latency stability:** average latency in the final minute is < 3× the baseline-minute average (sampled from `http.server.requests` timer). Catches connection-pool exhaustion, queue backup, cache-miss feedback loops that only surface over time. Only asserts if baseline has ≥10 samples (skips on very low-RPS runs).
+- **S3 — Redis key-count bounded:** `reservation:res_*` key count bounded by `ops × 1.1`; `idem:*` bounded by `ops × 2.1` (one idem key per reserve + one per commit). Runaway idempotency-cache leak or orphaned reservation hashes would blow these.
+- **S4 — No orphaned TTL entries:** every member of the `reservation:ttl` zset has a matching `reservation:res_*` hash. An orphan indicates a commit that cleaned up the hash but left the TTL index entry behind.
+
+Error rate sanity check: < 1% of attempts.
+
+**New profile: `-Psoak` in `cycles-protocol-service-api/pom.xml`**
+
+Mirrors the existing `property-tests` profile shape. Runs only `@Tag("soak")` tests with `forkedProcessTimeoutInSeconds=1800` so the surefire fork itself doesn't expire mid-run. Default PR build now excludes group `soak` alongside `benchmark` and `property-tests`.
+
+**New workflow: `.github/workflows/nightly-soak-test.yml`**
+
+Runs at 06:30 UTC daily (after the 06:00 UTC property-tests workflow). Sibling of `nightly-property-tests.yml` — same shape, different profile. `workflow_dispatch` inputs allow manual triggering with custom `duration_minutes` and `target_rps` (e.g. for a 1-hour deep soak on demand). Surefire reports uploaded on failure for post-hoc analysis.
+
+**Local smoke-test result:** 1 minute at 20 rps on Docker Desktop produced 1,192 reserves / 638 commits / 0 errors / heap 43MB→49MB (1.13×), latency 22.5ms → 11.9ms (JIT warmup). All four invariants held; runtime 75 seconds.
+
+**Verification:**
+- `mvn test -Psoak -Dsoak.duration.minutes=1 -Dsoak.target.rps=20 -Dtest=SoakIntegrationTest` passes locally
+- `mvn -B verify --file cycles-protocol-service/pom.xml` (default build) unaffected — soak tests excluded from normal runs
+- Nightly workflow will validate in production on first run
+
+**Modified files:**
+- `cycles-protocol-service/cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/SoakIntegrationTest.java` — NEW.
+- `cycles-protocol-service/cycles-protocol-service-api/pom.xml` — added `soak` to `excludedGroups`; new `soak` profile.
+- `.github/workflows/nightly-soak-test.yml` — NEW.
+- `AUDIT.md` — this entry.
 
 ---
 
