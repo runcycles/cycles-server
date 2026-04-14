@@ -39,10 +39,12 @@ jobs:
     name: Sustained-load stability
     runs-on: ubuntu-latest
     # Timeout = soak duration + generous overhead (Docker pull, Maven warmup,
-    # JVM startup, post-run assertions). The `soak` Maven profile also sets
-    # forkedProcessTimeoutInSeconds=1800 (30 min) so the surefire fork itself
-    # doesn't expire mid-run.
-    timeout-minutes: 45
+    # JVM startup, post-run assertions). 90 min covers default 10-min run,
+    # 30-min workflow_dispatch runs, and up to a ~60-min deep soak. For
+    # longer-duration dispatches, the soak profile's forkedProcessTimeout
+    # (set to 4500s in the pom) is the binding constraint; bump both if you
+    # want >60-min runs.
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
