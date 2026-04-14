@@ -70,7 +70,11 @@ Expected false-positive rate: < 1 per month. If higher, threshold tuning or self
 - `scripts/parse-benchmarks.py`, `scripts/median-benchmarks.py`, `scripts/check-regression.py` — NEW.
 - `.github/workflows/nightly-benchmark.yml` — NEW.
 - `.github/workflows/release.yml` — added `benchmark-gate` job upstream of `build-and-push`.
+- `cycles-protocol-service/cycles-protocol-service-api/pom.xml` — `-Psoak` profile `forkedProcessTimeoutInSeconds` bumped 1800 → 4500 (see soak-timeout fix note below).
+- `.github/workflows/nightly-soak-test.yml` — `timeout-minutes` 45 → 90 (see soak-timeout fix note below).
 - `AUDIT.md` — this entry.
+
+**Bundled soak-timeout fix:** first `workflow_dispatch` run of the nightly-soak-test workflow at 30-min duration completed all four invariants cleanly (179,944 reserves + 91,507 commits + 0 errors + heap 1.14× + latency 0.25×) but the surefire fork timer (set to 1800s = 30 min exactly) killed the process 20 seconds after the soak assertions finished printing success. No service bug — the test passed on substance. Fix is a generous bump to both the Maven fork timer (4500s) and the job timeout (90 min) so 30-min and 60-min runs have headroom for Maven/Testcontainers boot + post-assertions. Bundled into this PR because it's adjacent CI-timer infra and shipping separately would delay the perf-regression gate.
 
 ---
 

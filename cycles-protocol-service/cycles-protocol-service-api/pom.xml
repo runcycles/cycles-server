@@ -188,8 +188,15 @@
                             <groups>soak</groups>
                             <!-- Soak tests run >5 min each; raise forkedProcessTimeout
                                  above the surefire default so a slow nightly runner
-                                 doesn't kill a still-healthy test. -->
-                            <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+                                 doesn't kill a still-healthy test.
+                                 4500s = 75 min — covers default 10-min run, 30-min
+                                 workflow_dispatch runs, and up to a ~60-min deep soak
+                                 with headroom for JVM/Testcontainers boot + post-run
+                                 assertions. For >60-min runs, override via
+                                 -Dsurefire.forkedProcessTimeoutInSeconds=N.
+                                 Bumped from 1800 after a 30-min run at 100rps finished
+                                 assertions at 30:20 and was killed by the timer. -->
+                            <forkedProcessTimeoutInSeconds>4500</forkedProcessTimeoutInSeconds>
                         </configuration>
                     </plugin>
                 </plugins>
