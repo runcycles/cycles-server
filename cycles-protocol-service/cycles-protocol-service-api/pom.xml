@@ -78,6 +78,23 @@
             <version>2.1.7</version>
             <scope>test</scope>
         </dependency>
+        <!-- Property-based testing: concurrent invariant checks for budget exhaustion.
+             Engine auto-discovers @Property methods alongside JUnit 5 @Test.
+             jqwik-spring bridges Spring lifecycle (ApplicationContext, @Autowired) into
+             jqwik's test instance creation — required for @SpringBootTest-backed property
+             tests. See https://github.com/jqwik-team/jqwik-spring -->
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <version>1.9.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik-spring</artifactId>
+            <version>0.11.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
     <build>
         <plugins>
@@ -100,7 +117,7 @@
                     <excludes>
                         <exclude>**/*IntegrationTest.java</exclude>
                     </excludes>
-                    <excludedGroups>benchmark</excludedGroups>
+                    <excludedGroups>benchmark,property-tests</excludedGroups>
                     <!-- Alphabetical runOrder so SpecCoverageReportTest in the
                          zzz sub-package runs after all other api-module tests,
                          with the coverage collector fully populated. -->
@@ -135,6 +152,22 @@
                             <excludes combine.self="override" />
                             <excludedGroups combine.self="override" />
                             <groups>benchmark</groups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>property-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludes combine.self="override" />
+                            <excludedGroups combine.self="override" />
+                            <groups>property-tests</groups>
                         </configuration>
                     </plugin>
                 </plugins>

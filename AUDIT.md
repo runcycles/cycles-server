@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-12 (spec endpoint-coverage report — parity with admin),
+**Date:** 2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
+2026-04-12 (spec endpoint-coverage report — parity with admin),
 2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
 2026-04-12 (strict response-status enforcement — Gap 2 closed),
 2026-04-12 (spec compliance hardening — full-coverage contract validation),
@@ -8,6 +9,69 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-14 — Property-based concurrent budget-exhaustion test
+
+Closes a gap surfaced by a test-quality audit: `CyclesProtocolConcurrentBenchmarkTest` runs concurrent reserve→commit lifecycles and measures latency, but it does not assert state invariants. `OverdraftIntegrationTest` covers REJECT/ALLOW_IF_AVAILABLE/ALLOW_WITH_OVERDRAFT in isolation but not under adversarial contention. The new test forces both the concurrency invariant and the overage-under-contention scenario under jqwik's generated interleavings.
+
+**What it tests:**
+Under REJECT overage policy (`overdraft_limit = 0`) with randomized (threadCount, initialBudget, workload) triples, asserts three invariants after the workload drains and the expiry sweep runs:
+
+1. **I1** — sum(`charged_amount` across COMMITTED reservations) ≤ `initial_budget`. Never overdraw under any interleaving.
+2. **I2** — Mutually exclusive terminal states. A COMMITTED reservation must not also carry `released_amount`, and vice versa.
+3. **I3** — Every reservation reaches a terminal state within TTL + grace + sweep. No leaked ACTIVE rows.
+
+Budgets are intentionally small (1K–50K TOKENS) with thread counts 2–16 and workloads of 30–200 ops, so exhaustion is frequent and the invariants are actually exercised. jqwik shrinks failing cases automatically.
+
+**New files:**
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/BudgetExhaustionConcurrentPropertyTest.java` (new)
+- `cycles-protocol-service-api/src/test/resources/jqwik.properties` (new) — anchors `defaultTries = 20` for PR-speed runs; overridable at runtime via `-Djqwik.defaultTries=<N>`
+- `.github/workflows/nightly-property-tests.yml` (new) — scheduled 06:00 UTC daily with `-Djqwik.defaultTries=100` for deeper coverage than the PR-speed default. `workflow_dispatch` allows manual runs. Surefire reports uploaded on failure.
+
+**Modified files:**
+- `cycles-protocol-service-api/pom.xml` — add `net.jqwik:jqwik:1.9.1` and `net.jqwik:jqwik-spring:0.11.0` (test scope); add `property-tests` to default surefire `<excludedGroups>`; add `property-tests` Maven profile mirroring the existing `benchmark` profile pattern
+- `cycles-protocol-service-api/src/test/java/io/runcycles/protocol/api/BaseIntegrationTest.java` — add four `protected` helpers (`getReservationStateFromRedis`, `getBudgetFromRedis`, `scanReservationKeys`, `seedBudgetWithOverdraftLimit`) for direct Redis inspection under invariant checks
+- `.gitignore` — add `.jqwik-database` (jqwik's local failure-replay cache)
+- `README.md` — add "Property-based tests" subsection under Testing
+
+**CI impact:** zero impact on default PR CI — the `property-tests` tag is in the default `<excludedGroups>`, so the test only runs when `-Pproperty-tests` is active. Nightly job runs against `main` only.
+
+**Runtime verification:** test was executed against Docker Desktop + Testcontainers Redis on a development machine after the initial commit. Two follow-up fixes were required (see below) before the test ran green. Current state: **20 tries × ~1 s per try, 100% pass**, seed `-4335878008215958540` recorded as one known-good reproducer. No invariant violations observed across 20 randomized `(threadCount ∈ [2,16], budget ∈ [1K, 50K], workload ∈ [30, 200 ops])` triples. This empirically confirms `reserve.lua` atomicity holds under the generated interleaving space.
+
+---
+
+### 2026-04-14 — Follow-up fixes: jqwik-spring lifecycle and tries-override
+
+Two bugs found during the first real runtime execution of `BudgetExhaustionConcurrentPropertyTest`:
+
+**Fix 1 — `@BeforeProperty` runs before field injection** (commit `bb962e9`)
+
+First run failed with:
+```
+NullPointerException: Cannot invoke "redis.clients.jedis.JedisPool.getResource()"
+  because "this.jedisPool" is null
+  at BudgetExhaustionConcurrentPropertyTest.resetRedis(...)
+```
+
+Root cause: `jqwik-spring` 0.11.0 injects `@Autowired` fields inside its `AroundPropertyHook`, which wraps the property *body*. `@BeforeProperty` fires **before** that hook opens, so autowired fields are still null.
+
+Fix: deleted the `@BeforeProperty resetRedis()` method and moved the Redis flush + API-key seeding inline at the top of the property body. Secondary benefit — the reset now runs per-try (20 times per property) rather than once per property, so each generated workload starts from a truly clean Redis rather than inheriting residue from the previous try. The previous once-per-property reset would have produced misleading invariant violations during shrinking, where reservations from a pre-shrink try would still be in Redis when the post-shrink try ran with a smaller budget.
+
+**Fix 2 — jqwik tries count was not overridable** (commit `097a285`)
+
+Second run with `-Djqwik.tries.default=100` still showed `tries = 20` in the jqwik summary — the override silently had no effect. Two compounding causes:
+
+1. `@Property(tries = 20)` annotation literal beats any runtime override. jqwik's precedence is annotation > system property > config file > built-in default.
+2. The nightly workflow used `-Djqwik.tries.default=100`, but the correct jqwik system-property name is `-Djqwik.defaultTries=100` (matching the config-file key `defaultTries`). Even without bug #1 the override would have been a no-op.
+
+Fix:
+- Removed `tries` from the `@Property` annotation. jqwik now reads `defaultTries = 20` from a new `src/test/resources/jqwik.properties` file as the PR-speed baseline.
+- Corrected the nightly workflow to `-Djqwik.defaultTries=100`.
+- Runtime-verified with `-Djqwik.defaultTries=100` producing `tries = 100 | checks = 100` and passing in ~2 minutes with seed `-2583074049974961229` as a known-good reproducer.
+
+**Current passing state:** PR-speed mode (20 tries) runs in ~20 s; nightly (100 tries) runs in ~2 min. Three consecutive runs across both modes with different seeds, all green. No invariant violations observed.
 
 ---
 

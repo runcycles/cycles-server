@@ -1,0 +1,56 @@
+name: Nightly Property Tests
+
+# Runs the jqwik-based concurrent budget-exhaustion property test against
+# a full reservation + Redis stack (Testcontainers). Excluded from PR CI
+# because a single run takes several minutes; nightly gives us deep
+# interleaving coverage without blocking PR feedback.
+#
+# Test: BudgetExhaustionConcurrentPropertyTest
+# Invariants asserted:
+#   I1. sum(committed charged_amount) <= initial_budget under REJECT policy
+#   I2. No reservation in two terminal states simultaneously
+#   I3. Every reservation terminates within TTL + grace + sweep
+#
+# Failure triage: jqwik shrinks automatically. Surefire reports include
+# the minimal (budget, threads, workload) triple that violates an invariant.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}    # manual trigger
+
+jobs:
+  property-tests:
+    name: Property-based concurrent invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # Testcontainers boots redis:7-alpine via Docker (preinstalled on ubuntu-latest).
+      # jqwik.defaultTries=100 overrides the defaultTries=20 from jqwik.properties to give
+      # nightly 5x deeper interleaving coverage than a PR-feedback run.
+      - name: Run property-based tests
+        run: >
+          mvn -B verify
+          --file cycles-protocol-service/pom.xml
+          -Pproperty-tests
+          -Djqwik.defaultTries=100
+          -Dsurefire.failIfNoSpecifiedTests=false
+
+      - name: Upload surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-property-tests
+          path: cycles-protocol-service/cycles-protocol-service-api/target/surefire-reports/
+          retention-days: 14
