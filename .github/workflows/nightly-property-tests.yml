@@ -39,9 +39,16 @@ jobs:
       # Testcontainers boots redis:7-alpine via Docker (preinstalled on ubuntu-latest).
       # jqwik.defaultTries=100 overrides the defaultTries=20 from jqwik.properties to give
       # nightly 5x deeper interleaving coverage than a PR-feedback run.
+      # Use `mvn test` (not `verify`) because -Pproperty-tests restricts
+      # surefire to only the 5 property-tagged tests — running `verify` would
+      # trigger JaCoCo's 95% coverage check on a test subset that exercises
+      # almost no code paths, failing the build despite all property
+      # invariants passing. PR CI still enforces the full-suite coverage
+      # bar; this nightly is about invariant coverage over interleavings,
+      # not code-path coverage.
       - name: Run property-based tests
         run: >
-          mvn -B verify
+          mvn -B test
           --file cycles-protocol-service/pom.xml
           -Pproperty-tests
           -Djqwik.defaultTries=100
