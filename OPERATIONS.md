@@ -49,11 +49,25 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 
 ### Reason codes
 
-Tag values for `reason` come directly from `Enums.ErrorCode`:
-`OK`, `IDEMPOTENT_REPLAY`, `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`,
-`DEBT_OUTSTANDING`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `BUDGET_NOT_FOUND`,
-`RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, `IDEMPOTENCY_MISMATCH`,
-`UNIT_MISMATCH`, `NOT_FOUND`, `FORBIDDEN`, `INTERNAL_ERROR`.
+Tag values for `reason` come from `Enums.ErrorCode` (the same enum the
+HTTP error body uses) plus two success-path sentinels (`OK` and
+`IDEMPOTENT_REPLAY`). The operationally-observable set on the domain
+counters is:
+
+- Success: `OK`, `IDEMPOTENT_REPLAY` (reserve idempotent replays only;
+  the other endpoints' idempotent replays fall into `OK`)
+- Budget denials: `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`,
+  `DEBT_OUTSTANDING`
+- Budget state: `BUDGET_FROZEN`, `BUDGET_CLOSED`
+- Reservation state: `RESERVATION_EXPIRED`, `RESERVATION_FINALIZED`
+- Request issues: `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`,
+  `MAX_EXTENSIONS_EXCEEDED`, `NOT_FOUND`
+- Unexpected: `INTERNAL_ERROR` (Redis unavailable, Lua script failure)
+
+Auth-layer errors (`UNAUTHORIZED`, `FORBIDDEN`, `INVALID_REQUEST`) are
+rejected by filters before they reach the repository, so they don't
+appear on the domain counters — they only show up on the Spring Boot
+`http_server_requests_seconds` timer at the corresponding `status` label.
 
 ### Tag-cardinality control
 
@@ -174,6 +188,36 @@ about is *unexpected* denial patterns that suggest misconfiguration.
 
 ### Latency
 
+**Prerequisite:** Spring Boot doesn't emit percentile histogram buckets by
+default. To make `histogram_quantile` queries return real values, set
+this on the cycles-server side:
+
+```properties
+# application.properties — opt into histogram buckets for the HTTP timer
+management.metrics.distribution.percentiles-histogram.http.server.requests=true
+```
+
+Without this setting, `http_server_requests_seconds_bucket` has no
+`le`-labelled series and the alert will silently evaluate to `NaN`
+(not a false negative — `NaN > 0.2` is `false`). A mean-latency
+fallback alert works without any configuration:
+
+```yaml
+- alert: CyclesServerMeanLatency
+  # Mean latency = sum / count. Works without histogram buckets.
+  # 50ms mean on a write path suggests something's wrong (typical is <10ms).
+  expr: |
+    (sum by (uri) (rate(http_server_requests_seconds_sum{job="cycles-server",uri=~"/v1/reservations.*"}[5m])))
+    / (sum by (uri) (rate(http_server_requests_seconds_count{job="cycles-server",uri=~"/v1/reservations.*"}[5m])))
+    > 0.05
+  for: 10m
+  labels: {severity: ticket}
+  annotations:
+    summary: "cycles-server mean latency > 50ms on {{ $labels.uri }}"
+```
+
+After enabling the histogram property, the p99 alert is:
+
 ```yaml
 - alert: CyclesServerLatencyP99
   expr: |
@@ -195,7 +239,7 @@ Starting point — adjust to your SLA with customers.
 | SLO | Target | Source |
 |---|---|---|
 | Availability (2xx + expected 4xx / total) | 99.9% over 30d | `http_server_requests_seconds_count` (exclude 5xx) |
-| Reserve p99 latency | ≤ 50ms | `http_server_requests_seconds` histogram at `uri=/v1/reservations, method=POST` |
+| Reserve p99 latency | ≤ 50ms | `http_server_requests_seconds` histogram at `uri=/v1/reservations, method=POST` (requires `percentiles-histogram` setting — see Latency alert above) |
 | Commit p99 latency | ≤ 50ms | same, at `uri=/v1/reservations/{reservation_id}/commit` |
 | Event p99 latency | ≤ 50ms | same, at `uri=/v1/events` |
 | Error budget | 0.1% 5xx / 30d | `sum(rate(http_server_requests_seconds_count{status=~"5.."}[30d]))` |

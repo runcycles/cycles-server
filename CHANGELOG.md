@@ -138,24 +138,40 @@ Unchanged. Test-only release.
 
 ## [0.1.25.2] — 2026-04-02
 
-### Changed
+### Fixed
 
-- Scope matching is now case-insensitive. Tenant ids, workspace names,
-  etc. normalise to lowercase on read and write. Existing data is
-  unaffected because writes always used lowercase; this fixes reads
-  against operator-curated budgets with mixed-case scope paths.
+- `getBalances` and `listReservations` now lowercase the stored scope
+  before segment matching, so operator-curated budgets with mixed-case
+  scope paths are findable. Writes were already lowercase; this was a
+  read-side defensive fix. Closes
+  `cycles-openclaw-budget-guard#70`, `cycles-server-admin#54`.
 
 ## [0.1.25.1] — 2026-04-01
 
 ### Added
 
-- Reservation TTL auto-expiry (`ReservationExpiryService`).
-  Background sweep transitions ACTIVE reservations past their grace
-  window to EXPIRED and releases reserved budget back to all scopes.
-- TTL retention: expired reservation hashes are kept 30 days for audit,
-  then auto-cleaned by Redis `PEXPIRE`.
-- Performance: batched `HMGET`/`HMSET` pipelines reduce round-trips on
-  reserve/commit/release/extend from up to N to 2.
+- Webhook event emission from the runtime server. Reserve/commit/release/
+  extend and decide now emit events to the shared Redis dispatch queue
+  for `cycles-server-events` to fan out to configured subscribers.
+  Events include `reservation.denied` (on DENY decisions) and
+  `reservation.commit_overage` (when committed `actual > estimate`).
+- `EventEmitterService` with async, non-blocking emission on a
+  dedicated daemon thread pool (`CompletableFuture.runAsync`). The
+  request thread never waits on event writes.
+- TTL retention: event keys expire after 90 days, delivery keys after
+  14 days. Configurable via `EVENT_TTL_DAYS` / `DELIVERY_TTL_DAYS`.
+
+### Performance
+
+- Event save (SET + EXPIRE + 2× ZADD) and subscription lookup
+  (2× SMEMBERS) batched into one Redis pipeline round-trip (was 6
+  sequential). Near-zero overhead on non-event paths; commit p50
+  recovered from 13.4ms to 5.6ms after the fix below.
+
+### Fixed
+
+- Commit overage event was firing on every commit, not just true
+  overages. Now emits only when `actual > estimateAmount`.
 
 ---
 

@@ -7,6 +7,23 @@ Results are environment-dependent. Use for relative comparison across versions o
 
 Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 
+### Release coverage
+
+Benchmarks are captured when a release contains **hot-path code changes**
+(Lua scripts, repository methods, controller logic). They are deliberately
+skipped for releases whose changes are wire-format-neutral or test-only —
+running them would only measure environmental noise. Skipped releases:
+
+- **v0.1.25.8** — admin-on-behalf-of dual-auth (new auth filter, no
+  change to the reserve/commit/release hot path).
+- **v0.1.25.9** — test additions only, no production code changes.
+- **v0.1.25.10** — metrics instrumentation (Micrometer counter
+  increments on success/failure paths; no Redis/Lua changes). The
+  `ReservationExpiryService` prefix fix is off the request hot path
+  (runs in the background sweep).
+
+Last benchmarked release: **v0.1.25.7**.
+
 ---
 
 ## v0.1.25.7 — Typed `Enums.ReasonCode` refactor + flaky test fix

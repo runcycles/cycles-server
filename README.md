@@ -165,11 +165,14 @@ mvn test -pl cycles-protocol-service-api -am -Pproperty-tests
 
 ### Property-based tests
 
-`BudgetExhaustionConcurrentPropertyTest` is a [jqwik](https://jqwik.net/)-driven property test that forces concurrent reserve/commit/release/decide interleavings at the budget-exhaustion boundary and asserts three invariants under REJECT overage policy (`overdraft_limit = 0`):
+[jqwik](https://jqwik.net/)-driven property tests that force concurrent interleavings and assert system-wide invariants. Four property tests ship today:
 
-1. `sum(charged_amount)` across COMMITTED reservations **must not exceed** the initial budget, under any interleaving.
-2. No reservation may appear in two terminal states simultaneously (COMMITTED and RELEASED are mutually exclusive).
-3. Every reservation reaches a terminal state within TTL + grace + expiry sweep — no leaked ACTIVE reservations.
+| Test | Invariants |
+|---|---|
+| `BudgetExhaustionConcurrentPropertyTest` | Under REJECT overage policy: no overdraw, no dual-terminal states, no leaked ACTIVE reservations after sweep. |
+| `OverdraftConcurrentPropertyTest` | ALLOW_IF_AVAILABLE never creates debt; ALLOW_WITH_OVERDRAFT respects `overdraft_limit`; ledger invariant (`allocated = remaining + spent + reserved + debt`) holds under contention. |
+| `ScopeAttributionConcurrentPropertyTest` | Multi-scope spend attribution: `spent[level]` equals `Σ charged_amount` at every level for scope chains of depth 1–6. |
+| `AuditLogCompletenessPropertyTest` | 1:1 mutation↔audit-entry on admin-driven releases; dual-index consistency (`audit:logs:_all` + `audit:logs:{tenant}`); required fields including `metadata.actor_type=admin_on_behalf_of`. |
 
 Tagged `@Tag("property-tests")` and excluded from default PR CI. Run locally with `-Pproperty-tests`; a nightly GitHub Actions workflow (`.github/workflows/nightly-property-tests.yml`) runs at 06:00 UTC with deeper coverage.
 
