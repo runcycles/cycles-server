@@ -2,6 +2,12 @@
 
 Reference implementation of the [Cycles Budget Authority API](../cycles-protocol-v0.yaml) — a reservation-based budget control service for AI agents and workflows. All atomic budget operations are executed via Redis Lua scripts; no external database is required.
 
+> **See also** the repo-level docs at the parent directory:
+> [README](../README.md) (build + Docker),
+> [CHANGELOG](../CHANGELOG.md) (release notes),
+> [OPERATIONS](../OPERATIONS.md) (metrics, alerts, runbook),
+> [AUDIT](../AUDIT.md) (engineering history).
+
 ## Contents
 
 - [Architecture](#architecture)
