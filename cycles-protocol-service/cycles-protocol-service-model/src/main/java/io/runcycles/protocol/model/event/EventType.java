@@ -9,6 +9,7 @@ public enum EventType {
     BUDGET_FUNDED("budget.funded", EventCategory.BUDGET),
     BUDGET_DEBITED("budget.debited", EventCategory.BUDGET),
     BUDGET_RESET("budget.reset", EventCategory.BUDGET),
+    BUDGET_RESET_SPENT("budget.reset_spent", EventCategory.BUDGET),
     BUDGET_DEBT_REPAID("budget.debt_repaid", EventCategory.BUDGET),
     BUDGET_FROZEN("budget.frozen", EventCategory.BUDGET),
     BUDGET_UNFROZEN("budget.unfrozen", EventCategory.BUDGET),
