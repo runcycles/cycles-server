@@ -99,6 +99,16 @@ jobs:
           echo '--- release candidate ---'
           cat /tmp/current.json
 
+      # History + baseline live on the `benchmark-data` branch (not main).
+      # Branch protection on main rejects bot pushes; the dedicated
+      # non-protected branch pattern avoids needing bypass config or PAT
+      # secrets. See benchmarks/README.md on main for the full rationale.
+      - name: Fetch benchmark-data branch (worktree)
+        if: steps.decide.outputs.skipped == 'false'
+        run: |
+          git fetch origin benchmark-data:benchmark-data
+          git worktree add bench-data benchmark-data
+
       - name: Regression check
         if: steps.decide.outputs.skipped == 'false'
         shell: bash
@@ -108,7 +118,7 @@ jobs:
           set -o pipefail
           python3 scripts/check-regression.py release \
             --current /tmp/current.json \
-            --baseline benchmarks/baseline.json \
+            --baseline bench-data/benchmarks/baseline.json \
             --threshold 0.25 \
             | tee /tmp/gate-summary.md
 
@@ -121,19 +131,18 @@ jobs:
 
       # On successful gate, the new median becomes the baseline for the
       # next release. Also appended to history.jsonl for trend continuity.
-      # Switch to main for the commit because the workflow checked out
-      # the release tag; baseline/history always live on main (tags are
-      # immutable).
-      - name: Update baseline + history on main
+      # All writes go to the benchmark-data branch; main is untouched.
+      - name: Update baseline + history on benchmark-data
         if: steps.decide.outputs.skipped == 'false'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout -B main origin/main
-          cp /tmp/current.json benchmarks/baseline.json
-          cat /tmp/current.json >> benchmarks/history.jsonl
-          echo "" >> benchmarks/history.jsonl
+
+          cp /tmp/current.json bench-data/benchmarks/baseline.json
+          cat /tmp/current.json >> bench-data/benchmarks/history.jsonl
+          echo "" >> bench-data/benchmarks/history.jsonl
+
+          cd bench-data
           git add benchmarks/baseline.json benchmarks/history.jsonl
           if git diff --cached --quiet; then
             echo "no baseline/history changes to commit"
@@ -142,7 +151,7 @@ jobs:
           git commit -m "chore(bench): update baseline for ${{ github.event.release.tag_name }}
 
           [skip ci]"
-          git push origin main
+          git push origin benchmark-data
 
   build-and-push:
     needs: benchmark-gate

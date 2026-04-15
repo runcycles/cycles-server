@@ -94,22 +94,29 @@ jobs:
           echo '--- nightly record ---'
           cat /tmp/nightly.json
 
-      - name: Append to history + trend check
+      # History + baseline live on the `benchmark-data` branch, not main.
+      # Branch protection on main rejects bot pushes; moving telemetry
+      # data to a dedicated non-protected branch avoids the need for
+      # bypass configuration or PAT secrets, while keeping the data
+      # git-tracked and readable via `git fetch origin benchmark-data`.
+      - name: Fetch benchmark-data branch (worktree)
+        run: |
+          git fetch origin benchmark-data:benchmark-data
+          git worktree add bench-data benchmark-data
+
+      - name: Trend check
         id: trend
         run: |
-          # Trend comparison BEFORE appending, so the current run doesn't
+          # Compare this run against the rolling median from the data
+          # branch (not our current checkout, where the files no longer
+          # live). Do this BEFORE appending so the current run doesn't
           # become part of its own baseline window.
           python3 scripts/check-regression.py trend \
             --current /tmp/nightly.json \
-            --history benchmarks/history.jsonl \
+            --history bench-data/benchmarks/history.jsonl \
             --window 7 \
             --threshold 0.30 \
             | tee /tmp/trend-summary.md
-
-          # Append to history regardless of trend outcome — we always
-          # want the data point recorded.
-          cat /tmp/nightly.json >> benchmarks/history.jsonl
-          echo "" >> benchmarks/history.jsonl
 
       - name: Attach summary to job
         if: always()
@@ -118,13 +125,18 @@ jobs:
             cat /tmp/trend-summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Commit history back to main
+      - name: Commit history to benchmark-data branch
         # Skip on workflow_dispatch re-runs to avoid clutter; only commit
         # scheduled nightlies.
         if: github.event_name == 'schedule'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          cat /tmp/nightly.json >> bench-data/benchmarks/history.jsonl
+          echo "" >> bench-data/benchmarks/history.jsonl
+
+          cd bench-data
           git add benchmarks/history.jsonl
           if git diff --cached --quiet; then
             echo "no history changes to commit"
@@ -133,4 +145,4 @@ jobs:
           git commit -m "chore(bench): nightly benchmark $(date -u +%Y-%m-%d)
 
           [skip ci]"
-          git push
+          git push origin benchmark-data

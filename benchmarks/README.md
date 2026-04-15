@@ -3,12 +3,44 @@
 Machine-readable benchmark history and release-gate baseline. Companion to
 [`../BENCHMARKS.md`](../BENCHMARKS.md) (human-curated prose analysis).
 
-## Files
+## Where the data lives
 
-| File | Purpose | Writers |
+**Data files are on the dedicated `benchmark-data` branch, not on `main`.**
+
+| File (on `benchmark-data`) | Purpose | Writers |
 |---|---|---|
-| `history.jsonl` | Append-only JSONL, one entry per nightly run | `.github/workflows/nightly-benchmark.yml` |
-| `baseline.json` | Reference numbers for the release gate | `.github/workflows/release.yml` (on successful release) |
+| `benchmarks/history.jsonl` | Append-only JSONL, one entry per nightly + release run | `.github/workflows/nightly-benchmark.yml` |
+| `benchmarks/baseline.json` | Reference numbers for the release gate | `.github/workflows/release.yml` (on successful release) |
+
+### Why a separate branch
+
+`main` is protected — the `github-actions[bot]` identity can't push there.
+Rather than configure branch-protection bypass or manage a PAT, the
+nightly and release workflows write their telemetry to a dedicated
+non-protected branch. The separation also cleanly distinguishes
+"service code" (on `main`) from "CI telemetry data" (on
+`benchmark-data`).
+
+### How to read the data locally
+
+```bash
+# Pull the data branch without switching away from your working branch
+git fetch origin benchmark-data:benchmark-data
+
+# Show the file contents
+git show benchmark-data:benchmarks/history.jsonl
+
+# Or check it out into a worktree
+git worktree add /tmp/bench-data benchmark-data
+cat /tmp/bench-data/benchmarks/history.jsonl
+```
+
+Via the GitHub Raw API (no git required):
+
+```
+https://raw.githubusercontent.com/runcycles/cycles-server/benchmark-data/benchmarks/history.jsonl
+https://raw.githubusercontent.com/runcycles/cycles-server/benchmark-data/benchmarks/baseline.json
+```
 
 ## Headline metrics tracked
 
@@ -32,7 +64,7 @@ Each line is a standalone JSON object:
 ```
 
 - `timestamp` — UTC, ISO 8601
-- `commit` — short SHA of the benchmarked commit
+- `commit` — short SHA of the benchmarked code
 - `tag` — release tag if the run happened as part of a release (non-null);
   `null` for nightly runs on main
 
@@ -40,8 +72,8 @@ Each line is a standalone JSON object:
 
 Same fields as a `history.jsonl` entry. Rewritten atomically by the
 release workflow when a release passes the gate. Empty/missing on
-first run — the gate bootstraps by accepting the first benchmark run
-as the initial baseline.
+first release — the gate bootstraps by accepting the first release's
+numbers as the initial baseline.
 
 ## Thresholds
 
