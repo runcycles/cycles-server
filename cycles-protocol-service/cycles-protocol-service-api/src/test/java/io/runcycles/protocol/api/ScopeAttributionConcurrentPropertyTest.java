@@ -88,7 +88,7 @@ class ScopeAttributionConcurrentPropertyTest extends BaseIntegrationTest {
         jedis.set("apikey:key-a", objectMapper.writeValueAsString(apiKey));
     }
 
-    @Property(tries = 10, shrinking = ShrinkingMode.FULL)
+    @Property(shrinking = ShrinkingMode.FULL)
     void spendAttributedConsistentlyAcrossAllLevels(
             @ForAll("scopeDepths") int depth,
             @ForAll("threadCounts") int threadCount,

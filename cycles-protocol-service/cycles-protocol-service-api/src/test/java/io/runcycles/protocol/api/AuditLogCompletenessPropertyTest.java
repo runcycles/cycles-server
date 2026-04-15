@@ -84,7 +84,7 @@ class AuditLogCompletenessPropertyTest extends BaseIntegrationTest {
         jedis.set("apikey:key-a", objectMapper.writeValueAsString(apiKey));
     }
 
-    @Property(tries = 5, shrinking = ShrinkingMode.FULL)
+    @Property(shrinking = ShrinkingMode.FULL)
     void auditEntriesAreCompleteAndIndexedCorrectly(
             @ForAll("workloads") @Size(min = 5, max = 20) List<AdminOp> workload
     ) throws Exception {
