@@ -1,1 +1,3 @@
 {"timestamp":"2026-04-14T22:25:30Z","commit":"0814151","tag":null,"trials":3,"reserve_p50_ms":3.4,"reserve_p99_ms":8.2,"commit_p50_ms":2.4,"commit_p99_ms":5.8,"release_p50_ms":3.1,"event_p50_ms":2.6,"concurrent_throughput_32t":528.6,"note":"seed entry from workflow_dispatch run 24425877895 (manual re-run after parser fix 0814151); subsequent entries land via scheduled nightlies"}
+{"timestamp": "2026-04-16T08:22:51Z", "commit": "1f5909c", "tag": null, "trials": 3, "reserve_p50_ms": 4.2, "reserve_p99_ms": 8.4, "commit_p50_ms": 3.2, "commit_p99_ms": 7.6, "release_p50_ms": 4.1, "event_p50_ms": 3.8, "concurrent_throughput_32t": 517.4}
+
