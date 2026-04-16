@@ -456,6 +456,14 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 | `workspace` / `app` / `workflow` / `agent` / `toolset` | Subject field filters |
 | `limit` | Max results per page (default `50`, max `200`) |
 | `cursor` | Opaque pagination cursor from previous response |
+| `sort_by` | One of `reservation_id`, `tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`, `expires_at_ms` (v0.1.25.12+). Omit for legacy unordered behaviour. |
+| `sort_dir` | `asc` or `desc`. Defaults to `desc` when `sort_by` is provided. Ignored unless `sort_by` is set. |
+
+When `sort_by` or `sort_dir` is provided, the cursor encodes the
+`(sort_by, sort_dir, filters)` tuple — reusing a cursor after
+changing the sort key, direction, or any filter returns `400
+INVALID_REQUEST`. When both are omitted, the legacy Redis-SCAN
+cursor path is used and existing clients are unaffected.
 
 **Response** `200 OK`
 ```json

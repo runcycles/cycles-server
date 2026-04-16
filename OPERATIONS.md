@@ -366,6 +366,28 @@ don't fit.
 | `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+). Leave empty to disable. |
 | `management.endpoints.web.exposure.include` | `health,info,prometheus` | Add more actuator endpoints if you need them, but `prometheus` is the one ops cares about. |
 
+## Reservation list sorting (v0.1.25.12+)
+
+`GET /v1/reservations` accepts `sort_by` (one of `reservation_id`,
+`tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`,
+`expires_at_ms`) and `sort_dir` (`asc` or `desc`, default `desc`).
+
+Implementation: full-SCAN + in-memory sort per sorted page. This is
+**O(N)** in reservations matching the filter — fine at the current
+runtime-plane target of ≤ 10³ reservations per tenant. Watch the
+Spring Boot `http_server_requests_seconds{uri="/v1/reservations"}`
+p99: if it climbs above 500 ms under real load, a tenant has grown
+past the in-memory threshold and per-tenant ZSET indexing becomes
+worthwhile. Track the top `tenant` tag on that metric to spot who.
+
+Legacy clients (no sort params) stay on the existing Redis-SCAN
+cursor path and are unaffected by this concern.
+
+Cursors encode the `(sort_by, sort_dir, filters)` tuple — reusing
+a cursor with a different sort or filter set returns HTTP 400
+`INVALID_REQUEST`. This is intentional; front-end code that mutates
+the sort/filter on a page change must reset to the first page.
+
 ## Getting help
 
 - Bug reports / feature requests:

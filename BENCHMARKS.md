@@ -21,6 +21,14 @@ running them would only measure environmental noise. Skipped releases:
   increments on success/failure paths; no Redis/Lua changes). The
   `ReservationExpiryService` prefix fix is off the request hot path
   (runs in the background sweep).
+- **v0.1.25.11** — test-only release (concurrent-retry / counter-
+  accuracy regression tests).
+- **v0.1.25.12** — `sort_by` + `sort_dir` on `GET /v1/reservations`
+  list endpoint. The sorted path is opt-in (clients must pass the
+  new params to activate it); legacy list behaviour is byte-for-byte
+  unchanged and all existing benchmarks exercise the legacy path.
+  Benchmarks for the sorted path are worth adding once real tenant
+  populations exercise the O(N) full-SCAN; see OPERATIONS.md.
 
 Last benchmarked release: **v0.1.25.7**.
 
