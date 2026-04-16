@@ -498,7 +498,7 @@ class ReservationControllerTest {
                     .reservations(Collections.emptyList())
                     .hasMore(false)
                     .build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations"))
@@ -517,7 +517,7 @@ class ReservationControllerTest {
         void shouldListWithActiveStatusFilter() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), eq("ACTIVE"), any(), any(), any(), any(), any(), eq(50), any()))
+            when(repository.listReservations(eq(TENANT), any(), eq("ACTIVE"), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations").param("status", "ACTIVE"))
@@ -529,7 +529,7 @@ class ReservationControllerTest {
         void shouldListWithCommittedStatusFilter() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), eq("COMMITTED"), any(), any(), any(), any(), any(), eq(50), any()))
+            when(repository.listReservations(eq(TENANT), any(), eq("COMMITTED"), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations").param("status", "COMMITTED"))
@@ -540,7 +540,7 @@ class ReservationControllerTest {
         void shouldListWithExplicitTenantMatchingAuth() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations").param("tenant", TENANT))
@@ -558,12 +558,62 @@ class ReservationControllerTest {
         void shouldDefaultTenantFromAuth() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
                     .thenReturn(resp);
 
             // No tenant param — should use auth tenant
             mockMvc.perform(get("/v1/reservations"))
                     .andExpect(status().isOk());
+        }
+
+        // v0.1.25.12 (cycles-protocol revision 2026-04-16): sort_by / sort_dir
+        // query params on listReservations. Controller validates enum values;
+        // invalid values MUST return 400 INVALID_REQUEST per spec.
+        @Test
+        @DisplayName("sort_by=bogus → 400 INVALID_REQUEST")
+        void shouldRejectInvalidSortBy() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("sort_by", "bogus"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Invalid sort_by")));
+        }
+
+        @Test
+        @DisplayName("sort_dir=sideways → 400 INVALID_REQUEST")
+        void shouldRejectInvalidSortDir() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("sort_dir", "sideways"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Invalid sort_dir")));
+        }
+
+        @Test
+        @DisplayName("sort_by=status&sort_dir=asc propagates to repository")
+        void shouldPropagateSortParams() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), eq("status"), eq("asc")))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations")
+                            .param("sort_by", "status")
+                            .param("sort_dir", "asc"))
+                    .andExpect(status().isOk());
+        }
+
+        @Test
+        @DisplayName("sort_by accepts all 7 spec-enum values case-insensitively")
+        void shouldAcceptAllSpecSortByValues() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
+                    .thenReturn(resp);
+            for (String value : new String[] {"reservation_id", "tenant", "scope_path",
+                    "status", "reserved", "created_at_ms", "expires_at_ms"}) {
+                mockMvc.perform(get("/v1/reservations").param("sort_by", value))
+                        .andExpect(status().isOk());
+            }
         }
     }
 
@@ -583,7 +633,7 @@ class ReservationControllerTest {
         void adminListWithTenantFilter() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq("any-tenant"), any(), any(), any(), any(), any(), any(), any(), eq(50), any()))
+            when(repository.listReservations(eq("any-tenant"), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations").param("tenant", "any-tenant"))
                     .andExpect(status().isOk());

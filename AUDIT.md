@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
+**Date:** 2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
+2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
 2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
 2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
 2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
@@ -14,6 +15,78 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-16 — v0.1.25.12: `sort_by` + `sort_dir` on GET /v1/reservations
+
+Closes the runtime-protocol gap opened by **cycles-protocol spec revision 2026-04-16** (commits `064e95f` + `a2a8f13`): list-reservations needed server-side ordering with client-selectable sort key + direction, and the cursor needed to encode the sort state so page breaks remain consistent.
+
+**Spec shape:**
+
+- `sort_by` enum (7 values): `reservation_id`, `tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`, `expires_at_ms`.
+- `sort_dir` enum: `asc`, `desc`. Defaults to `desc` when `sort_by` is provided. When both are omitted, legacy behaviour (Redis-SCAN arbitrary order) is preserved exactly — zero-risk to existing clients.
+- Invalid enum values → HTTP 400 `INVALID_REQUEST` with the bad token echoed in the message.
+- Cursors MUST bind to `(sort_by, sort_dir, filters)`; mismatched reuse → HTTP 400.
+
+**Implementation shape — dual-path:**
+
+Existing code uses Redis `SCAN` to page `reservation:res_*` keys. SCAN returns keys in arbitrary, cursor-coupled order, which is fundamentally incompatible with server-side sorting. The alternative — per-tenant ZSET indices per sort key — would have required new Lua scripts, dual-write paths on every reservation state transition, and a backfill migration. Disproportionate to runtime-plane scale (per-tenant N typically ≤ 10³; O(N) in-memory sort per sorted page is cheaper than index maintenance).
+
+So the controller branches:
+
+- **Legacy path** (no `sort_by` AND no `sort_dir` AND no sorted cursor) — unchanged `SCAN`/pipelined `HGETALL`/opaque-cursor loop. Byte-for-byte identical to v0.1.25.11.
+- **Sorted path** (either sort param OR a decoded sorted cursor present) — full `SCAN` pass with filter predicates applied in-stream, deterministic in-memory `Comparator` sort, opaque slice cursor.
+
+**New types (`cycles-protocol-service-data/.../repository/support/`):**
+
+- `ReservationComparators.of(sortBy, sortDir)` — per-key extractors + `.thenComparing(reservation_id ASC)` tiebreaker so pagination boundaries are unambiguous under ties. Null-safe via `Comparator.nullsLast`. Also exposes `extractSortValue(ReservationSummary, sortBy)` for cursor `lsv` encoding.
+- `FilterHasher.hash(t, i, st, ws, ap, wf, ag, ts)` — SHA-256 of canonical `k=v|k=v|...` over eight filter fields, first 16 hex chars (8-byte truncation). Not a security boundary — sole job is cheap detection of cross-tuple cursor reuse. Trades length for brevity in the base64url cursor payload.
+- `SortedListCursor` record `{v:int, sb, sd, fh, lsv, lrid}` — v=1, base64url-no-pad Jackson JSON. `decode(String)` returns `Optional.empty()` on null/blank/all-digit input, which routes old numeric cursors straight to the legacy SCAN path — backward-compat kept at the cursor-parsing boundary rather than the controller boundary.
+
+**Repository change:**
+
+`RedisReservationRepository.listReservations` signature extended with trailing `String sortBy, String sortDir` (10 → 12 args). The 10-arg overload was removed intentionally — keeping both caused Mockito stubs defined over the 10-arg form to fail to match 12-arg call-sites from the updated controller, which silently made unit tests pass with `null` responses. Single explicit signature surfaces the contract at the type level.
+
+New private helpers on the repository:
+
+- `listReservationsSorted(...)` — full SCAN pass (no early termination), pipelined `HGETALL`, status/scope/filter predicates applied as rows stream through, in-memory sort via the comparator, opaque slice cursor emitted when `idx + limit < total`.
+- `findSliceStart(rows, cursor)` — binary-search-like boundary finder over the sorted list; returns the first index strictly greater than `(lsv, lrid)` per the active comparator.
+- `compareAtBoundary(...)` — honours sort direction so boundary comparison matches emitted order (desc cursor page-forward goes to smaller `lsv`, not larger).
+
+**Cross-tuple cursor rejection:**
+
+On resume, the decoded cursor's `(sb, sd, fh)` is compared to the current request's derived tuple. Mismatch throws `CyclesProtocolException(INVALID_REQUEST, ..., 400)`. Prevents the class of bug where a client paginates by `created_at_ms asc`, changes to `reserved desc` on the UI, re-submits the old cursor, and silently gets a corrupt mid-stream slice.
+
+**Controller validation (at `ReservationController.list`):**
+
+Matches the existing `status` validation pattern at line 246 — uppercase the incoming parameter, parse against the enum, throw `CyclesProtocolException(INVALID_REQUEST, "sort_by must be one of ...", 400)` on failure. No Spring `@Valid` involved; intentional — error-body shape and message wording must stay under cycles-protocol error-envelope control, not Jackson's default.
+
+**Tests (≥95 % coverage preserved):**
+
+- `ReservationControllerTest` — 4 new: invalid `sort_by` → 400, invalid `sort_dir` → 400, both params propagated to repo (argument captor), all 7 spec enum values accepted. Pre-existing Mockito stubs updated from 10-arg to 12-arg (`, any(), any()`) to match the new repository signature.
+- `ReservationComparatorsTest` (new) — per-field asc/desc for all 7 sort keys, `reservation_id` tiebreaker under ties, null-subject-tenant safety under both directions, `extractSortValue` correctness.
+- `SortedListCursorTest` (new) — round-trip encode/decode, malformed base64url → empty Optional (legacy fallback), digit-only input → empty Optional, JSON with missing fields → empty Optional.
+- `FilterHasherTest` (new) — determinism, null-vs-empty-string equivalence (trailing empties collapse so clients can omit the trailing filters without forcing a new tuple), 16-hex-char output shape.
+- `RedisReservationQueryTest.SortedListReservationsTest` (new `@Nested`) — Testcontainers Redis seeded with 25 reservations across statuses and timestamps; paginates `sort_by=created_at_ms&sort_dir=asc&limit=10` across 3 pages with `has_more` transitions checked; cursor reused under different `sort_by` throws; legacy numeric cursor still works without sort params; scope_path lexicographic ordering verified.
+- Pre-existing `listReservations` call-sites (~12 across the Testcontainers file) updated from 10-arg to 12-arg.
+
+**Release bookkeeping:**
+
+- `cycles-protocol-service/pom.xml` `<revision>` → `0.1.25.12`.
+- Both prod docker-compose image pins bumped: `docker-compose.prod.yml`, `docker-compose.full-stack.prod.yml`.
+- Six-doc markdown matrix updated: AUDIT.md (this entry), CHANGELOG.md, OPERATIONS.md, BENCHMARKS.md, README.md × 2.
+- Benchmarks unaffected (sort path is off for existing workloads because clients haven't added the params yet); release can use the `[benchmark-skip]` marker in the GH release notes body. Documented in CHANGELOG.
+
+**Verification:**
+
+- `mvn -B test --file cycles-protocol-service/pom.xml -Dtest='!*IntegrationTest'` — 352 data-module tests + 344 API-module tests green.
+- Testcontainers Redis integration tests exercise the sort-path cursor round-trip.
+
+**Out of scope (deferred):**
+
+- Per-tenant ZSET indices by sort key — follow-up if any tenant exceeds ~10 k reservations and sorted-list latency crosses a service-level objective.
+- Admin spec `/v1/auth/introspect` (cycles-governance-admin-v0.1.25.yaml revisions `101416f` / `6aca3f9`) — not a runtime-plane concern.
 
 ---
 

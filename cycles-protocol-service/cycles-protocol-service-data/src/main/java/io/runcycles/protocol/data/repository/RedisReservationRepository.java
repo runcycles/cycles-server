@@ -2,6 +2,9 @@ package io.runcycles.protocol.data.repository;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
+import io.runcycles.protocol.data.repository.support.FilterHasher;
+import io.runcycles.protocol.data.repository.support.ReservationComparators;
+import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
@@ -517,10 +520,36 @@ public class RedisReservationRepository {
         }
     }
 
+    /**
+     * List reservations with optional server-side sorting.
+     *
+     * <p>Spec: cycles-protocol-v0.yaml revision 2026-04-16. When {@code sortBy} or
+     * {@code sortDir} is provided, results are returned in requested order and the
+     * returned cursor encodes the sort state ({@link SortedListCursor}). When both are
+     * null AND the caller supplies either no cursor or a legacy numeric SCAN cursor,
+     * the original SCAN-cursor pagination path is used — preserves wire-compat for
+     * clients predating revision 2026-04-16.
+     *
+     * <p>Cursors from the sorted path encode the {@code (sort_by, sort_dir, filters)}
+     * tuple; re-using a cursor under a different tuple returns HTTP 400 INVALID_REQUEST
+     * per spec.
+     */
     public ReservationListResponse listReservations(String tenant, String idempotencyKey,
                                                     String status, String workspace, String app,
                                                     String workflow, String agent, String toolset,
-                                                    int limit, String startCursor) {
+                                                    int limit, String startCursor,
+                                                    String sortBy, String sortDir) {
+        boolean sortRequested = sortBy != null || sortDir != null;
+        Optional<SortedListCursor> parsedCursor = SortedListCursor.decode(startCursor);
+
+        // Route to sorted path when sort params are provided OR when the incoming cursor
+        // is a sorted-path cursor (client may omit sort params on the follow-up request,
+        // expecting the cursor to carry the sort state — we honour that).
+        if (sortRequested || parsedCursor.isPresent()) {
+            return listReservationsSorted(tenant, idempotencyKey, status, workspace, app,
+                workflow, agent, toolset, limit, parsedCursor.orElse(null), sortBy, sortDir);
+        }
+
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
@@ -586,6 +615,159 @@ public class RedisReservationRepository {
                 .nextCursor(null)
                 .build();
         }
+    }
+
+    /**
+     * Sorted-path implementation for listReservations. Loads all matching rows via a full
+     * SCAN pass, sorts in-memory using {@link ReservationComparators}, then slices by the
+     * decoded cursor position. See javadoc on the public overload for spec context.
+     */
+    private ReservationListResponse listReservationsSorted(
+            String tenant, String idempotencyKey, String status,
+            String workspace, String app, String workflow, String agent, String toolset,
+            int limit, SortedListCursor resumeCursor, String sortBy, String sortDir) {
+
+        // Normalize for cursor storage + comparator use. Null sort_dir with a non-null
+        // sort_by defaults to DESC per spec; null sort_by with a non-null sort_dir defaults
+        // to CREATED_AT_MS. Resume-from-cursor honours the tuple encoded in the cursor.
+        String effectiveSortBy = sortBy != null ? sortBy.toLowerCase()
+            : (resumeCursor != null ? resumeCursor.getSortBy() : "created_at_ms");
+        String effectiveSortDir = sortDir != null ? sortDir.toLowerCase()
+            : (resumeCursor != null ? resumeCursor.getSortDir() : "desc");
+
+        String filterHash = FilterHasher.hash(tenant, idempotencyKey, status,
+            workspace, app, workflow, agent, toolset);
+
+        // Spec: cursor is valid only for the same (sort_by, sort_dir, filters) tuple.
+        if (resumeCursor != null) {
+            if (!effectiveSortBy.equalsIgnoreCase(resumeCursor.getSortBy())
+                || !effectiveSortDir.equalsIgnoreCase(resumeCursor.getSortDir())
+                || !filterHash.equals(resumeCursor.getFilterHash())) {
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                    "cursor is not valid for the requested sort_by / sort_dir / filters; reset cursor when any of these change",
+                    400);
+            }
+        }
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            ScanParams params = new ScanParams().match("reservation:res_*").count(500);
+            List<ReservationSummary> matching = new ArrayList<>();
+
+            String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
+            String appSegment = app != null ? "app:" + app.toLowerCase() : null;
+            String workflowSegment = workflow != null ? "workflow:" + workflow.toLowerCase() : null;
+            String agentSegment = agent != null ? "agent:" + agent.toLowerCase() : null;
+            String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
+
+            String scanCursor = "0";
+            do {
+                ScanResult<String> scan = jedis.scan(scanCursor, params);
+                List<String> keys = scan.getResult();
+                if (!keys.isEmpty()) {
+                    Pipeline pipeline = jedis.pipelined();
+                    Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+                    for (String key : keys) {
+                        responses.put(key, pipeline.hgetAll(key));
+                    }
+                    pipeline.sync();
+
+                    for (String key : keys) {
+                        try {
+                            Map<String, String> fields = responses.get(key).get();
+                            if (fields.isEmpty()) continue;
+                            if (!tenant.equals(fields.get("tenant"))) continue;
+                            if (status != null && !status.equals(fields.get("state"))) continue;
+                            if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) continue;
+                            String scopePath = fields.getOrDefault("scope_path", "").toLowerCase();
+                            if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) continue;
+                            if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) continue;
+                            if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
+                            if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
+                            if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
+
+                            matching.add(toSummary(buildReservationSummary(fields)));
+                        } catch (Exception e) {
+                            LOG.warn("Failed to parse reservation: {}", key, e);
+                        }
+                    }
+                }
+                scanCursor = scan.getCursor();
+            } while (!"0".equals(scanCursor));
+
+            // Full in-memory sort. Acceptable at runtime-plane scale; metric below lets us
+            // spot tenants that outgrow this path and need per-key ZSET indices.
+            matching.sort(ReservationComparators.of(effectiveSortBy, effectiveSortDir));
+            LOG.debug("listReservationsSorted: tenant={} matched={} sort_by={} sort_dir={}",
+                tenant, matching.size(), effectiveSortBy, effectiveSortDir);
+
+            // Locate slice start from the cursor. The cursor's (lastSortValue, lastReservationId)
+            // tuple defines a strict lower bound; walk the sorted list until we find the first
+            // row strictly greater than that tuple under the comparator.
+            int start = 0;
+            if (resumeCursor != null) {
+                start = findSliceStart(matching, effectiveSortBy, effectiveSortDir, resumeCursor);
+            }
+            int end = Math.min(start + limit, matching.size());
+            List<ReservationSummary> page = new ArrayList<>(matching.subList(start, end));
+
+            String nextCursor = null;
+            if (end < matching.size() && !page.isEmpty()) {
+                ReservationSummary last = page.get(page.size() - 1);
+                SortedListCursor next = new SortedListCursor(
+                    1,
+                    effectiveSortBy,
+                    effectiveSortDir,
+                    filterHash,
+                    ReservationComparators.extractSortValue(last, effectiveSortBy),
+                    last.getReservationId());
+                nextCursor = next.encode();
+            }
+
+            return ReservationListResponse.builder()
+                .reservations(page)
+                .hasMore(nextCursor != null)
+                .nextCursor(nextCursor)
+                .build();
+        }
+    }
+
+    private static int findSliceStart(List<ReservationSummary> sorted, String sortBy,
+                                       String sortDir, SortedListCursor cursor) {
+        // Walk the sorted list looking for the first row strictly greater than the cursor's
+        // (lastSortValue, lastReservationId) tuple under the effective sort direction.
+        // Tiebreaker on reservation_id ASC matches the comparator's stable secondary ordering.
+        for (int i = 0; i < sorted.size(); i++) {
+            ReservationSummary r = sorted.get(i);
+            int keyCmp = compareAtBoundary(r, sortBy, sortDir, cursor.getLastSortValue());
+            if (keyCmp > 0) return i;
+            if (keyCmp == 0) {
+                String rid = r.getReservationId() == null ? "" : r.getReservationId();
+                String last = cursor.getLastReservationId() == null ? "" : cursor.getLastReservationId();
+                if (rid.compareTo(last) > 0) return i;
+            }
+        }
+        return sorted.size();
+    }
+
+    private static int compareAtBoundary(ReservationSummary row, String sortBy, String sortDir,
+                                          String lastSortValueStr) {
+        String rowValue = ReservationComparators.extractSortValue(row, sortBy);
+        // Numeric keys sort numerically; everything else lexicographically.
+        boolean numeric = "reserved".equalsIgnoreCase(sortBy)
+            || "created_at_ms".equalsIgnoreCase(sortBy)
+            || "expires_at_ms".equalsIgnoreCase(sortBy);
+        int raw;
+        if (numeric) {
+            long rowN = rowValue.isEmpty() ? Long.MIN_VALUE : Long.parseLong(rowValue);
+            long lastN = lastSortValueStr == null || lastSortValueStr.isEmpty()
+                ? Long.MIN_VALUE : Long.parseLong(lastSortValueStr);
+            raw = Long.compare(rowN, lastN);
+        } else {
+            String a = rowValue == null ? "" : rowValue;
+            String b = lastSortValueStr == null ? "" : lastSortValueStr;
+            raw = a.compareTo(b);
+        }
+        return "desc".equalsIgnoreCase(sortDir) ? -raw : raw;
     }
 
     public BalanceResponse getBalances(String tenant, String workspace, String app,

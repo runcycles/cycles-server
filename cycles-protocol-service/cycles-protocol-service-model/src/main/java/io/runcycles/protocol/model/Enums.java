@@ -71,4 +71,24 @@ public class Enums {
         IDEMPOTENCY_MISMATCH, UNIT_MISMATCH,
         OVERDRAFT_LIMIT_EXCEEDED, DEBT_OUTSTANDING, MAX_EXTENSIONS_EXCEEDED, INTERNAL_ERROR
     }
+
+    /**
+     * Sort keys accepted by GET /v1/reservations.
+     * Spec: cycles-protocol-v0.yaml revision 2026-04-16.
+     * Default when sort_by is provided but unset on the wire: CREATED_AT_MS.
+     */
+    public enum ReservationSortBy {
+        RESERVATION_ID,
+        TENANT,
+        SCOPE_PATH,
+        STATUS,
+        RESERVED,
+        CREATED_AT_MS,
+        EXPIRES_AT_MS
+    }
+
+    /** Sort direction for list endpoints. Default DESC. */
+    public enum SortDirection {
+        ASC, DESC
+    }
 }

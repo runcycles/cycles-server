@@ -14,6 +14,45 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.12] — 2026-04-16
+
+### Added
+
+- `GET /v1/reservations` now accepts `sort_by` and `sort_dir` query
+  parameters (cycles-protocol spec revision 2026-04-16). Valid
+  `sort_by` values: `reservation_id`, `tenant`, `scope_path`,
+  `status`, `reserved`, `created_at_ms`, `expires_at_ms`. Valid
+  `sort_dir` values: `asc`, `desc` (default `desc` when `sort_by`
+  is provided). Invalid enum values return HTTP 400
+  `INVALID_REQUEST`.
+- Server-side ordering with deterministic `reservation_id ASC`
+  tiebreaker so pagination is unambiguous under ties.
+- Opaque sorted cursor (base64url-no-pad JSON, `{v,sb,sd,fh,lsv,lrid}`)
+  that binds to the `(sort_by, sort_dir, filters)` tuple via an
+  8-byte SHA-256 filter hash. Reusing a cursor under a different
+  tuple returns HTTP 400.
+
+### Wire format
+
+Backward compatible. Omitting `sort_by`/`sort_dir` preserves the
+existing Redis-SCAN cursor semantics; legacy all-digit cursors
+continue to work unchanged.
+
+### Internal
+
+- New `support.SortedListCursor`, `support.FilterHasher`,
+  `support.ReservationComparators` utilities.
+- `RedisReservationRepository.listReservations` signature extended
+  with trailing `sortBy`, `sortDir` parameters (10 → 12 args).
+  Direct callers inside the service have been updated; external
+  callers (if any) must add two trailing `null`s.
+
+### Notes for upgraders
+
+No action required for clients that don't use the new parameters.
+Ops teams monitoring sorted-list query latency should watch for
+the documented O(N) full-SCAN behaviour — see OPERATIONS.md.
+
 ## [0.1.25.11] — 2026-04-14
 
 ### Added

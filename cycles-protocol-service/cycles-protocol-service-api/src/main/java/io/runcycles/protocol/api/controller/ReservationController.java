@@ -241,7 +241,9 @@ public class ReservationController extends BaseController{
             @RequestParam(required = false) String agent,
             @RequestParam(required = false) String toolset,
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
-            @RequestParam(required = false) String cursor) {
+            @RequestParam(required = false) String cursor,
+            @RequestParam(value = "sort_by", required = false) String sortBy,
+            @RequestParam(value = "sort_dir", required = false) String sortDir) {
         // Validate status against ReservationStatus enum if provided
         if (status != null) {
             try {
@@ -249,6 +251,27 @@ public class ReservationController extends BaseController{
             } catch (IllegalArgumentException e) {
                 throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
                     "Invalid status filter: " + status + ". Must be one of: ACTIVE, COMMITTED, RELEASED, EXPIRED", 400);
+            }
+        }
+        // v0.1.25.12 (cycles-protocol revision 2026-04-16): validate
+        // sort_by / sort_dir at the controller boundary so clients get
+        // a clean 400 INVALID_REQUEST on typos before the repo runs.
+        // Enum values on the wire are lowercase (sort_by=created_at_ms);
+        // uppercase them to match the Java enum constant.
+        if (sortBy != null) {
+            try {
+                Enums.ReservationSortBy.valueOf(sortBy.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                    "Invalid sort_by: " + sortBy + ". Must be one of: reservation_id, tenant, scope_path, status, reserved, created_at_ms, expires_at_ms", 400);
+            }
+        }
+        if (sortDir != null) {
+            try {
+                Enums.SortDirection.valueOf(sortDir.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                    "Invalid sort_dir: " + sortDir + ". Must be one of: asc, desc", 400);
             }
         }
         // v0.1.25.8 (cycles-protocol revision 2026-04-13): tenant param
@@ -271,8 +294,9 @@ public class ReservationController extends BaseController{
             effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
             authorizeTenant(effectiveTenant);
         }
-        LOG.info("GET /v1/reservations - tenant: {}, admin: {}", effectiveTenant, isAdminAuth());
+        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}",
+                effectiveTenant, isAdminAuth(), sortBy, sortDir);
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
-                status, workspace, app, workflow, agent, toolset, limit, cursor));
+                status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir));
     }
 }
