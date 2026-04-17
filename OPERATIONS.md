@@ -380,6 +380,11 @@ p99: if it climbs above 500 ms under real load, a tenant has grown
 past the in-memory threshold and per-tenant ZSET indexing becomes
 worthwhile. Track the top `tenant` tag on that metric to spot who.
 
+The deferred ZSET-indexed design is fully written up in
+[`docs/deferred-optimizations/sorted-list-zset-indices.md`](docs/deferred-optimizations/sorted-list-zset-indices.md)
+— cost/benefit, trigger conditions, benchmark impact, rollback.
+Pull it out when any of the triggers listed there fires.
+
 Legacy clients (no sort params) stay on the existing Redis-SCAN
 cursor path and are unaffected by this concern.
 
