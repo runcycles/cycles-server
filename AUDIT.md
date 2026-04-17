@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
+**Date:** 2026-04-16 (v0.1.25.13 — hydration cap + enum wire annotations on the sorted `GET /v1/reservations` path; `SORTED_HYDRATE_CAP=2000` guard on the in-memory sort hydration with WARN-on-cap, matches admin plane's v0.1.25.24 pattern; `@JsonValue`/`@JsonCreator fromWire` on `ReservationSortBy` + `SortDirection` to mirror admin's `SortSpec`/`SortDirection` contract),
+2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
 2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
 2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
 2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
@@ -15,6 +16,29 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-16 — v0.1.25.13: hydration cap + enum wire annotations on the sorted list path
+
+Closes two follow-up gaps surfaced by the three-step review of v0.1.25.12 against the admin-plane implementation of the same feature in `cycles-server-admin` v0.1.25.24:
+
+**P1 — `listReservationsSorted` hydrates an unbounded population before the in-memory sort.** The sorted path in v0.1.25.12 does a full `SCAN` of `reservation:res_*`, hydrates every matching row into a `List<ReservationSummary>`, then sorts + slices. For a tenant with 2M reservations under a single workspace, that's 2M `HGETALL` round-trips and a 2M-entry heap object before the cursor walk even starts. The admin plane ran into exactly the same shape on `ApiKeyRepository.listAllTenantsSorted` and `BudgetRepository.listAllTenantsSorted` and closed it with a `SORTED_HYDRATE_CAP = 2000` constant: when the per-key hydration loop observes `matching.size() >= cap` it sets `capped = true`, breaks out of the SCAN loop, logs a WARN naming the tenant + sort tuple, and the sort/slice/cursor code then operates on the capped slice as normal. Page still fills, `has_more` + `next_cursor` still populate from the capped slice, so the UI isn't blocked — the cap is a heap-safety bound, not a correctness bound.
+
+This release ports the same constant + `scanLoop:` labeled-break + post-loop WARN to `RedisReservationRepository.listReservations` on the sorted path only. The legacy (no-sort-params, no-decoded-sorted-cursor) path is intentionally uncapped because it streams page-by-page via the SCAN cursor and never builds an unbounded in-memory list.
+
+**Why 2000:** Same rationale as admin — covers 99%+ of production tenants, keeps the heap bound predictable at roughly 2000 × ~2 KB ReservationSummary = ~4 MB per concurrent sorted-list call. Operators who outgrow the cap should either (a) narrow filters (`status`, `idempotency_key`, scope segments `workspace`/`app`/`workflow`/`agent`/`toolset`), or (b) revisit the deferred per-key ZSET index ADR at `docs/deferred-optimizations/sorted-list-zset-indices.md`.
+
+**P2 — `ReservationSortBy` and `SortDirection` lacked Jackson wire annotations.** In v0.1.25.12 the enums were plain Java enums; the controller did manual `String.toUpperCase()` → `Enum.valueOf()` conversion with a try/catch → 400. That works, but it diverges from the admin plane where `SortSpec` and `SortDirection` carry `@JsonValue getWire()` + `@JsonCreator fromWire(String)` so Jackson handles the lowercase-on-wire contract natively and controllers delegate to `fromWire(...)` with the same try/catch → 400 shape. This release brings the two runtime-plane enums into line: lowercase `getWire()`, `null → null` on `fromWire(null)`, `IllegalArgumentException` on unknown tokens (which the controller converts to 400 with the documented allow-list payload). The wire contract is unchanged — lowercase tokens in and out — but direct JSON-over-wire uses of these enums (future list-response DTOs that echo the sort tuple back, for instance) now serialize/deserialize correctly without custom converters.
+
+**Test strategy:**
+
+- `RedisReservationQueryTest#sortedHydrationStopsAtCap` — mocks a SCAN page returning `cap + 10` keys, stubs pipeline `hgetAll` for each, invokes the 5-row sorted page, asserts exactly 5 rows in the documented ascending-`created_at_ms` order and `has_more=true`, `next_cursor != null`. Exercises the capped-slice cursor path. (The full hydration loop consults only up to `cap` rows; remaining stubs are unused as designed.)
+- `EnumsTest` (new, `cycles-protocol-service-model`) — round-trip tests for both enums: `getWire()` emits lowercase, `fromWire` accepts canonical lowercase + uppercase + mixed case, `fromWire(null)` returns null, `fromWire("bogus")` throws `IllegalArgumentException`, `for each value: fromWire(getWire(v)) == v`.
+
+No spec change; wire format is identical. No signature changes. No caller-visible behaviour change for tenants under the cap.
+
+**Backward compatibility:** Full. Behaviour-visible for tenants whose sorted-list query previously returned >2000 matching rows (silently; those were already on the O(N) full-SCAN path documented in v0.1.25.12). Post-cap, rows beyond row 2000 in the capped slice are unreachable without narrowing filters — same contract the admin plane established in v0.1.25.24 for `ApiKey` + `Budget` cross-tenant sorted paths.
 
 ---
 

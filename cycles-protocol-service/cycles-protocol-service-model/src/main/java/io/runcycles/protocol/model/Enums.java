@@ -1,5 +1,8 @@
 package io.runcycles.protocol.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 /**
  * Cycles Protocol v0.1.25
  * All enums in one file for convenience
@@ -76,6 +79,13 @@ public class Enums {
      * Sort keys accepted by GET /v1/reservations.
      * Spec: cycles-protocol-v0.yaml revision 2026-04-16.
      * Default when sort_by is provided but unset on the wire: CREATED_AT_MS.
+     *
+     * Wire form is lowercase (reservation_id, created_at_ms, …). @JsonValue
+     * emits the wire form on serialization; @JsonCreator fromWire parses
+     * case-insensitively and returns null on null input so callers that
+     * want 400-on-unknown can convert IllegalArgumentException into a
+     * CyclesProtocolException themselves, matching the admin SortDirection
+     * pattern.
      */
     public enum ReservationSortBy {
         RESERVATION_ID,
@@ -84,11 +94,37 @@ public class Enums {
         STATUS,
         RESERVED,
         CREATED_AT_MS,
-        EXPIRES_AT_MS
+        EXPIRES_AT_MS;
+
+        @JsonValue
+        public String getWire() {
+            return name().toLowerCase();
+        }
+
+        @JsonCreator
+        public static ReservationSortBy fromWire(String value) {
+            if (value == null) return null;
+            return ReservationSortBy.valueOf(value.toUpperCase());
+        }
     }
 
-    /** Sort direction for list endpoints. Default DESC. */
+    /**
+     * Sort direction for list endpoints. Default DESC. Wire form is
+     * lowercase ("asc" / "desc"). See ReservationSortBy for the Jackson
+     * round-trip contract — same pattern.
+     */
     public enum SortDirection {
-        ASC, DESC
+        ASC, DESC;
+
+        @JsonValue
+        public String getWire() {
+            return name().toLowerCase();
+        }
+
+        @JsonCreator
+        public static SortDirection fromWire(String value) {
+            if (value == null) return null;
+            return SortDirection.valueOf(value.toUpperCase());
+        }
     }
 }

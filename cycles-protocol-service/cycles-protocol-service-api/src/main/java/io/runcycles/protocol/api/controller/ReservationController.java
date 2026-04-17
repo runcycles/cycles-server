@@ -256,11 +256,13 @@ public class ReservationController extends BaseController{
         // v0.1.25.12 (cycles-protocol revision 2026-04-16): validate
         // sort_by / sort_dir at the controller boundary so clients get
         // a clean 400 INVALID_REQUEST on typos before the repo runs.
-        // Enum values on the wire are lowercase (sort_by=created_at_ms);
-        // uppercase them to match the Java enum constant.
+        // v0.1.25.13: delegate parsing to Enums.*.fromWire (adds @JsonValue /
+        // @JsonCreator round-trip), which is case-insensitive and throws
+        // IllegalArgumentException on unknown values — caught and mapped to
+        // the same 400 payload as before.
         if (sortBy != null) {
             try {
-                Enums.ReservationSortBy.valueOf(sortBy.toUpperCase());
+                Enums.ReservationSortBy.fromWire(sortBy);
             } catch (IllegalArgumentException e) {
                 throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
                     "Invalid sort_by: " + sortBy + ". Must be one of: reservation_id, tenant, scope_path, status, reserved, created_at_ms, expires_at_ms", 400);
@@ -268,7 +270,7 @@ public class ReservationController extends BaseController{
         }
         if (sortDir != null) {
             try {
-                Enums.SortDirection.valueOf(sortDir.toUpperCase());
+                Enums.SortDirection.fromWire(sortDir);
             } catch (IllegalArgumentException e) {
                 throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
                     "Invalid sort_dir: " + sortDir + ". Must be one of: asc, desc", 400);

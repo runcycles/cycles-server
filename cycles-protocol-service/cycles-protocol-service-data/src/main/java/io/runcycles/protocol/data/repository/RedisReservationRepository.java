@@ -47,6 +47,21 @@ public class RedisReservationRepository {
         .map(Enums.UnitEnum::name)
         .collect(Collectors.joining(","));
 
+    /**
+     * v0.1.25.13 hydration cap for the sorted listReservations path. The sorted
+     * path must full-SCAN every `reservation:res_*` key across all tenants
+     * before the in-memory sort, which is unbounded in the naive case. At
+     * runtime scale (10k reservations per active tenant) this can exhaust
+     * heap before the cursor even runs. Cap at 2000 rows per request; when
+     * the cap is hit we break out of hydration, sort the capped slice, and
+     * serve the cursor from that slice. Operators that need to see beyond
+     * the cap should narrow filters (status, scope segments, tenant) — the
+     * deferred-optimization ADR (docs/deferred-optimizations/
+     * sorted-list-zset-indices.md) tracks the longer-term per-tenant ZSET
+     * index work that will retire this cap.
+     */
+    static final int SORTED_HYDRATE_CAP = 2000;
+
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
             return MessageDigest.getInstance("SHA-256");
@@ -660,6 +675,8 @@ public class RedisReservationRepository {
             String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
 
             String scanCursor = "0";
+            boolean capped = false;
+            scanLoop:
             do {
                 ScanResult<String> scan = jedis.scan(scanCursor, params);
                 List<String> keys = scan.getResult();
@@ -672,6 +689,7 @@ public class RedisReservationRepository {
                     pipeline.sync();
 
                     for (String key : keys) {
+                        if (matching.size() >= SORTED_HYDRATE_CAP) { capped = true; break scanLoop; }
                         try {
                             Map<String, String> fields = responses.get(key).get();
                             if (fields.isEmpty()) continue;
@@ -693,6 +711,11 @@ public class RedisReservationRepository {
                 }
                 scanCursor = scan.getCursor();
             } while (!"0".equals(scanCursor));
+
+            if (capped) {
+                LOG.warn("listReservationsSorted hydration capped at {} rows for tenant={} sort_by={} sort_dir={}; narrow filters to see beyond the cap",
+                    SORTED_HYDRATE_CAP, tenant, effectiveSortBy, effectiveSortDir);
+            }
 
             // Full in-memory sort. Acceptable at runtime-plane scale; metric below lets us
             // spot tenants that outgrow this path and need per-key ZSET indices.

@@ -14,6 +14,42 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.13] — 2026-04-16
+
+### Fixed
+
+- `GET /v1/reservations` sorted path no longer hydrates an unbounded
+  reservation population before the in-memory sort. A
+  `SORTED_HYDRATE_CAP = 2000` guard mirrors the admin-plane pattern
+  shipped in `cycles-server-admin` v0.1.25.24: once the cap is hit
+  the SCAN loop breaks, a WARN is logged so operators can see the
+  window was truncated, and the cursor page still fills from the
+  capped slice. Callers that need to see past the cap should narrow
+  filters (`status`, `idempotency_key`, `workspace`/`app`/
+  `workflow`/`agent`/`toolset`) — same workaround doc pattern as
+  admin.
+
+### Internal
+
+- `Enums.ReservationSortBy` and `Enums.SortDirection` now carry
+  `@JsonValue getWire()` + `@JsonCreator fromWire(String)` Jackson
+  annotations matching the admin plane's `SortSpec` /
+  `SortDirection` pattern. Wire form stays lowercase, parsing stays
+  case-insensitive with `null → null`. Controller-level validation
+  is unchanged: unknown tokens still surface as HTTP 400
+  `INVALID_REQUEST` with the documented allow-list payload.
+- `RedisReservationRepository.SORTED_HYDRATE_CAP` is package-private
+  (test-visible) to allow cap-hit tests to assert the bound
+  deterministically.
+
+### Notes for upgraders
+
+Behavior-visible for callers that previously relied on the sorted
+path silently returning all rows even for a single tenant with
+thousands of reservations: the page shape is identical, but rows
+beyond row 2000 in the capped slice are now unreachable without
+narrowing filters. Same trade-off doc as the admin plane cap.
+
 ## [0.1.25.12] — 2026-04-16
 
 ### Added
