@@ -838,6 +838,60 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
         @SuppressWarnings("unchecked")
         @Test
+        @DisplayName("hydration stops at SORTED_HYDRATE_CAP; page still fills from capped slice")
+        void sortedHydrationStopsAtCap() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            int cap = RedisReservationRepository.SORTED_HYDRATE_CAP;
+            int total = cap + 10;
+
+            // Return ALL keys from a single SCAN page. The hydration guard sits
+            // inside the per-key loop, so the break exits after exactly `cap`
+            // rows are added — remaining keys are never consulted even though
+            // they're still in the scan result.
+            List<String> keys = new ArrayList<>(total);
+            for (int i = 0; i < total; i++) {
+                keys.add(String.format("reservation:res_r%05d", i));
+            }
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(keys);
+            // getCursor() is never read once the hydration cap breaks out of the
+            // labeled scanLoop; stub leniently so strict-mode doesn't flag it.
+            lenient().when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+
+            // Default pipeline.hgetAll stub from Base returns empty map; override
+            // for the first `cap` keys so they pass the tenant filter and land
+            // in the matching list. Keys beyond index `cap` are stubbed too, so
+            // if the guard is ever removed the test fails loud (page fills past
+            // the cap and the pipeline verifier trips).
+            for (int i = 0; i < total; i++) {
+                String id = String.format("r%05d", i);
+                Map<String, String> f = reservationFields(id, "ACTIVE");
+                f.put("created_at", String.valueOf(1_700_000_000_000L + i));
+                Response<Map<String, String>> resp = mock(Response.class);
+                lenient().when(resp.get()).thenReturn(f);
+                lenient().when(pipeline.hgetAll("reservation:res_" + id)).thenReturn(resp);
+            }
+
+            ReservationListResponse response = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 5, null,
+                "created_at_ms", "asc");
+
+            assertThat(response.getReservations()).hasSize(5);
+            assertThat(response.getReservations())
+                .extracting(ReservationSummary::getReservationId)
+                .containsExactly("r00000", "r00001", "r00002", "r00003", "r00004");
+            // has_more must be true — the capped slice still has rows beyond the page.
+            assertThat(response.getHasMore()).isTrue();
+            assertThat(response.getNextCursor()).isNotNull();
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
         @DisplayName("legacy numeric cursor with no sort params routes to legacy SCAN path")
         void legacyCursorPreserved() {
             when(jedisPool.getResource()).thenReturn(jedis);
