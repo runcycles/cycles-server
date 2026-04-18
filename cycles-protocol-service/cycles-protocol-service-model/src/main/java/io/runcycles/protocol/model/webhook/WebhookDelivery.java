@@ -17,4 +17,7 @@ public class WebhookDelivery {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("response_time_ms") private Integer responseTimeMs;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("error_message") private String errorMessage;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("next_retry_at") private Instant nextRetryAt;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("trace_id") private String traceId;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("trace_flags") private String traceFlags;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("traceparent_inbound_valid") private Boolean traceparentInboundValid;
 }

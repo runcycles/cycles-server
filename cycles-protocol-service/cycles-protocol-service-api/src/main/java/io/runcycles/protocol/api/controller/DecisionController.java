@@ -70,7 +70,9 @@ public class DecisionController extends BaseController {
                                 .action(actionMap)
                                 .subject(subjectMap)
                                 .build(),
-                        null, null);
+                        null,
+                        resolveRequestId(httpRequest),
+                        resolveTraceContext(httpRequest));
             }
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);

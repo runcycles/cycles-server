@@ -14,6 +14,45 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.14] — 2026-04-18
+
+### Added
+
+- W3C Trace Context correlation per `cycles-protocol-v0.yaml` revision
+  2026-04-18. Every response now carries an `X-Cycles-Trace-Id`
+  header. The server accepts a `traceparent` (W3C version 00) or
+  `X-Cycles-Trace-Id` header on inbound requests and echoes back the
+  same trace_id; when neither is present it generates a fresh 128-bit
+  id (32 lowercase hex). Malformed headers are silently ignored; the
+  server never rejects a request for a bad correlation header.
+- `trace_id` field on `ErrorResponse`, `Event`, `WebhookDelivery`,
+  and `AuditLogEntry` bodies. Optional for wire back-compat; conformant
+  servers populate it on every payload causally downstream of the
+  request.
+- `trace_flags` (`^[0-9a-f]{2}$`) and `traceparent_inbound_valid`
+  (boolean) on `WebhookDelivery` per governance-admin spec v0.1.25.28.
+  These preserve the upstream W3C sampling decision so the events
+  sidecar can reconstruct an outbound `traceparent` with the correct
+  trace-flags byte instead of defaulting to `01`.
+- SLF4J MDC now carries `traceId` alongside `requestId` for every
+  request — log aggregators can group by trace_id to see all lines
+  produced during a single logical operation.
+- `ReservationExpiryService` mints a fresh trace_id per sweep batch
+  so `reservation.expired` events emitted in the same sweep correlate
+  to each other.
+
+### Internal
+
+- New `TraceContextFilter` (`@Order(0)`) runs before `RequestIdFilter`
+  and sets the `cyclesTraceId` request attribute for downstream code.
+- `EventEmitterService.emit(...)` gains a final `String traceId`
+  parameter. The full-arity `emitBalanceEvents(...)` signature
+  likewise. Three prior overloads kept as delegating wrappers
+  (`traceId = null`) for source compatibility with existing tests.
+- `BaseController` exposes protected `resolveRequestId` and
+  `resolveTraceId` helpers that controllers use to thread the ids
+  into event-emission and audit-log calls.
+
 ## [0.1.25.13] — 2026-04-16
 
 ### Fixed

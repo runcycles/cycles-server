@@ -1,6 +1,7 @@
 package io.runcycles.protocol.api.exception;
 
 import io.runcycles.protocol.api.filter.RequestIdFilter;
+import io.runcycles.protocol.api.filter.TraceContextFilter;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.Enums;
@@ -29,6 +30,10 @@ public class GlobalExceptionHandler {
         return attr != null ? attr.toString() : UUID.randomUUID().toString();
     }
 
+    private String resolveTraceId(HttpServletRequest request) {
+        return TraceContextFilter.currentTraceId(request);
+    }
+
     @ExceptionHandler(CyclesProtocolException.class)
     public ResponseEntity<ErrorResponse> handleCyclesException(CyclesProtocolException ex, HttpServletRequest request) {
         LOG.info("Landed in cycles exception handler: clazz={}",ex.getClass());
@@ -36,6 +41,7 @@ public class GlobalExceptionHandler {
             .error(ex.getErrorCode())
             .message(ex.getMessage())
             .requestId(resolveRequestId(request))
+            .traceId(resolveTraceId(request))
             .details(ex.getDetails())
             .build());
     }
@@ -49,6 +55,7 @@ public class GlobalExceptionHandler {
             .error(Enums.ErrorCode.INVALID_REQUEST)
             .message("Validation failed: " + message)
             .requestId(resolveRequestId(request))
+            .traceId(resolveTraceId(request))
             .build());
     }
 
@@ -65,6 +72,7 @@ public class GlobalExceptionHandler {
             .error(Enums.ErrorCode.INVALID_REQUEST)
             .message("Validation failed: " + message)
             .requestId(resolveRequestId(request))
+            .traceId(resolveTraceId(request))
             .build());
     }
 
@@ -74,6 +82,7 @@ public class GlobalExceptionHandler {
             .error(Enums.ErrorCode.INVALID_REQUEST)
             .message("Malformed request body")
             .requestId(resolveRequestId(request))
+            .traceId(resolveTraceId(request))
             .build());
     }
 
@@ -91,6 +100,7 @@ public class GlobalExceptionHandler {
                             .error(Enums.ErrorCode.INTERNAL_ERROR)
                             .message("Internal error")
                             .requestId(resolveRequestId(request))
+                            .traceId(resolveTraceId(request))
                             .build());
         }
     }

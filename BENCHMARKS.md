@@ -29,6 +29,15 @@ running them would only measure environmental noise. Skipped releases:
   unchanged and all existing benchmarks exercise the legacy path.
   Benchmarks for the sorted path are worth adding once real tenant
   populations exercise the O(N) full-SCAN; see OPERATIONS.md.
+- **v0.1.25.13** — hydration cap + enum wire annotations on the sorted
+  list path. Write-path unchanged.
+- **v0.1.25.14** — trace_id (W3C Trace Context) correlation. The new
+  `TraceContextFilter` adds two regex matches + one secure-random
+  read per request (~microseconds, no Redis / no locking / no
+  allocation beyond a 32-char String). Request-path code only;
+  Lua / reserve / commit / release / extend hot paths untouched.
+  Benchmarks deliberately skipped — they would only measure
+  environmental noise. [benchmark-skip]
 
 Last benchmarked release: **v0.1.25.7**.
 

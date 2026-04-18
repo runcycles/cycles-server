@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.model.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -159,7 +160,11 @@ class ReservationExpiryServiceTest {
                 argThat(d -> d instanceof io.runcycles.protocol.model.event.EventDataReservationExpired
                         && ((io.runcycles.protocol.model.event.EventDataReservationExpired) d).getReservationId().equals("id1")
                         && ((io.runcycles.protocol.model.event.EventDataReservationExpired) d).getExtensionsUsed() == 2),
-                isNull(), isNull());
+                isNull(), isNull(),
+                argThat((TraceContext t) -> t != null
+                        && t.traceId() != null && t.traceId().matches("^[0-9a-f]{32}$")
+                        && "01".equals(t.traceFlags())
+                        && Boolean.FALSE.equals(t.traceparentInboundValid())));
     }
 
     @Test
@@ -171,7 +176,7 @@ class ReservationExpiryServiceTest {
 
         service.expireReservations();
 
-        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any());
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -186,7 +191,7 @@ class ReservationExpiryServiceTest {
 
         service.expireReservations();
 
-        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any());
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -199,7 +204,7 @@ class ReservationExpiryServiceTest {
 
         service.expireReservations();
 
-        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any());
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -218,6 +223,6 @@ class ReservationExpiryServiceTest {
 
         // res_2 should still emit despite res_1 failure
         verify(eventEmitter).emit(eq(EventType.RESERVATION_EXPIRED), eq("t2"),
-                any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any());
     }
 }

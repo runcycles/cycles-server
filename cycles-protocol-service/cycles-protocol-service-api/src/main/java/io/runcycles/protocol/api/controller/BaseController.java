@@ -2,7 +2,10 @@ package io.runcycles.protocol.api.controller;
 
 import io.runcycles.protocol.api.auth.AdminApiKeyAuthentication;
 import io.runcycles.protocol.api.auth.ApiKeyAuthentication;
+import io.runcycles.protocol.api.filter.RequestIdFilter;
+import io.runcycles.protocol.api.filter.TraceContextFilter;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
+import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.model.Enums;
 import io.runcycles.protocol.model.Subject;
 import io.runcycles.protocol.model.event.Actor;
@@ -78,6 +81,23 @@ abstract public class BaseController {
             }
         }
         LOG.debug("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",tenantFromRequest,tenantFromAuthorization);
+    }
+
+    /** Return the X-Request-Id attribute set by RequestIdFilter, or null. */
+    protected String resolveRequestId(HttpServletRequest request) {
+        if (request == null) return null;
+        Object v = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        return v != null ? v.toString() : null;
+    }
+
+    /** Return the trace_id attribute set by TraceContextFilter, or null. */
+    protected String resolveTraceId(HttpServletRequest request) {
+        return TraceContextFilter.currentTraceId(request);
+    }
+
+    /** Return the full TraceContext (trace_id + trace_flags + inbound-W3C flag) captured by the filter. */
+    protected TraceContext resolveTraceContext(HttpServletRequest request) {
+        return TraceContextFilter.currentContext(request);
     }
 
     public void validateIdempotencyHeader(String headerKey, String bodyKey) {

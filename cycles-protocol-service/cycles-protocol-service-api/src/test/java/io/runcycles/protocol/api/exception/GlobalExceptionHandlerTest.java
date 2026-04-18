@@ -1,6 +1,7 @@
 package io.runcycles.protocol.api.exception;
 
 import io.runcycles.protocol.api.filter.RequestIdFilter;
+import io.runcycles.protocol.api.filter.TraceContextFilter;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.Enums;
 import io.runcycles.protocol.model.ErrorResponse;
@@ -24,11 +25,14 @@ class GlobalExceptionHandlerTest {
     private GlobalExceptionHandler handler;
     private MockHttpServletRequest request;
 
+    private static final String TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
+
     @BeforeEach
     void setUp() {
         handler = new GlobalExceptionHandler();
         request = new MockHttpServletRequest();
         request.setAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-test-123");
+        request.setAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE, TRACE_ID);
     }
 
     @Test
@@ -40,6 +44,31 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.BUDGET_EXCEEDED);
         assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
+        assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    @DisplayName("trace_id propagates into ErrorResponse across all handler paths")
+    void traceIdPropagatesAcrossHandlers() throws Exception {
+        // CyclesProtocolException
+        assertThat(handler.handleCyclesException(CyclesProtocolException.notFound("x"), request)
+                .getBody().getTraceId()).isEqualTo(TRACE_ID);
+        // MalformedJson
+        assertThat(handler.handleMessageNotReadable(
+                new org.springframework.http.converter.HttpMessageNotReadableException("bad"), request)
+                .getBody().getTraceId()).isEqualTo(TRACE_ID);
+        // Generic 500
+        assertThat(handler.handleGenericException(new RuntimeException("boom"), request)
+                .getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    @DisplayName("trace_id is null when attribute is not set (filter didn't run)")
+    void traceIdNullWhenAttributeAbsent() {
+        MockHttpServletRequest bare = new MockHttpServletRequest();
+        ResponseEntity<ErrorResponse> response = handler.handleCyclesException(
+                CyclesProtocolException.notFound("x"), bare);
+        assertThat(response.getBody().getTraceId()).isNull();
     }
 
     @Test

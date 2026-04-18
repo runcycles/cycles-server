@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-16 (v0.1.25.13 — hydration cap + enum wire annotations on the sorted `GET /v1/reservations` path; `SORTED_HYDRATE_CAP=2000` guard on the in-memory sort hydration with WARN-on-cap, matches admin plane's v0.1.25.24 pattern; `@JsonValue`/`@JsonCreator fromWire` on `ReservationSortBy` + `SortDirection` to mirror admin's `SortSpec`/`SortDirection` contract),
+**Date:** 2026-04-18 (v0.1.25.14 — trace_id (W3C Trace Context) cross-surface correlation per cycles-protocol revision 2026-04-18; new `TraceContextFilter` extracts `traceparent` or `X-Cycles-Trace-Id` from inbound requests or generates a fresh 128-bit id, echoes `X-Cycles-Trace-Id` on every response, populates `trace_id` on `ErrorResponse` / `Event` / `WebhookDelivery` / `AuditLogEntry`),
+2026-04-16 (v0.1.25.13 — hydration cap + enum wire annotations on the sorted `GET /v1/reservations` path; `SORTED_HYDRATE_CAP=2000` guard on the in-memory sort hydration with WARN-on-cap, matches admin plane's v0.1.25.24 pattern; `@JsonValue`/`@JsonCreator fromWire` on `ReservationSortBy` + `SortDirection` to mirror admin's `SortSpec`/`SortDirection` contract),
 2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
 2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
 2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
@@ -16,6 +17,70 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-18 — v0.1.25.14: trace_id cross-surface correlation (W3C Trace Context)
+
+Implements the `CORRELATION AND TRACING` normative section added to `cycles-protocol-v0.yaml` in spec revision 2026-04-18 (commit `8d65959`). Introduces a third correlation identifier — `trace_id` — that is W3C Trace Context-compatible (OpenTelemetry-native) and links every HTTP request to its `ErrorResponse`, audit-log entry, emitted events, and outbound webhook deliveries under one logical-operation grain.
+
+**Inbound header extraction** (new `TraceContextFilter`, `@Order(0)`, runs before `RequestIdFilter`):
+
+1. `traceparent` header — parsed as W3C Trace Context version 00 (`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`). Must be non-all-zero trace-id and span-id per W3C §3.2.2.3.
+2. `X-Cycles-Trace-Id` header — parsed as flat 32 lowercase hex; must be non-all-zero. Used when `traceparent` is absent or malformed.
+3. Server generates — `SecureRandom` 16 bytes → 32 lowercase hex; re-rolled if all-zero.
+
+Malformed headers are silently ignored (spec: MUST NOT reject). When both valid headers are present and disagree, `traceparent` wins per OpenTelemetry interop precedence.
+
+Inbound trace-flags preservation on outbound webhooks is deferred to the sibling `cycles-server-events` PR — that PR needs to add a `trace_flags` field to the `WebhookDelivery` schema (or accept the v0 default of `01`/sampled on every outbound delivery). Not a wire-compliance gap for this PR: only the outbound webhook `traceparent` is affected, and it's emitted by the events service, not this server.
+
+**Outbound propagation:**
+
+- Every response (2xx/4xx/5xx) echoes `X-Cycles-Trace-Id` header.
+- `ErrorResponse.trace_id` populated across all five exception-handler paths (`CyclesProtocolException`, `MethodArgumentNotValidException`, `ConstraintViolationException`, `HttpMessageNotReadableException`, generic 500).
+- `Event.trace_id` populated for every event emitted via `EventEmitterService.emit(...)` and `emitBalanceEvents(...)` — RESERVATION_DENIED, RESERVATION_COMMIT_OVERAGE, BUDGET_EXHAUSTED, BUDGET_OVER_LIMIT_ENTERED, BUDGET_DEBT_INCURRED, and RESERVATION_EXPIRED.
+- `WebhookDelivery.trace_id` copied from `Event.trace_id` in `EventEmitterRepository.createDelivery` so the events service can lift it into outbound headers without re-parsing the event body.
+- `AuditLogEntry.trace_id` populated on admin-driven releases (`ReservationController.release`).
+- `ReservationExpiryService` mints a fresh trace_id per sweep batch so all reservation.expired events in one sweep correlate to each other. Per spec, `request_id` remains null on sweeper-generated events (no originating HTTP request).
+
+**SLF4J MDC:** filter sets `traceId` key on entry and removes it in `finally` so every log line produced during the request carries the trace_id automatically. Existing `requestId` MDC key behavior unchanged.
+
+**Contract impact:** purely additive. `trace_id` is an OPTIONAL property on `ErrorResponse` (schema preserves `additionalProperties: false` via a declared property). Response header is additive; clients that don't read it are unaffected. Inbound `traceparent` / `X-Cycles-Trace-Id` headers are additive; clients that don't send them are unaffected.
+
+**Admin spec v0.1.25.28 alignment (WebhookDelivery):** also adds the two companion fields defined by governance-admin spec revision 2026-04-18 on the shared `WebhookDelivery` schema:
+
+- `trace_flags` (`^[0-9a-f]{2}$`) — W3C Trace Context trace-flags byte. Preserves the inbound sampling decision when the originating request carried a valid `traceparent`; defaults to `01` (sampled) when the trace was derived from `X-Cycles-Trace-Id` or server-generated.
+- `traceparent_inbound_valid` (boolean) — whether the originating HTTP request presented a valid inbound W3C `traceparent`. Consumed by the `cycles-server-events` sidecar to decide whether to preserve `trace_flags` on the outbound delivery or default to `01`.
+
+Both fields are threaded from the `TraceContextFilter` through an internal `TraceContext` record (`cycles-protocol-service-data/.../data/util/TraceContext.java`), which also collapses the per-request correlation trio (`trace_id` + `trace_flags` + `traceparent_inbound_valid`) into a single positional parameter on `EventEmitterService.emit(...)` and `emitBalanceEvents(...)` — addressing the param-sprawl concern flagged in the simplify review without adding 2 extra positional args.
+
+`Event.java` carries the two companion fields as `@JsonIgnore` transient properties so they travel with the `Event` object through the async emit path without bleeding into the `Event` wire contract (the spec only declares these on `WebhookDelivery`).
+
+**Out of scope (sibling PRs):**
+
+- `cycles-server-events` (separate repo): outbound webhook `X-Cycles-Trace-Id` and `traceparent` headers. Reads `trace_id`, `trace_flags`, and `traceparent_inbound_valid` directly off the `WebhookDelivery` row from Redis. This PR prepares the row fully so the events-service PR is a straight read-and-forward.
+- `cycles-server-admin`: admin-plane `AuditLogEntry.trace_id` surfacing and new `listEvents`/`listAuditLogs` `trace_id`/`request_id` filter query parameters.
+
+**Files changed:**
+
+- **NEW** `cycles-protocol-service-api/src/main/java/io/runcycles/protocol/api/filter/TraceContextFilter.java` — the filter, regex-based traceparent parsing.
+- **NEW** `cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/util/TraceIdGenerator.java` — shared pure-function helper (`SecureRandom` → 32-hex with all-zero re-roll) used by the filter fallback path and by `ReservationExpiryService`.
+- **NEW** `cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/util/TraceContext.java` — record bundling `trace_id` + `trace_flags` + `traceparent_inbound_valid`; threaded through `EventEmitterService.emit(...)` as a single positional param instead of three parallel Strings/Booleans.
+- `cycles-protocol-service-model/src/main/java/io/runcycles/protocol/model/ErrorResponse.java` — `trace_id` field.
+- `cycles-protocol-service-model/src/main/java/io/runcycles/protocol/model/event/Event.java` — `trace_id` field.
+- `cycles-protocol-service-model/src/main/java/io/runcycles/protocol/model/webhook/WebhookDelivery.java` — `trace_id` + `trace_flags` + `traceparent_inbound_valid` fields (admin spec v0.1.25.28).
+- `cycles-protocol-service-model/src/main/java/io/runcycles/protocol/model/audit/AuditLogEntry.java` — `trace_id` field.
+- `cycles-protocol-service-api/src/main/java/io/runcycles/protocol/api/controller/BaseController.java` — new `resolveRequestId` + `resolveTraceId` helpers.
+- `cycles-protocol-service-api/src/main/java/io/runcycles/protocol/api/controller/{ReservationController,DecisionController,EventController}.java` — pass `resolveRequestId(httpRequest)` and `resolveTraceId(httpRequest)` into every event-emission call site.
+- `cycles-protocol-service-api/src/main/java/io/runcycles/protocol/api/exception/GlobalExceptionHandler.java` — populate `trace_id` on every `ErrorResponse.builder()` across all five `@ExceptionHandler` paths.
+- `cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/service/EventEmitterService.java` — `traceId` parameter appended to `emit(...)` and the full `emitBalanceEvents(...)` signature; three prior `emitBalanceEvents(...)` overloads retained as delegating wrappers for source compatibility.
+- `cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/service/ReservationExpiryService.java` — batch-scope `TraceIdGenerator.generate()` per sweep, threaded into `emitExpiredEvent`.
+- `cycles-protocol-service-data/src/main/java/io/runcycles/protocol/data/repository/EventEmitterRepository.java` — `createDelivery` copies `event.getTraceId()` onto the `WebhookDelivery`.
+
+**Tests:**
+
+- **NEW** `TraceContextFilterTest` (13 cases) — traceparent valid/malformed/all-zero, X-Cycles-Trace-Id valid/malformed/all-zero/uppercase, both-present disagreement, fallthrough generation, response header echo, request attribute set, `currentTraceId(null)` handling, non-v00 version rejection, trace-flags=00 round-trip.
+- `GlobalExceptionHandlerTest` — `trace_id` assertions across all five handler paths; null-trace when filter didn't run.
 
 ---
 

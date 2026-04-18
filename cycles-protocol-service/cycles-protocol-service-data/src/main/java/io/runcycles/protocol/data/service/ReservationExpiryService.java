@@ -1,6 +1,8 @@
 package io.runcycles.protocol.data.service;
 
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
+import io.runcycles.protocol.data.util.TraceContext;
+import io.runcycles.protocol.data.util.TraceIdGenerator;
 import io.runcycles.protocol.model.event.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,6 +56,12 @@ public class ReservationExpiryService {
 
             LOG.debug("Expiry sweep: {} candidate(s)", candidates.size());
 
+            // One TraceContext per sweep batch correlates all reservation.expired
+            // events from the same sweep. Sweepers have no originating HTTP
+            // request, so request_id stays null (spec permits) and the
+            // trace context defaults to not-inbound-W3C with trace-flags=01.
+            TraceContext batchTrace = TraceContext.generated(TraceIdGenerator.generate());
+
             for (String reservationId : candidates) {
                 try {
                     // expire.lua now uses Redis TIME internally for consistent time-source
@@ -61,7 +69,7 @@ public class ReservationExpiryService {
                     Object result = luaScripts.eval(jedis, "expire", expireScript, reservationId);
                     LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
                     // Emit reservation.expired event if the Lua script actually expired this reservation
-                    emitExpiredEvent(jedis, reservationId, result);
+                    emitExpiredEvent(jedis, reservationId, result, batchTrace);
                 } catch (Exception e) {
                     LOG.warn("Failed to expire reservation: {}", reservationId, e);
                 }
@@ -71,7 +79,7 @@ public class ReservationExpiryService {
         }
     }
 
-    private void emitExpiredEvent(Jedis jedis, String reservationId, Object luaResult) {
+    private void emitExpiredEvent(Jedis jedis, String reservationId, Object luaResult, TraceContext trace) {
         try {
             // Only emit if the Lua script actually expired this reservation (status == "EXPIRED")
             String resultStr = luaResult != null ? luaResult.toString() : "";
@@ -114,7 +122,7 @@ public class ReservationExpiryService {
                             .ttlMs(ttlMs)
                             .extensionsUsed(extensionCount)
                             .build(),
-                    null, null);
+                    null, null, trace);
         } catch (Exception e) {
             LOG.debug("Failed to emit reservation.expired event for {}: {}", reservationId, e.getMessage());
         }

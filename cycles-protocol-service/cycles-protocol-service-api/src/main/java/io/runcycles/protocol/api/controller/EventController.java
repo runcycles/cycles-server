@@ -49,7 +49,9 @@ public class EventController extends BaseController {
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
                     null, policy, response.getScopeDebtIncurred(),
                     response.getPreRemaining(), response.getPreIsOverLimit(),
-                    null, null);
+                    null,
+                    resolveRequestId(httpRequest),
+                    resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }

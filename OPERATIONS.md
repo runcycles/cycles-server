@@ -15,7 +15,8 @@ section of [`README.md`](README.md) first.
 3. [SLO definitions](#slo-definitions)
 4. [Dashboards](#dashboards)
 5. [Incident playbook](#incident-playbook)
-6. [Configuration tuning](#configuration-tuning)
+6. [Correlation and tracing](#correlation-and-tracing)
+7. [Configuration tuning](#configuration-tuning)
 
 ---
 
@@ -348,6 +349,55 @@ reservations. Either:
    ```
 4. `metadata.reason` is the free-text justification the admin supplied
    (CR/LF-stripped at write time).
+
+---
+
+## Correlation and tracing
+
+Every response carries two correlation identifiers (v0.1.25.14+):
+
+| Header | Shape | Grain |
+|---|---|---|
+| `X-Request-Id` | UUIDv4 | One HTTP request |
+| `X-Cycles-Trace-Id` | 32 lowercase hex (W3C Trace Context) | One logical operation |
+
+### Client-supplied trace_id
+
+Clients can set the trace_id themselves by sending either:
+
+- `traceparent: 00-{trace_id}-{span_id}-{trace_flags}` — standard W3C Trace Context header (OpenTelemetry-native). Takes precedence.
+- `X-Cycles-Trace-Id: {trace_id}` — flat 32-hex, for clients not using OpenTelemetry.
+
+If both are present and disagree, `traceparent` wins. Malformed values are silently ignored (the server never 400s for a bad correlation header).
+
+### Propagation
+
+The trace_id is attached to:
+
+- The response (`X-Cycles-Trace-Id` header).
+- `ErrorResponse` bodies (`trace_id` field).
+- Emitted events (`trace_id` field in the event body and on the `WebhookDelivery` row).
+- Audit-log entries for admin-driven releases (`trace_id` field in `AuditLogEntry`).
+
+Sweeper-generated events (`reservation.expired`) get a fresh trace_id per sweep batch — they have no originating HTTP request.
+
+### Log correlation
+
+Every log line produced during a request carries both `requestId` and `traceId` MDC keys. Grep a trace_id across all log lines to see everything that happened in one logical operation:
+
+```bash
+grep '4bf92f3577b34da6a3ce929d0e0e4736' server.log
+```
+
+### Webhook correlation
+
+Outbound webhook deliveries (from `cycles-server-events`) carry the same `trace_id` in the `X-Cycles-Trace-Id` and `traceparent` headers, plus the `trace_id` field in the event body. Subscribers can correlate their downstream processing back to the originating Cycles request. This server persists three correlation fields on the `WebhookDelivery` Redis row so the events sidecar can lift them straight into the outbound HTTP request:
+
+- `trace_id` — the trace identifier.
+- `trace_flags` — the W3C trace-flags byte. When an inbound request carried a valid `traceparent`, this is the inbound byte (preserves sampling decision); otherwise `01`.
+- `traceparent_inbound_valid` — boolean. Tells the sidecar whether to preserve the above `trace_flags` (`true`) or default to `01` (`false`).
+
+Wire-up of the outbound HTTP headers themselves happens in the `cycles-server-events` repo.
 
 ---
 
