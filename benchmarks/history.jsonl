@@ -5,3 +5,5 @@
 
 {"timestamp": "2026-04-18T07:53:59Z", "commit": "c5ffb08", "tag": null, "trials": 3, "reserve_p50_ms": 3.2, "reserve_p99_ms": 7.6, "commit_p50_ms": 2.2, "commit_p99_ms": 5.8, "release_p50_ms": 2.9, "event_p50_ms": 2.8, "concurrent_throughput_32t": 538.8}
 
+{"timestamp": "2026-04-18T23:40:47Z", "commit": "f5a5773", "tag": "v0.1.25.15", "trials": 3, "reserve_p50_ms": 3.3, "reserve_p99_ms": 7.8, "commit_p50_ms": 2.3, "commit_p99_ms": 5.8, "release_p50_ms": 2.8, "event_p50_ms": 2.7, "concurrent_throughput_32t": 547.6}
+
