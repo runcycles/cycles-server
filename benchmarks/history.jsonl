@@ -3,3 +3,5 @@
 
 {"timestamp": "2026-04-17T08:21:32Z", "commit": "c5ffb08", "tag": null, "trials": 3, "reserve_p50_ms": 3.6, "reserve_p99_ms": 9.0, "commit_p50_ms": 2.5, "commit_p99_ms": 6.2, "release_p50_ms": 3.6, "event_p50_ms": 3.3, "concurrent_throughput_32t": 538.2}
 
+{"timestamp": "2026-04-18T07:53:59Z", "commit": "c5ffb08", "tag": null, "trials": 3, "reserve_p50_ms": 3.2, "reserve_p99_ms": 7.6, "commit_p50_ms": 2.2, "commit_p99_ms": 5.8, "release_p50_ms": 2.9, "event_p50_ms": 2.8, "concurrent_throughput_32t": 538.8}
+
