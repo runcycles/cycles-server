@@ -2,6 +2,7 @@ package io.runcycles.protocol.data.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.repository.EventEmitterRepository;
+import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.model.Balance;
 import io.runcycles.protocol.model.event.*;
 import org.slf4j.Logger;
@@ -52,6 +53,12 @@ public class EventEmitterService implements DisposableBean {
 
     public void emit(EventType type, String tenantId, String scope, Actor actor,
                      Object eventData, String correlationId, String requestId) {
+        emit(type, tenantId, scope, actor, eventData, correlationId, requestId, TraceContext.EMPTY);
+    }
+
+    public void emit(EventType type, String tenantId, String scope, Actor actor,
+                     Object eventData, String correlationId, String requestId, TraceContext trace) {
+        TraceContext traceNonNull = trace != null ? trace : TraceContext.EMPTY;
         CompletableFuture.runAsync(() -> {
             try {
                 Map<String, Object> data = eventData != null
@@ -67,6 +74,9 @@ public class EventEmitterService implements DisposableBean {
                         .data(data)
                         .correlationId(correlationId)
                         .requestId(requestId)
+                        .traceId(traceNonNull.traceId())
+                        .traceFlags(traceNonNull.traceFlags())
+                        .traceparentInboundValid(traceNonNull.traceparentInboundValid())
                         .build();
                 repository.emit(event);
             } catch (Exception e) {
@@ -87,7 +97,7 @@ public class EventEmitterService implements DisposableBean {
     public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
                                   String correlationId, String requestId) {
         emitBalanceEvents(balances, tenantId, actor, null, null, null,
-                null, null, correlationId, requestId);
+                null, null, correlationId, requestId, TraceContext.EMPTY);
     }
 
     /**
@@ -98,7 +108,20 @@ public class EventEmitterService implements DisposableBean {
                                   Map<String, Long> scopeDebtIncurred,
                                   String correlationId, String requestId) {
         emitBalanceEvents(balances, tenantId, actor, reservationId, overagePolicy, scopeDebtIncurred,
-                null, null, correlationId, requestId);
+                null, null, correlationId, requestId, TraceContext.EMPTY);
+    }
+
+    /**
+     * Overload with pre-mutation state maps; trace context defaults to empty (deprecated path).
+     */
+    public void emitBalanceEvents(List<Balance> balances, String tenantId, Actor actor,
+                                  String reservationId, String overagePolicy,
+                                  Map<String, Long> scopeDebtIncurred,
+                                  Map<String, Long> preRemaining,
+                                  Map<String, Boolean> preIsOverLimit,
+                                  String correlationId, String requestId) {
+        emitBalanceEvents(balances, tenantId, actor, reservationId, overagePolicy, scopeDebtIncurred,
+                preRemaining, preIsOverLimit, correlationId, requestId, TraceContext.EMPTY);
     }
 
     /**
@@ -111,7 +134,7 @@ public class EventEmitterService implements DisposableBean {
                                   Map<String, Long> scopeDebtIncurred,
                                   Map<String, Long> preRemaining,
                                   Map<String, Boolean> preIsOverLimit,
-                                  String correlationId, String requestId) {
+                                  String correlationId, String requestId, TraceContext trace) {
         Map<String, Long> debtMap = scopeDebtIncurred != null ? scopeDebtIncurred : Collections.emptyMap();
         Map<String, Long> preRem = preRemaining != null ? preRemaining : Collections.emptyMap();
         Map<String, Boolean> preOvl = preIsOverLimit != null ? preIsOverLimit : Collections.emptyMap();
@@ -146,7 +169,7 @@ public class EventEmitterService implements DisposableBean {
                                 .reserved(reserved)
                                 .direction("rising")
                                 .build(),
-                        correlationId, requestId);
+                        correlationId, requestId, trace);
             }
             // budget.over_limit_entered — transition: pre=false && post=true
             if (Boolean.TRUE.equals(b.getIsOverLimit()) && !preOverLimitVal) {
@@ -164,7 +187,7 @@ public class EventEmitterService implements DisposableBean {
                                 .isOverLimit(true)
                                 .debtUtilization(debtUtilization)
                                 .build(),
-                        correlationId, requestId);
+                        correlationId, requestId, trace);
             }
             // budget.debt_incurred — only when new debt was created in this operation
             Long perScopeDebt = debtMap.get(scopePath);
@@ -182,7 +205,7 @@ public class EventEmitterService implements DisposableBean {
                                 .overdraftLimit(odLimit)
                                 .overagePolicy(overagePolicy)
                                 .build(),
-                        correlationId, requestId);
+                        correlationId, requestId, trace);
             }
         }
     }

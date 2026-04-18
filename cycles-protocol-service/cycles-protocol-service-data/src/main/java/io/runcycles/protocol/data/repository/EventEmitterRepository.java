@@ -151,6 +151,9 @@ public class EventEmitterRepository {
                 .status(DeliveryStatus.PENDING)
                 .attemptedAt(Instant.now())
                 .attempts(0)
+                .traceId(event.getTraceId())
+                .traceFlags(event.getTraceFlags())
+                .traceparentInboundValid(event.getTraceparentInboundValid())
                 .build();
         String json = objectMapper.writeValueAsString(delivery);
         String deliveryKey = "delivery:" + deliveryId;

@@ -88,13 +88,17 @@ public class ReservationController extends BaseController{
                                 .action(actionMap)
                                 .subject(subjectMap)
                                 .build(),
-                        null, null);
+                        null,
+                        resolveRequestId(httpRequest),
+                        resolveTraceContext(httpRequest));
             }
             // Emit budget state events from post-operation balances (transition-based)
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
                     null, null, null,
                     response.getPreRemaining(), response.getPreIsOverLimit(),
-                    null, null);
+                    null,
+                    resolveRequestId(httpRequest),
+                    resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
@@ -143,14 +147,18 @@ public class ReservationController extends BaseController{
                                 .debtIncurred(response.getDebtIncurred() != null
                                         ? response.getDebtIncurred() : 0L)
                                 .build(),
-                        null, null);
+                        null,
+                        resolveRequestId(httpRequest),
+                        resolveTraceContext(httpRequest));
             }
             // Emit budget state events from post-operation balances (transition-based)
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
                     reservationId, response.getOveragePolicy(),
                     response.getScopeDebtIncurred(),
                     response.getPreRemaining(), response.getPreIsOverLimit(),
-                    null, null);
+                    null,
+                    resolveRequestId(httpRequest),
+                    resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
@@ -197,11 +205,8 @@ public class ReservationController extends BaseController{
                 .status(200)
                 .sourceIp(httpRequest != null ? httpRequest.getRemoteAddr() : null)
                 .userAgent(httpRequest != null ? httpRequest.getHeader("User-Agent") : null)
-                .requestId(httpRequest != null && httpRequest.getAttribute(
-                    io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE) != null
-                    ? httpRequest.getAttribute(
-                        io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString()
-                    : null)
+                .requestId(resolveRequestId(httpRequest))
+                .traceId(resolveTraceId(httpRequest))
                 .metadata(java.util.Map.of(
                     "actor_type", "admin_on_behalf_of",
                     "reason", safeReason != null ? safeReason : ""))

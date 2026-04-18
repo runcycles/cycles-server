@@ -227,13 +227,14 @@ For operations by resource ID (e.g. `GET /v1/reservations/{id}`), the server fir
 
 | Order | Filter | Responsibility |
 |---|---|---|
+| 0 | `TraceContextFilter` | Extracts `traceparent` / `X-Cycles-Trace-Id` (or generates) → request attribute, MDC, `X-Cycles-Trace-Id` response header |
 | 1 | `RequestIdFilter` | Generates `X-Request-Id` UUID, stored as request attribute and response header |
 | 2 | `RateLimitHeaderFilter` | Adds `X-RateLimit-Remaining` / `X-RateLimit-Reset` headers (sentinel values in v0) |
 | 3 | `ApiKeyAuthenticationFilter` | Validates key, populates `SecurityContext`, sets `X-Cycles-Tenant` header |
 
 Public paths (Swagger UI, actuator health, etc.) bypass authentication.
 
-All responses include an `X-Request-Id` header. All timestamps are Unix milliseconds (int64).
+All responses include `X-Request-Id` and `X-Cycles-Trace-Id` headers. All timestamps are Unix milliseconds (int64). `trace_id` is W3C Trace Context-compatible (32 lowercase hex); clients may pre-supply it via `traceparent` (OpenTelemetry-native) or `X-Cycles-Trace-Id`. See `OPERATIONS.md` → "Correlation and tracing" for the full contract.
 
 ---
 
@@ -688,6 +689,7 @@ cycles-protocol-service/
         │   ├── ApiKeyAuthentication.java        # SecurityContext token
         │   └── SecurityConfig.java              # Spring Security config
         ├── filter/
+        │   ├── TraceContextFilter.java          # X-Cycles-Trace-Id / traceparent extraction
         │   ├── RequestIdFilter.java             # X-Request-Id generation
         │   └── RateLimitHeaderFilter.java       # rate limit headers (stub)
         └── exception/GlobalExceptionHandler.java

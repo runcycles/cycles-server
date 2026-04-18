@@ -46,6 +46,7 @@ public class AuditLogEntry {
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("resource_type") private String resourceType;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("resource_id") private String resourceId;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("request_id") private String requestId;
+    @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("trace_id") private String traceId;
     @JsonProperty("status") private Integer status;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("error_code") private String errorCode;
     @JsonInclude(JsonInclude.Include.NON_NULL) @JsonProperty("metadata") private Map<String, Object> metadata;

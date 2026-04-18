@@ -1,5 +1,6 @@
 package io.runcycles.protocol.model.event;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
@@ -53,6 +54,22 @@ public class Event {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     @JsonProperty("request_id")
     private String requestId;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty("trace_id")
+    private String traceId;
+
+    /**
+     * Transient — not part of the wire Event. Travels with the object through the
+     * async emit path so {@code EventEmitterRepository.createDelivery} can copy it
+     * onto the {@code WebhookDelivery} row (admin spec v0.1.25.28).
+     */
+    @JsonIgnore
+    private String traceFlags;
+
+    /** Transient — see {@link #traceFlags}. */
+    @JsonIgnore
+    private Boolean traceparentInboundValid;
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     @JsonProperty("metadata")
