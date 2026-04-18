@@ -414,6 +414,8 @@ don't fit.
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
 | `cycles.tenant-config.cache-ttl-ms` | `60000` | Lower if admin tenant config changes need to take effect faster than 60s. |
 | `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+). Leave empty to disable. |
+| `audit.retention.days` | `400` | Retention for runtime-written audit rows (v0.1.25.15+). Default matches admin's `audit.retention.authenticated.days` — SOC2 Type II 12-month lookback + 1-month auditor-lag buffer. Set `0` for indefinite retention (legal hold, archive-store deployments). |
+| `audit.sweep.cron` | `0 0 3 * * *` | Daily cron for pruning stale ZSET index pointers (v0.1.25.15+). Lower cadence if audit write volume is very high; leave as-is otherwise. Skipped when `audit.retention.days=0`. |
 | `management.endpoints.web.exposure.include` | `health,info,prometheus` | Add more actuator endpoints if you need them, but `prometheus` is the one ops cares about. |
 
 ## Reservation list sorting (v0.1.25.12+)

@@ -14,6 +14,39 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.15] — 2026-04-18
+
+### Fixed
+
+- Runtime-written audit-log entries now respect a configurable retention
+  TTL (default 400 days). Previously, `AuditRepository.log()` wrote
+  `audit:log:{id}` keys with no `EXPIRE`, so runtime-written rows
+  persisted indefinitely until Redis eviction — silently failing to
+  participate in the 400-day retention tier the admin plane applies to
+  authenticated audit rows. Matches the authenticated-tier default on
+  `cycles-server-admin`'s `AuditRepository` (admin's
+  `audit.retention.authenticated.days=400`). Runtime never writes the
+  admin-plane `__admin__` / `__unauth__` sentinels, so a single tier
+  is sufficient.
+
+### Added
+
+- `audit.retention.days` config (default `400`, env `AUDIT_RETENTION_DAYS`).
+  Set to `0` for indefinite retention (legal hold, HIPAA-adjacent
+  deployments, or environments that offload audit to an archive store).
+- `audit.sweep.cron` config (default `0 0 3 * * *`, env `AUDIT_SWEEP_CRON`).
+  Daily `@Scheduled` sweep prunes stale `audit:logs:{tenantId}` and
+  `audit:logs:_all` ZSET pointers whose target `audit:log:{id}` key has
+  TTL-expired. Self-contained — does not depend on admin's sweep running
+  against the same Redis. Safe to run in parallel with admin's sweep
+  (idempotent `ZREMRANGEBYSCORE`).
+
+### Internal
+
+- `AuditRepository.LOG_AUDIT_LUA` now reads ARGV[4] as an optional TTL
+  in seconds (`0` or negative = no `EX`). Same shape as admin's script,
+  minus the sentinel branching.
+
 ## [0.1.25.14] — 2026-04-18
 
 ### Added

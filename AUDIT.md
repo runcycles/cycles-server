@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-18 (v0.1.25.14 — trace_id (W3C Trace Context) cross-surface correlation per cycles-protocol revision 2026-04-18; new `TraceContextFilter` extracts `traceparent` or `X-Cycles-Trace-Id` from inbound requests or generates a fresh 128-bit id, echoes `X-Cycles-Trace-Id` on every response, populates `trace_id` on `ErrorResponse` / `Event` / `WebhookDelivery` / `AuditLogEntry`),
+**Date:** 2026-04-18 (v0.1.25.15 — runtime audit-log retention TTL fix; `AuditRepository` now writes `audit:log:{id}` keys with `EX ttl` via the same Lua shape admin uses, configurable via `audit.retention.days` (default 400d), daily `@Scheduled` sweep prunes stale ZSET index pointers; closes a gap where runtime-written rows persisted indefinitely and did not participate in admin's authenticated-tier retention),
+2026-04-18 (v0.1.25.14 — trace_id (W3C Trace Context) cross-surface correlation per cycles-protocol revision 2026-04-18; new `TraceContextFilter` extracts `traceparent` or `X-Cycles-Trace-Id` from inbound requests or generates a fresh 128-bit id, echoes `X-Cycles-Trace-Id` on every response, populates `trace_id` on `ErrorResponse` / `Event` / `WebhookDelivery` / `AuditLogEntry`),
 2026-04-16 (v0.1.25.13 — hydration cap + enum wire annotations on the sorted `GET /v1/reservations` path; `SORTED_HYDRATE_CAP=2000` guard on the in-memory sort hydration with WARN-on-cap, matches admin plane's v0.1.25.24 pattern; `@JsonValue`/`@JsonCreator fromWire` on `ReservationSortBy` + `SortDirection` to mirror admin's `SortSpec`/`SortDirection` contract),
 2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
 2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
@@ -17,6 +18,31 @@
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+
+---
+
+### 2026-04-18 — v0.1.25.15: audit-log retention TTL (runtime-side fix)
+
+Closes a gap surfaced by the post-v0.1.25.14 alignment audit: runtime's `AuditRepository.log()` was writing `audit:log:{id}` string keys with no `EX`, so runtime-written audit rows persisted indefinitely until Redis memory-eviction kicked in. This broke the 400-day retention story the admin plane tells operators — admin's `AuditRepository` already applies tiered TTL (400d authenticated / 30d unauthenticated) via a conditional Lua `SET … EX ttl`, but runtime-written rows were silently non-compliant with that contract. The audit dashboard reads from the shared index, so stale admin ZSETs would also accumulate pointers to long-expired runtime rows without a compensating sweep.
+
+**Root cause:** the original v0.1.25.8 introduction of runtime-side audit writes copied admin's Lua shape from *before* admin added per-entry TTL in its v0.1.25.20. Admin's TTL work never back-propagated to runtime — not a regression, just an unnoticed drift.
+
+**Scope decision — runtime-side fix over admin-side reconciliation:** the writer should own retention, not a downstream sweeper. Admin-side reconciliation would have required a reaper polling for TTL-less keys — heavier, fights the symptom, couples admin's cleanup cadence to runtime's write rate. Runtime-side adds ~100 LOC (Lua arg + config + sweeper mirror) with zero API surface change.
+
+**Scope decision — single tier instead of admin's two tiers:** runtime only writes real-tenant audit rows. The `__admin__` (platform-plane) and `__unauth__` (pre-auth failure) sentinels are admin-plane concerns — runtime authenticates every request before the audit write, and runtime-plane operations like reservation release are always tenant-attributed. So one `audit.retention.days` knob (default 400 to match admin's authenticated tier) is sufficient. If a future runtime endpoint ever needs the 30-day short-tier behavior, this config can be extended without wire change.
+
+**Lua change:** `LOG_AUDIT_LUA` now reads `ARGV[4]` as an optional TTL in seconds; conditional branch matches admin's script byte-for-byte (minus the sentinel logic). Atomic guarantee preserved — SET + 2×ZADD still run in one call, so the TTL addition cannot introduce orphaned index pointers on a mid-write crash.
+
+**Sweeper:** mirrors admin's `sweepStaleIndexEntries()` — daily @Scheduled cron (default `0 0 3 * * *`), `ZREMRANGEBYSCORE` on `audit:logs:_all` plus SCAN over per-tenant indexes. Runtime deploys a sweeper of its own (rather than depending on admin's sweep hitting the shared Redis) so a runtime-only topology stays self-healing. Two sweepers scanning the same index is idempotent — `ZREMRANGEBYSCORE` on already-swept ranges is a no-op.
+
+**Config:**
+
+- `audit.retention.days` (env `AUDIT_RETENTION_DAYS`) — default `400`. `0` = indefinite retention; the sweeper is skipped explicitly in that mode (matching admin's `authenticatedRetentionDays=0` behavior).
+- `audit.sweep.cron` (env `AUDIT_SWEEP_CRON`) — default `0 0 3 * * *` (03:00 server time).
+
+**Backward compatibility:** new writes get TTL; old runtime-written keys stay un-TTL'd until Redis memory pressure evicts them. No API change, no wire change, no admin-side reconciliation needed — admin's reader doesn't care whether the target key has a TTL, it only cares that a value is present or not (and already null-body-tolerant for TTL-expired pointers).
+
+**Tests:** 7-case `AuditRepositoryTest` covering: (1) TTL passed as ARGV[4] = 400×86400, (2) `retentionDays=0` passes `"0"`, (3) `logId` + timestamp set on the entry, (4) Redis failure is non-fatal, (5) sweeper removes global and per-tenant pointers, (6) sweeper is a no-op when retention is 0, (7) sweep Redis failure is non-fatal. All green; full data module still 365 / 365; full api module still 152 / 152.
 
 ---
 
