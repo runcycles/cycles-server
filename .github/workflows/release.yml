@@ -159,6 +159,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # for Trivy SARIF upload to Security tab
     outputs:
       version: ${{ steps.version.outputs.version }}
 
@@ -183,7 +184,39 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push
+      # Two-phase build: load image locally for Trivy first, then push only
+      # if scan passes. Second build-push-action call is a cache hit (~5-10s
+      # rebuild + push) thanks to type=gha cache from the first call.
+      - name: Build image (no push, load for scan)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ghcr.io/runcycles/cycles-server:${{ steps.version.outputs.version }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ghcr.io/runcycles/cycles-server:${{ steps.version.outputs.version }}
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: trivy-container
+
+      - name: Push image (cache hit from first build)
         uses: docker/build-push-action@v7
         with:
           context: .
