@@ -1,0 +1,64 @@
+name: PR Container Scan
+
+# Runs Trivy against a locally-built image on PRs that change the Dockerfile
+# or Maven dependencies. Paths filter is deliberate: most PRs don't touch the
+# image, and running this on every PR would add ~5-10 min of build time for
+# no benefit. When the filter fires, we catch base-image / added-dependency
+# CVEs before merge rather than discovering them at release-cut time.
+#
+# Never pushes — this is PR-time feedback only. release.yml continues to run
+# the authoritative scan at release publish time (with the real version tag).
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '**/Dockerfile'
+      - 'pom.xml'
+      - '**/pom.xml'
+      - '.github/workflows/pr-container-scan.yml'
+
+permissions:
+  contents: read
+  security-events: write   # for Trivy SARIF upload to Security tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (load for scan, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ghcr.io/runcycles/cycles-server:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            APP_VERSION=pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ghcr.io/runcycles/cycles-server:pr-${{ github.event.pull_request.number }}
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: trivy-container-pr
