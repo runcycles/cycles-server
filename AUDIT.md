@@ -1,6 +1,7 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-04-18 (v0.1.25.15 — runtime audit-log retention TTL fix; `AuditRepository` now writes `audit:log:{id}` keys with `EX ttl` via the same Lua shape admin uses, configurable via `audit.retention.days` (default 400d), daily `@Scheduled` sweep prunes stale ZSET index pointers; closes a gap where runtime-written rows persisted indefinitely and did not participate in admin's authenticated-tier retention),
+**Date:** 2026-04-19 (v0.1.25.16 — supply-chain CVE fix; bump `spring-boot-starter-parent` 3.5.11 → 3.5.13 and pin `tomcat.version=10.1.54` to close 5 HIGH/CRITICAL CVEs flagged by the new PR-time Trivy scan — CVE-2026-22732 CRITICAL on `spring-security-web` (fixed 6.5.9, pulled in transitively by 3.5.13), CVE-2026-29129 HIGH + CVE-2026-29145 CRITICAL on `tomcat-embed-core` (fixed 10.1.53, transitive), CVE-2026-34483 HIGH + CVE-2026-34487 HIGH on `tomcat-embed-core` (fixed 10.1.54, explicit property override since Spring Boot 3.5.14 with 10.1.54+ as managed version hasn't shipped yet); no code changes, all 152 tests pass),
+2026-04-18 (v0.1.25.15 — runtime audit-log retention TTL fix; `AuditRepository` now writes `audit:log:{id}` keys with `EX ttl` via the same Lua shape admin uses, configurable via `audit.retention.days` (default 400d), daily `@Scheduled` sweep prunes stale ZSET index pointers; closes a gap where runtime-written rows persisted indefinitely and did not participate in admin's authenticated-tier retention),
 2026-04-18 (v0.1.25.14 — trace_id (W3C Trace Context) cross-surface correlation per cycles-protocol revision 2026-04-18; new `TraceContextFilter` extracts `traceparent` or `X-Cycles-Trace-Id` from inbound requests or generates a fresh 128-bit id, echoes `X-Cycles-Trace-Id` on every response, populates `trace_id` on `ErrorResponse` / `Event` / `WebhookDelivery` / `AuditLogEntry`),
 2026-04-16 (v0.1.25.13 — hydration cap + enum wire annotations on the sorted `GET /v1/reservations` path; `SORTED_HYDRATE_CAP=2000` guard on the in-memory sort hydration with WARN-on-cap, matches admin plane's v0.1.25.24 pattern; `@JsonValue`/`@JsonCreator fromWire` on `ReservationSortBy` + `SortDirection` to mirror admin's `SortSpec`/`SortDirection` contract),
 2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
@@ -17,7 +18,7 @@
 2026-04-12 (spec contract validation added),
 2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
-**Server:** Spring Boot 3.5.11 / Java 21 / Redis (Lua scripts)
+**Server:** Spring Boot 3.5.13 / Java 21 / Redis (Lua scripts) · Tomcat 10.1.54 pin
 
 ---
 
