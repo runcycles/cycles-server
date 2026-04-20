@@ -4,6 +4,14 @@ updates:
     directory: "/cycles-protocol-service"
     schedule:
       interval: "weekly"
+    ignore:
+      # Spring Boot 4.x requires JDK 25 + Jakarta EE 11 + config-property changes.
+      # Defer until a planned migration; remove this entry when ready.
+      - dependency-name: "org.springframework.boot:spring-boot-starter-parent"
+        versions: ["4.x"]
+      # springdoc 3.x targets Spring Boot 4 — pair with the migration above.
+      - dependency-name: "org.springdoc:springdoc-openapi-starter-webmvc-ui"
+        versions: ["3.x"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
