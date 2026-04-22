@@ -14,6 +14,47 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.17] — 2026-04-22
+
+### Fixed (security)
+
+- Pin `commons-lang3.version=3.18.0` in `cycles-protocol-service/pom.xml`
+  to close **CVE-2025-48924** (Trivy HIGH) on `commons-lang3-3.17.0`,
+  which ships transitively in the fat-jar image via
+  `swagger-core-jakarta` (OpenAPI UI). Spring Boot 3.5.13's BOM manages
+  `commons-lang3` at `3.17.0`; the override is removable once Spring
+  Boot ships a managed version of `3.18.0+`.
+
+### Notes
+
+- No code, API, or Lua-script changes. All 152 tests pass. Wire format
+  unchanged from `v0.1.25.15`.
+
+## [0.1.25.16] — 2026-04-19
+
+Pom-version-only bump — no standalone GitHub release was cut for this
+version. Its changes ship cumulatively in `v0.1.25.17`.
+
+### Fixed (security)
+
+- Bump `spring-boot-starter-parent` `3.5.11 → 3.5.13` and pin
+  `tomcat.version=10.1.54` to close five HIGH/CRITICAL CVEs surfaced by
+  the new PR-time Trivy container scan:
+  - **CVE-2026-22732 (CRITICAL)** — `spring-security-web`; fixed in
+    `6.5.9`, pulled in transitively by Spring Boot 3.5.13.
+  - **CVE-2026-29129 (HIGH)** and **CVE-2026-29145 (CRITICAL)** —
+    `tomcat-embed-core`; fixed in `10.1.53`, transitive via Spring
+    Boot 3.5.13.
+  - **CVE-2026-34483 (HIGH)** and **CVE-2026-34487 (HIGH)** —
+    `tomcat-embed-core`; fixed in `10.1.54`. The explicit
+    `tomcat.version` property override is needed until Spring Boot
+    3.5.14 (with 10.1.54+ as its managed version) ships.
+
+### Notes
+
+- No code or API changes. All 152 tests pass. Wire format unchanged
+  from `v0.1.25.15`.
+
 ## [0.1.25.15] — 2026-04-18
 
 ### Fixed
