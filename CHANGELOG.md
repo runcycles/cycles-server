@@ -14,6 +14,42 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.18] — 2026-04-26
+
+Dependency hygiene aligning all three Cycles services (events / server /
+admin) on the same Spring Boot patch and Redis client major. No code or
+wire-format changes — pom-only patch.
+
+### Changed
+
+- **Spring Boot 3.5.13 → 3.5.14.** Patch upgrade picking up upstream
+  security hardening (constant-time comparison for remote DevTools
+  secret, `RandomValuePropertySource` switched to `SecureRandom`,
+  hostname verification applied consistently for Cassandra/RabbitMQ
+  SSL) plus symlink-handling fixes in `ApplicationPidFileWriter` /
+  `ApplicationTemp`. Mirrors the events-server bump shipped in
+  `cycles-server-events` v0.1.25.12.
+- **Drop `<tomcat.version>10.1.54</tomcat.version>` override.** Spring
+  Boot 3.5.14's BOM now manages Tomcat 10.1.54 directly (verified
+  against `spring-boot-dependencies-3.5.14.pom`), so the explicit pin
+  added in v0.1.25.16 to close CVE-2026-34483 / CVE-2026-34487 is
+  redundant. Same effective Tomcat version, smaller pom diff for
+  future Spring Boot bumps.
+- **Jedis 7.4.1 → 6.2.0.** Aligns with `cycles-server-events` and
+  `cycles-server-admin` on a single Redis-client major across the
+  fleet, simplifying coordinated dependency upgrades. All call sites
+  use stable APIs (`Jedis`, `JedisPool`, `Pipeline`, `Response`,
+  `ScanParams`, `ScanResult`, `JedisNoScriptException`) — no 7.x-only
+  API in use; all 152 tests pass on 6.2.0.
+
+### Retained
+
+- `<commons-lang3.version>3.18.0</commons-lang3.version>` override
+  stays — Spring Boot 3.5.14's BOM still manages commons-lang3 at
+  3.17.0 (CVE-2025-48924 unfixed there), so the explicit 3.18.0 pin
+  added in v0.1.25.17 is still required. Override comment updated to
+  reference SB 3.5.14.
+
 ## [0.1.25.17] — 2026-04-22
 
 ### Fixed (security)
