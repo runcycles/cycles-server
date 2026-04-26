@@ -4,7 +4,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.13</version>
+        <version>3.5.14</version>
     </parent>
     <groupId>io.runcycles</groupId>
     <artifactId>cycles-protocol-service</artifactId>
@@ -18,16 +18,11 @@
         <module>cycles-protocol-service-api</module>
     </modules>
     <properties>
-        <revision>0.1.25.17</revision>
+        <revision>0.1.25.18</revision>
         <java.version>21</java.version>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
-        <!-- Override Spring Boot 3.5.13's managed tomcat 10.1.53 to pick up
-             CVE-2026-34483 (HIGH) and CVE-2026-34487 (HIGH) fixes which
-             landed in 10.1.54. Remove this override once Spring Boot 3.5.14
-             ships with 10.1.54+ as its managed version. -->
-        <tomcat.version>10.1.54</tomcat.version>
-        <!-- Override Spring Boot 3.5.13's managed commons-lang3 3.17.0 to pick
+        <!-- Override Spring Boot 3.5.14's managed commons-lang3 3.17.0 to pick
              up CVE-2025-48924 (Trivy HIGH) fix in 3.18.0. commons-lang3 enters
              the image transitively via swagger-core-jakarta (OpenAPI UI).
              Remove once Spring Boot ships with 3.18.0+ as its managed version. -->
@@ -38,7 +33,7 @@
             <dependency>
                 <groupId>redis.clients</groupId>
                 <artifactId>jedis</artifactId>
-                <version>7.4.1</version>
+                <version>6.2.0</version>
             </dependency>
             <dependency>
                 <groupId>org.springdoc</groupId>
