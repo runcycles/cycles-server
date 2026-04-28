@@ -15,7 +15,13 @@ jobs:
     uses: runcycles/.github/.github/workflows/ci-java.yml@main
     with:
       pom-file: cycles-protocol-service/pom.xml
-      maven-args: "-Dtest=!*IntegrationTest,!*BenchmarkTest -Dsurefire.failIfNoSpecifiedTests=false"
+      # Fast unit-test signal. JaCoCo is skipped here on purpose — the
+      # integration job below is the authoritative coverage gate, since
+      # it runs unit + integration tests together (via -Pintegration-tests)
+      # and so its JaCoCo check sees code paths reachable only via
+      # integration tests (e.g. DecisionController DENY-path event
+      # emission exercised by DecisionAndEventIntegrationTest).
+      maven-args: "-Dtest=!*IntegrationTest,!*BenchmarkTest -Dsurefire.failIfNoSpecifiedTests=false -Djacoco.skip=true"
 
   integration:
     name: Integration (with contract validation)
