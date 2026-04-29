@@ -8,6 +8,7 @@ import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,10 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -97,5 +102,68 @@ class DecisionControllerTest {
                         .content(decideJson("other-tenant")))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void denyResponse_emitsReservationDeniedEvent() throws Exception {
+        DecisionResponse resp = DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
+                .affectedScopes(List.of("tenant:" + TENANT))
+                .build();
+        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("DENY"))
+                .andExpect(jsonPath("$.reason_code").value("DEBT_OUTSTANDING"));
+
+        verify(eventEmitter, times(1)).emit(
+                eq(EventType.RESERVATION_DENIED),
+                eq(TENANT),
+                eq("tenant:" + TENANT),
+                any(),
+                any(),
+                any(),
+                any(),
+                any());
+    }
+
+    @Test
+    void allowResponse_doesNotEmitDeniedEvent() throws Exception {
+        DecisionResponse resp = DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.ALLOW)
+                .affectedScopes(List.of("tenant:" + TENANT))
+                .build();
+        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isOk());
+
+        verify(eventEmitter, never()).emit(
+                any(EventType.class), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void denyResponse_emitterThrows_swallowedAsNonBlocking() throws Exception {
+        DecisionResponse resp = DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
+                .affectedScopes(List.of("tenant:" + TENANT))
+                .build();
+        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+        doThrow(new RuntimeException("event emit failed")).when(eventEmitter).emit(
+                any(EventType.class), any(), any(), any(), any(), any(), any(), any());
+
+        // Spec: event emission is non-blocking — caller still gets the DENY response.
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("DENY"));
     }
 }
