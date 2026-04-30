@@ -2,9 +2,11 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-95%25+-brightgreen)](https://github.com/runcycles/cycles-server/actions)
 
-# Runcycles Server
+# Cycles Server — Runtime budget and action authority for AI agents
 
-Reference implementation of the [Cycles Budget Authority API](https://github.com/runcycles/cycles-protocol/blob/main/cycles-protocol-v0.yaml) (v0.1.25) — a reservation-based budget control service for AI agents and workflows.
+**Self-hosted server that enforces hard limits on AI agent spend, risk, and tool actions before execution.** Reference implementation of the [Cycles Protocol](https://github.com/runcycles/cycles-protocol) (v0.1.25) — a reservation-based control plane for multi-tenant AI agent runtimes.
+
+Drop-in budget governance for OpenAI, Anthropic, MCP servers, OpenAI Agents SDK, LangChain, and custom agent frameworks. Reserve cost up front, commit on success, release on failure — with concurrency-safe enforcement across thousands of agents and tenants.
 
 ## Quick Start
 
