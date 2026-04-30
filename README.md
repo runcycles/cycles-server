@@ -8,6 +8,21 @@
 
 Drop-in budget governance for OpenAI, Anthropic, MCP servers, OpenAI Agents SDK, LangChain, and custom agent frameworks. Reserve cost up front, commit on success, release on failure — with concurrency-safe enforcement across thousands of agents and tenants.
 
+
+<p align="center">
+  <a href="https://runcycles.io">
+    <img src="https://runcycles.io/demo-runaway.gif" alt="Cycles preventing runaway AI agent spend ($6 in 30s → hard stop at $1)" width="720"/>
+  </a><br/>
+  <em>Cycles enforcing a hard budget cap on a runaway agent loop — see the <a href="https://github.com/runcycles/cycles-runaway-demo">runaway demo</a> for the full walkthrough.</em>
+</p>
+
+<p align="center">
+  <a href="https://runcycles.io">
+    <img src="https://runcycles.io/demo-action-authority.gif" alt="Cycles blocking an unauthorized agent action before it executes" width="720"/>
+  </a><br/>
+  <em>Action authority — Cycles blocking an unauthorized tool call before the side effect lands. <a href="https://github.com/runcycles/cycles-agent-action-authority-demo">Action-authority demo →</a></em>
+</p>
+
 ## Quick Start
 
 ### One-command quickstart (recommended)
