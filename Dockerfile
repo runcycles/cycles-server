@@ -12,6 +12,15 @@ RUN --mount=type=cache,target=/root/.m2/repository \
 # ---- Runtime stage ----
 FROM eclipse-temurin:21-jre-alpine
 
+# Apply latest Alpine security patches over whatever ships in the upstream
+# eclipse-temurin:21-jre-alpine layer. The temurin tag is a moving ref so a
+# fresh build picks up older Alpine patch levels until temurin itself rebuilds;
+# applying `apk upgrade` here closes that window every time we build.
+#
+# Concrete fix on this commit: gnutls 3.8.12-r0 → 3.8.13-r0 (CVE-2026-33845
+# HIGH + 12 bundled gnutls CVEs all resolved by the same package bump).
+RUN apk upgrade --no-cache
+
 ARG APP_VERSION=0.0.0
 
 LABEL org.opencontainers.image.title="cycles-server" \
