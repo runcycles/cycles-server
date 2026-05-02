@@ -2,14 +2,18 @@ name: Dependabot auto-merge
 
 on: pull_request
 
-permissions:
-  contents: write
-  pull-requests: write
+# Default to read-all at top level; the automerge job below escalates only the
+# narrow scopes it actually needs. Per OpenSSF Scorecard's Token-Permissions
+# criterion: avoid blanket write at the workflow level.
+permissions: read-all
 
 jobs:
   automerge:
     runs-on: ubuntu-latest
     if: github.event.pull_request.user.login == 'dependabot[bot]'
+    permissions:
+      contents: write          # required to enable auto-merge
+      pull-requests: write     # required to mark the PR as auto-merge
     steps:
       - name: Fetch Dependabot metadata
         id: meta
