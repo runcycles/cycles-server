@@ -156,6 +156,46 @@ ghcr.io/runcycles/cycles-server:latest
 ghcr.io/runcycles/cycles-server:<version>    # e.g. 0.1.25.14
 ```
 
+## Production deployment & TLS
+
+The Cycles Server listens on HTTP at port 7878 by design — TLS termination is the responsibility of the ingress layer in front of it. The recommended deployment topology:
+
+```
+client → [TLS-terminating reverse proxy] → cycles-server:7878 (HTTP)
+                                              ↓
+                                     redis:6379 (TCP, password-protected)
+```
+
+### TLS termination
+
+Use any TLS-terminating proxy in front of cycles-server. Common choices:
+
+- **nginx** with Let's Encrypt — minimal config, well-documented
+- **Caddy** — automatic Let's Encrypt + HTTP/3
+- **Traefik** — natural fit for Docker / Kubernetes
+- **AWS ALB / GCP Load Balancer / Cloudflare** — managed TLS at the edge
+
+The cycles-server itself doesn't need to know it's behind a proxy. Standard `X-Forwarded-For` / `X-Forwarded-Proto` headers are honored by Spring Boot's defaults.
+
+**Why HTTP at the app layer:** keeps the container minimal (no cert renewal logic in the app), lets ops centralize TLS posture (cipher suites, HSTS, mTLS) at the proxy, and matches how production Spring Boot services are typically deployed.
+
+### Network hardening
+
+| Path | Recommendation |
+|---|---|
+| **Public → reverse proxy** | TLS 1.2+ only, modern cipher suites, HSTS enabled |
+| **Reverse proxy → cycles-server** | Same private network or VPC; not exposed publicly |
+| **cycles-server → Redis** | Same private network; Redis password set via `REDIS_PASSWORD` env var; for highest assurance, also enable Redis TLS (Redis 6+ supports it natively) |
+| **Admin server (port 7979)** | Internal network only — never expose publicly. The admin server is the management plane (tenants, budgets, API keys); compromise here is total. |
+
+### Required environment variables for production
+
+- `REDIS_PASSWORD` — never run Redis without one in production
+- `ADMIN_API_KEY` — the bootstrap admin key for the admin server (32+ random bytes recommended)
+- `WEBHOOK_SECRET_ENCRYPTION_KEY` — encrypts webhook subscriber secrets at rest in Redis (32 bytes, base64)
+
+See [Configuration](#configuration) below for the full env-var matrix.
+
 ## Testing
 
 The test suite is split into four categories, each gated by a surefire tag or Maven profile so PR CI stays fast while heavier suites run on demand or on a schedule.
