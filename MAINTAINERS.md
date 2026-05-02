@@ -13,7 +13,6 @@ The project receives contributions from:
 - [Runcycles](https://github.com/runcycles)
 - [K2NIO](https://github.com/K2NIO)
 - Singleton Labs
-- [Anthropic](https://www.anthropic.com) (via Claude Code automated PRs and Sonnet/Opus-assisted contributions)
 
 ## Responsibilities
 
