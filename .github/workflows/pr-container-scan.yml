@@ -18,14 +18,15 @@ on:
       - '**/pom.xml'
       - '.github/workflows/pr-container-scan.yml'
 
-permissions:
-  contents: read
-  security-events: write   # for Trivy SARIF upload to Security tab
+permissions: read-all
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write   # required for Trivy SARIF upload to Security tab
 
     steps:
       - name: Checkout

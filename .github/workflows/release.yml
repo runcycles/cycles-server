@@ -5,6 +5,12 @@ on:
     types: [published]
   workflow_dispatch:
 
+# Default to read-all at top level; each job below escalates only the narrow
+# scopes it actually needs (contents:write for benchmark history,
+# packages:write + security-events:write for the Docker push + SARIF upload,
+# packages:read for the smoke test pull).
+permissions: read-all
+
 jobs:
   # Performance regression gate. Runs the benchmark profile three times,
   # medians the results, compares against benchmarks/baseline.json. On
