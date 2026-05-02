@@ -11,7 +11,7 @@ This document lists the people responsible for triaging issues, reviewing PRs, a
 The project receives contributions from:
 
 - [Runcycles](https://github.com/runcycles)
-- [K2nio](https://k2n.io)
+- [K2NIO](https://github.com/K2NIO)
 - Singleton Labs
 - [Anthropic](https://www.anthropic.com) (via Claude Code automated PRs and Sonnet/Opus-assisted contributions)
 
