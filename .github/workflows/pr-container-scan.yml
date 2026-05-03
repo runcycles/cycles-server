@@ -55,8 +55,13 @@ jobs:
           tags: ghcr.io/runcycles/cycles-server:scan-${{ github.event.pull_request.number || github.sha }}
           build-args: |
             APP_VERSION=scan-${{ github.event.pull_request.number || github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # no-cache + pull are critical for security scans: cached layers
+          # (especially `apk upgrade`) keep reporting old packages even
+          # after a base-image bump. Witnessed in cycles-dashboard PR #157
+          # / #158 — FROM bump didn't take effect because cached layer
+          # served months-old apk state. Always build fresh for scans.
+          no-cache: true
+          pull: true
 
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
