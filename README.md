@@ -1,6 +1,8 @@
 [![CI](https://github.com/runcycles/cycles-server/actions/workflows/ci.yml/badge.svg)](https://github.com/runcycles/cycles-server/actions)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-95%25+-brightgreen)](https://github.com/runcycles/cycles-server/actions)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/runcycles/cycles-server/badge)](https://scorecard.dev/viewer/?uri=github.com/runcycles/cycles-server)
+[![CII Best Practices](https://www.bestpractices.dev/projects/12734/badge)](https://www.bestpractices.dev/projects/12734)
 
 # Cycles Server — Runtime budget and action authority for AI agents
 
