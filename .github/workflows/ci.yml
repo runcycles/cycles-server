@@ -12,7 +12,7 @@ permissions:
 jobs:
   unit:
     name: Unit & Contract
-    uses: runcycles/.github/.github/workflows/ci-java.yml@main
+    uses: runcycles/.github/.github/workflows/ci-java.yml@v1
     with:
       pom-file: cycles-protocol-service/pom.xml
       # Fast unit-test signal. JaCoCo is skipped here on purpose — the

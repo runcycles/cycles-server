@@ -22,9 +22,16 @@ if [ -z "$PROXY_USER" ] || [ -z "$PROXY_PASS" ]; then
   exit 0
 fi
 
-# Create Maven settings.xml with proxy config
+# Create Maven settings.xml with proxy config — defensively skip if a user-
+# managed settings.xml already exists, so we don't wipe pre-existing mirrors,
+# credentials, or alternate proxy configs. Tracked org-wide at runcycles/.github#62.
 mkdir -p ~/.m2
-cat > ~/.m2/settings.xml << XMLEOF
+if [ -f ~/.m2/settings.xml ]; then
+  echo "[cycles] ~/.m2/settings.xml already exists; not overwriting." >&2
+  echo "[cycles] If Maven proxy access fails, merge the <proxies> block from" >&2
+  echo "[cycles] .claude/session-start-maven-proxy.sh into your existing settings.xml." >&2
+else
+  cat > ~/.m2/settings.xml << XMLEOF
 <settings>
   <proxies>
     <proxy>
@@ -48,6 +55,7 @@ cat > ~/.m2/settings.xml << XMLEOF
   </proxies>
 </settings>
 XMLEOF
+fi
 
 # Install mvn-proxy wrapper that fixes JAVA_TOOL_OPTIONS interference
 MVN_BIN=$(which mvn 2>/dev/null || echo "/opt/maven/bin/mvn")
