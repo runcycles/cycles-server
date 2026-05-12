@@ -57,9 +57,14 @@ else
 XMLEOF
 fi
 
-# Install mvn-proxy wrapper that fixes JAVA_TOOL_OPTIONS interference
-MVN_BIN=$(which mvn 2>/dev/null || echo "/opt/maven/bin/mvn")
-cat > /usr/local/bin/mvn-proxy << WRAPEOF
+# Install mvn-proxy wrapper that fixes JAVA_TOOL_OPTIONS interference.
+# Defensively skip if a user-managed wrapper is already present — same etiquette
+# as the ~/.m2/settings.xml check above. Tracked org-wide at runcycles/.github#62.
+if [ -f /usr/local/bin/mvn-proxy ]; then
+  echo "[cycles] /usr/local/bin/mvn-proxy already exists; not overwriting." >&2
+else
+  MVN_BIN=$(which mvn 2>/dev/null || echo "/opt/maven/bin/mvn")
+  cat > /usr/local/bin/mvn-proxy << WRAPEOF
 #!/bin/bash
 # Maven wrapper that fixes proxy auth for Claude Code remote environments.
 # Use 'mvn-proxy' instead of 'mvn' to avoid DNS resolution and proxy auth issues.
@@ -74,4 +79,5 @@ export MAVEN_OPTS="-Dhttps.proxyHost=\$PROXY_HOST -Dhttps.proxyPort=\$PROXY_PORT
 
 exec ${MVN_BIN} -Daether.connector.basic.threads=1 "\$@"
 WRAPEOF
-chmod +x /usr/local/bin/mvn-proxy
+  chmod +x /usr/local/bin/mvn-proxy
+fi
