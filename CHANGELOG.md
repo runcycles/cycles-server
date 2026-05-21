@@ -14,6 +14,63 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.20] — 2026-05-21
+
+`from` / `to` ISO-8601 time-window filter on `GET /v1/reservations`,
+implementing `cycles-protocol-v0.yaml` revision 2026-05-21 and closing
+[runcycles/cycles-server#159](https://github.com/runcycles/cycles-server/issues/159).
+
+### Added
+
+- **`from` and `to` query parameters on `listReservations`** — both
+  `string` `format: date-time` (ISO 8601), both optional, both
+  inclusive bounds on the reservation's `created_at_ms`. The filter
+  is fixed to `created_at_ms` regardless of `sort_by`, so
+  `sort_by=expires_at_ms&from=…&to=…` returns reservations *created*
+  in the window, ordered by *expiry*. Implemented in both the legacy
+  SCAN-cursor path and the sorted path.
+- **Cursor invalidation on window change.** `FilterHasher.hash(...)`
+  now folds `fromMs` and `toMs` into the canonical hash, so a cursor
+  issued under one `(from, to)` returns HTTP 400 INVALID_REQUEST if
+  re-used under a different window — same contract as `sort_by` /
+  `sort_dir` / subject-filter mismatches (v0.1.25.12).
+
+### Validation
+
+- Malformed `from` or `to` (anything that `Instant.parse` rejects) →
+  HTTP 400 INVALID_REQUEST with message `Invalid from: …` or
+  `Invalid to: …`.
+- `from > to` → HTTP 400 INVALID_REQUEST before any repository call,
+  with message `from must be less than or equal to to`. Equal bounds
+  (closed point window) are valid.
+- Blank-string values for either parameter are treated as unset (no
+  400). Matches the additive-parameter intent: an omitted bound and
+  an empty-string bound both mean "no bound on that side."
+- Defensive: rows whose `created_at` hash field is missing or
+  unparseable are excluded when either bound is supplied. Malformed
+  storage rows cannot leak past a time filter.
+
+### Internal
+
+- `RedisReservationRepository.listReservations(...)` signature gains
+  trailing `Long fromMs, Long toMs` (14 args total). Same shape on the
+  private `listReservationsSorted(...)` helper. Internal Java signature
+  change only — wire format is purely additive, all v0.1.25.x clients
+  that don't send `from`/`to` continue to work byte-for-byte.
+
+### Coverage
+
+- 537 tests across the protocol-service modules pass (374 data + 163
+  api). New tests:
+  - `FilterHasherTest`: from/to inclusion, positional distinctness.
+  - `RedisReservationQueryTest`: 7 new cases covering legacy-path
+    from/to, sorted-path from/to, inclusive-bound semantics,
+    cursor-mismatch-on-window-change, and missing/unparseable
+    `created_at` defensive exclusion.
+  - `ReservationControllerTest`: 7 new cases covering malformed-from,
+    malformed-to, reversed-window, from-only, to-only, equal-bounds,
+    combination with `sort_by=expires_at_ms`, blank-string handling.
+
 ## [0.1.25.19] — 2026-05-21
 
 Supply-chain CVE patch. No code, API, or Lua-script changes — pom-only.

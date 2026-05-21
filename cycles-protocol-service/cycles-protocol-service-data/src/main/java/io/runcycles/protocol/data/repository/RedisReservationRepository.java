@@ -553,7 +553,8 @@ public class RedisReservationRepository {
                                                     String status, String workspace, String app,
                                                     String workflow, String agent, String toolset,
                                                     int limit, String startCursor,
-                                                    String sortBy, String sortDir) {
+                                                    String sortBy, String sortDir,
+                                                    Long fromMs, Long toMs) {
         boolean sortRequested = sortBy != null || sortDir != null;
         Optional<SortedListCursor> parsedCursor = SortedListCursor.decode(startCursor);
 
@@ -562,7 +563,8 @@ public class RedisReservationRepository {
         // expecting the cursor to carry the sort state — we honour that).
         if (sortRequested || parsedCursor.isPresent()) {
             return listReservationsSorted(tenant, idempotencyKey, status, workspace, app,
-                workflow, agent, toolset, limit, parsedCursor.orElse(null), sortBy, sortDir);
+                workflow, agent, toolset, limit, parsedCursor.orElse(null), sortBy, sortDir,
+                fromMs, toMs);
         }
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -602,6 +604,7 @@ public class RedisReservationRepository {
                             if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
                             if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
                             if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
+                            if (!createdAtInWindow(fields, fromMs, toMs)) continue;
 
                             result.add(toSummary(buildReservationSummary(fields)));
 
@@ -640,7 +643,8 @@ public class RedisReservationRepository {
     private ReservationListResponse listReservationsSorted(
             String tenant, String idempotencyKey, String status,
             String workspace, String app, String workflow, String agent, String toolset,
-            int limit, SortedListCursor resumeCursor, String sortBy, String sortDir) {
+            int limit, SortedListCursor resumeCursor, String sortBy, String sortDir,
+            Long fromMs, Long toMs) {
 
         // Normalize for cursor storage + comparator use. Null sort_dir with a non-null
         // sort_by defaults to DESC per spec; null sort_by with a non-null sort_dir defaults
@@ -651,7 +655,7 @@ public class RedisReservationRepository {
             : (resumeCursor != null ? resumeCursor.getSortDir() : "desc");
 
         String filterHash = FilterHasher.hash(tenant, idempotencyKey, status,
-            workspace, app, workflow, agent, toolset);
+            workspace, app, workflow, agent, toolset, fromMs, toMs);
 
         // Spec: cursor is valid only for the same (sort_by, sort_dir, filters) tuple.
         if (resumeCursor != null) {
@@ -702,6 +706,7 @@ public class RedisReservationRepository {
                             if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
                             if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
                             if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
+                            if (!createdAtInWindow(fields, fromMs, toMs)) continue;
 
                             matching.add(toSummary(buildReservationSummary(fields)));
                         } catch (Exception e) {
@@ -752,6 +757,32 @@ public class RedisReservationRepository {
                 .nextCursor(nextCursor)
                 .build();
         }
+    }
+
+    /**
+     * Inclusive time-window predicate for listReservations from/to filters
+     * (cycles-protocol-v0.yaml revision 2026-05-21). Reads the per-reservation
+     * {@code created_at} hash field (stored as epoch-ms decimal string) and
+     * returns true iff the row is inside the requested window. A row with
+     * missing or unparseable {@code created_at} is treated as out-of-window
+     * when EITHER bound is supplied — leaking malformed-write rows past a
+     * time filter would silently break the contract.
+     *
+     * <p>Returns true when both bounds are null (filter inactive).
+     */
+    private static boolean createdAtInWindow(Map<String, String> fields, Long fromMs, Long toMs) {
+        if (fromMs == null && toMs == null) return true;
+        String createdAtStr = fields.get("created_at");
+        if (createdAtStr == null) return false;
+        long createdAt;
+        try {
+            createdAt = Long.parseLong(createdAtStr);
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (fromMs != null && createdAt < fromMs) return false;
+        if (toMs != null && createdAt > toMs) return false;
+        return true;
     }
 
     private static int findSliceStart(List<ReservationSummary> sorted, String sortBy,

@@ -21,7 +21,8 @@ public final class FilterHasher {
 
     public static String hash(String tenant, String idempotencyKey, String status,
                               String workspace, String app, String workflow,
-                              String agent, String toolset) {
+                              String agent, String toolset,
+                              Long fromMs, Long toMs) {
         StringBuilder canonical = new StringBuilder(256);
         canonical.append("t=").append(nullSafe(tenant)).append('|');
         canonical.append("i=").append(nullSafe(idempotencyKey)).append('|');
@@ -30,7 +31,9 @@ public final class FilterHasher {
         canonical.append("ap=").append(nullSafe(app)).append('|');
         canonical.append("wf=").append(nullSafe(workflow)).append('|');
         canonical.append("ag=").append(nullSafe(agent)).append('|');
-        canonical.append("ts=").append(nullSafe(toolset));
+        canonical.append("ts=").append(nullSafe(toolset)).append('|');
+        canonical.append("fr=").append(nullSafeLong(fromMs)).append('|');
+        canonical.append("to=").append(nullSafeLong(toMs));
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
@@ -46,5 +49,9 @@ public final class FilterHasher {
 
     private static String nullSafe(String s) {
         return s == null ? "" : s;
+    }
+
+    private static String nullSafeLong(Long v) {
+        return v == null ? "" : Long.toString(v);
     }
 }
