@@ -53,7 +53,7 @@ Closes [#159](https://github.com/runcycles/cycles-server/issues/159). Spec lande
 
 **Coverage.**
 
-- `FilterHasherTest` — 2 new cases: distinct hash on from/to differences, positional distinctness (`from=100, to=200` ≠ `from=200, to=100`).
+- `FilterHasherTest` — 3 new cases: distinct hash on from/to differences, positional distinctness (`from=100, to=200` ≠ `from=200, to=100`), and the pre-window 8-field hash back-compat golden case.
 - `RedisReservationQueryTest` — 7 new cases under a `TimeWindowFilter` nested class: legacy-path `from` excludes below, legacy-path `to` excludes above, inclusive bounds (rows at `created_at = from` and `created_at = to` both kept, row at `to+1` dropped), sorted-path window with sort-by-`created_at_ms` ordering preserved, cursor mismatch on window change rejected with 400, missing `created_at` field excluded under window, unparseable `created_at` excluded under window.
 - `ReservationControllerTest` — 7 new cases under the `ListReservations` nested class: malformed `from` → 400, malformed `to` → 400, `from > to` → 400 with `verify(repository, never())` to lock the pre-repository check, `from` only propagates, `to` only propagates, equal bounds accepted, combination with `sort_by=expires_at_ms` propagates correctly, blank strings treated as unset.
 
