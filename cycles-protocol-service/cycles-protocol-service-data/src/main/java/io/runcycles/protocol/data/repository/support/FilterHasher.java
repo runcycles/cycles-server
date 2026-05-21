@@ -31,9 +31,19 @@ public final class FilterHasher {
         canonical.append("ap=").append(nullSafe(app)).append('|');
         canonical.append("wf=").append(nullSafe(workflow)).append('|');
         canonical.append("ag=").append(nullSafe(agent)).append('|');
-        canonical.append("ts=").append(nullSafe(toolset)).append('|');
-        canonical.append("fr=").append(nullSafeLong(fromMs)).append('|');
-        canonical.append("to=").append(nullSafeLong(toMs));
+        canonical.append("ts=").append(nullSafe(toolset));
+        // Back-compat: only emit the from/to fields when at least one bound is set.
+        // A canonical form that always carried `|fr=|to=` would change the hash for
+        // every pre-window cursor (including any v0.1.25.18 sorted-path cursor
+        // mid-pagination across the deployment), breaking the stated wire back-compat
+        // for clients that never send the new params. Gated emission preserves the
+        // v0.1.25.12 8-field hash byte-exactly for the no-window case while still
+        // uniquely identifying any combination of supplied bounds.
+        if (fromMs != null || toMs != null) {
+            canonical.append('|');
+            canonical.append("fr=").append(nullSafeLong(fromMs)).append('|');
+            canonical.append("to=").append(nullSafeLong(toMs));
+        }
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(canonical.toString().getBytes(StandardCharsets.UTF_8));

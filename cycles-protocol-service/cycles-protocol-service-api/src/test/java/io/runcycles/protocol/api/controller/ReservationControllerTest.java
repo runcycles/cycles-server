@@ -656,18 +656,29 @@ class ReservationControllerTest {
                     anyInt(), any(), any(), any(), any(), any());
         }
 
+        // Derive the expected epoch-ms from the same parser the controller uses so a
+        // hand-typed literal can't drift again (prior commit hard-coded the wrong value
+        // for 2026-05-21T12:00:00Z, causing eq(...) to miss; Mockito then returned null;
+        // ResponseEntity.ok(null) still emits HTTP 200, so the tests passed vacuously).
+        private static final String SAMPLE_FROM_TO_INSTANT = "2026-05-21T12:00:00Z";
+        private static final long SAMPLE_FROM_TO_EPOCH_MS =
+                java.time.Instant.parse(SAMPLE_FROM_TO_INSTANT).toEpochMilli();
+
         @Test
         @DisplayName("from only → epoch-ms propagates to repository")
         void shouldPropagateFromOnly() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            // 2026-05-21T12:00:00Z = epoch ms 1779710400000
-            long expectedFromMs = 1779710400000L;
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq(expectedFromMs), eq((Long) null)))
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null)))
                     .thenReturn(resp);
-            mockMvc.perform(get("/v1/reservations").param("from", "2026-05-21T12:00:00Z"))
+            mockMvc.perform(get("/v1/reservations").param("from", SAMPLE_FROM_TO_INSTANT))
                     .andExpect(status().isOk());
+            // Lock in that the stub fired — guards against the prior failure mode where
+            // a wrong eq(...) literal caused Mockito to silently return null while the
+            // test still asserted HTTP 200.
+            verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null));
         }
 
         @Test
@@ -675,12 +686,13 @@ class ReservationControllerTest {
         void shouldPropagateToOnly() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            long expectedToMs = 1779710400000L;
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq((Long) null), eq(expectedToMs)))
+                    eq(50), any(), any(), any(), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS)))
                     .thenReturn(resp);
-            mockMvc.perform(get("/v1/reservations").param("to", "2026-05-21T12:00:00Z"))
+            mockMvc.perform(get("/v1/reservations").param("to", SAMPLE_FROM_TO_INSTANT))
                     .andExpect(status().isOk());
+            verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS));
         }
 
         @Test
@@ -688,14 +700,15 @@ class ReservationControllerTest {
         void shouldAcceptEqualBounds() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            long expectedMs = 1779710400000L;
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq(expectedMs), eq(expectedMs)))
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS)))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations")
-                            .param("from", "2026-05-21T12:00:00Z")
-                            .param("to", "2026-05-21T12:00:00Z"))
+                            .param("from", SAMPLE_FROM_TO_INSTANT)
+                            .param("to", SAMPLE_FROM_TO_INSTANT))
                     .andExpect(status().isOk());
+            verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS));
         }
 
         @Test

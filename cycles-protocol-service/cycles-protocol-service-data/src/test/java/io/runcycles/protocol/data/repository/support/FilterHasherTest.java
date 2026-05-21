@@ -68,4 +68,19 @@ class FilterHasherTest {
         String swapped = FilterHasher.hash("acme", null, null, null, null, null, null, null, 200L, 100L);
         assertThat(forward).isNotEqualTo(swapped);
     }
+
+    @Test
+    @DisplayName("v0.1.25.18 back-compat: null from/to produces the pre-window 8-field hash byte-exactly")
+    void preservesPreWindowHashWhenBothBoundsNull() {
+        // Locks down the wire back-compat contract: a sorted-path cursor issued by
+        // v0.1.25.12–v0.1.25.18 (which had no from/to fields in the canonical form)
+        // must continue to validate against v0.1.25.20 when the client never sends
+        // the new params. The golden value is the truncated (8-byte / 16-hex) SHA-256
+        // of "t=acme|i=|st=|ws=|ap=|wf=|ag=|ts=" — the pre-window canonical form.
+        // Verified independently via:
+        //   python -c "import hashlib; print(hashlib.sha256(b't=acme|i=|st=|ws=|ap=|wf=|ag=|ts=').hexdigest()[:16])"
+        // → 2f397ea0e8fb53b7
+        String hash = FilterHasher.hash("acme", null, null, null, null, null, null, null, null, null);
+        assertThat(hash).isEqualTo("2f397ea0e8fb53b7");
+    }
 }
