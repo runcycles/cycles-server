@@ -14,6 +14,38 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.19] — 2026-05-21
+
+Supply-chain CVE patch. No code, API, or Lua-script changes — pom-only.
+
+### Fixed (security)
+
+- Re-pin `tomcat.version=10.1.55` in `cycles-protocol-service/pom.xml`
+  to close seven CVEs flagged by Trivy against
+  `org.apache.tomcat.embed:tomcat-embed-core 10.1.54` (the version
+  Spring Boot 3.5.14's BOM manages today):
+  - **CVE-2026-43512 (CRITICAL)** — fixed in 10.1.55 / 11.0.22.
+  - **CVE-2026-43515 (CRITICAL)** — fixed in 10.1.55 / 11.0.22.
+  - **CVE-2026-41293 (CRITICAL)** — fixed in 10.1.55 / 11.0.22.
+  - **CVE-2026-43513 (HIGH)** — fixed in 10.1.55 / 11.0.22.
+  - **CVE-2026-42498 (HIGH)** — fixed in 10.1.55 / 11.0.22.
+  - **CVE-2026-41284 (HIGH)** — fixed in 10.1.55 / 11.0.22.
+  - **CVE-2026-43514 (LOW)** — fixed in 10.1.55 / 11.0.22.
+- The v0.1.25.16 override (`tomcat.version=10.1.54`) was removed in
+  v0.1.25.18 once Spring Boot 3.5.14's BOM caught up. This re-adds the
+  same pattern one patch higher. Removable again once Spring Boot
+  ships with 10.1.55+ as its managed version.
+
+### Retained
+
+- `commons-lang3.version=3.18.0` override stays (CVE-2025-48924 still
+  unfixed in Spring Boot 3.5.14's BOM-managed 3.17.0).
+
+### Notes
+
+- No production-code or test changes. All 537 protocol-service tests
+  pass (374 data + 163 api). Wire format unchanged from v0.1.25.18.
+
 ## [0.1.25.18] — 2026-04-26
 
 Dependency hygiene aligning all three Cycles services (events / server /
