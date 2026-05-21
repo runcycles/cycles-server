@@ -9,6 +9,8 @@ import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import io.runcycles.protocol.model.event.*;
 
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.Map;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -248,7 +250,9 @@ public class ReservationController extends BaseController{
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
             @RequestParam(required = false) String cursor,
             @RequestParam(value = "sort_by", required = false) String sortBy,
-            @RequestParam(value = "sort_dir", required = false) String sortDir) {
+            @RequestParam(value = "sort_dir", required = false) String sortDir,
+            @RequestParam(required = false) String from,
+            @RequestParam(value = "to", required = false) String toParam) {
         // Validate status against ReservationStatus enum if provided
         if (status != null) {
             try {
@@ -281,6 +285,17 @@ public class ReservationController extends BaseController{
                     "Invalid sort_dir: " + sortDir + ". Must be one of: asc, desc", 400);
             }
         }
+        // cycles-protocol revision 2026-05-21: from/to ISO-8601 date-time
+        // window filter on listReservations. Both are optional and additive;
+        // each is parsed independently. The filter binds to created_at_ms
+        // regardless of sort_by per spec. Malformed values → 400; from > to
+        // → 400 before any repository work.
+        Long fromMs = parseIsoToEpochMs(from, "from");
+        Long toMs = parseIsoToEpochMs(toParam, "to");
+        if (fromMs != null && toMs != null && fromMs > toMs) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "from must be less than or equal to to (received from=" + from + ", to=" + toParam + ")", 400);
+        }
         // v0.1.25.8 (cycles-protocol revision 2026-04-13): tenant param
         // semantics differ by auth type. ApiKeyAuth: optional, falls
         // back to authenticated tenant, validation-only when present.
@@ -301,9 +316,20 @@ public class ReservationController extends BaseController{
             effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
             authorizeTenant(effectiveTenant);
         }
-        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}",
-                effectiveTenant, isAdminAuth(), sortBy, sortDir);
+        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}, from: {}, to: {}",
+                effectiveTenant, isAdminAuth(), sortBy, sortDir, fromMs, toMs);
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
-                status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir));
+                status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir,
+                fromMs, toMs));
+    }
+
+    private Long parseIsoToEpochMs(String raw, String paramName) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Instant.parse(raw).toEpochMilli();
+        } catch (DateTimeParseException e) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "Invalid " + paramName + ": " + raw + " is not a valid ISO 8601 date-time", 400);
+        }
     }
 }

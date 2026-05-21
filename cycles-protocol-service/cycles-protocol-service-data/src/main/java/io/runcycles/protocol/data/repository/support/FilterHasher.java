@@ -21,7 +21,8 @@ public final class FilterHasher {
 
     public static String hash(String tenant, String idempotencyKey, String status,
                               String workspace, String app, String workflow,
-                              String agent, String toolset) {
+                              String agent, String toolset,
+                              Long fromMs, Long toMs) {
         StringBuilder canonical = new StringBuilder(256);
         canonical.append("t=").append(nullSafe(tenant)).append('|');
         canonical.append("i=").append(nullSafe(idempotencyKey)).append('|');
@@ -31,6 +32,18 @@ public final class FilterHasher {
         canonical.append("wf=").append(nullSafe(workflow)).append('|');
         canonical.append("ag=").append(nullSafe(agent)).append('|');
         canonical.append("ts=").append(nullSafe(toolset));
+        // Back-compat: only emit the from/to fields when at least one bound is set.
+        // A canonical form that always carried `|fr=|to=` would change the hash for
+        // every pre-window cursor (including any v0.1.25.18 sorted-path cursor
+        // mid-pagination across the deployment), breaking the stated wire back-compat
+        // for clients that never send the new params. Gated emission preserves the
+        // v0.1.25.12 8-field hash byte-exactly for the no-window case while still
+        // uniquely identifying any combination of supplied bounds.
+        if (fromMs != null || toMs != null) {
+            canonical.append('|');
+            canonical.append("fr=").append(nullSafeLong(fromMs)).append('|');
+            canonical.append("to=").append(nullSafeLong(toMs));
+        }
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
@@ -46,5 +59,9 @@ public final class FilterHasher {
 
     private static String nullSafe(String s) {
         return s == null ? "" : s;
+    }
+
+    private static String nullSafeLong(Long v) {
+        return v == null ? "" : Long.toString(v);
     }
 }
