@@ -18,7 +18,7 @@
         <module>cycles-protocol-service-api</module>
     </modules>
     <properties>
-        <revision>0.1.25.18</revision>
+        <revision>0.1.25.19</revision>
         <java.version>21</java.version>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
@@ -27,6 +27,17 @@
              the image transitively via swagger-core-jakarta (OpenAPI UI).
              Remove once Spring Boot ships with 3.18.0+ as its managed version. -->
         <commons-lang3.version>3.18.0</commons-lang3.version>
+        <!-- Re-override Spring Boot 3.5.14's managed tomcat-embed-core 10.1.54
+             to pick up a new wave of CVEs first fixed in 10.1.55:
+               CVE-2026-43512 CRITICAL, CVE-2026-43515 CRITICAL, CVE-2026-41293 CRITICAL,
+               CVE-2026-43513 HIGH,     CVE-2026-42498 HIGH,     CVE-2026-41284 HIGH,
+               CVE-2026-43514 LOW.
+             All seven are scoped to org.apache.tomcat.embed:tomcat-embed-core and
+             ship transitively via spring-boot-starter-web. The v0.1.25.16 override
+             (10.1.54) was removed in v0.1.25.18 once SB 3.5.14's BOM caught up;
+             this re-adds the same pattern at 10.1.55. Remove again once Spring
+             Boot ships with 10.1.55+ as its managed version. -->
+        <tomcat.version>10.1.55</tomcat.version>
     </properties>
     <dependencyManagement>
         <dependencies>
