@@ -29,11 +29,19 @@ implementing `cycles-protocol-v0.yaml` revision 2026-05-21 and closing
   `sort_by=expires_at_ms&from=…&to=…` returns reservations *created*
   in the window, ordered by *expiry*. Implemented in both the legacy
   SCAN-cursor path and the sorted path.
-- **Cursor invalidation on window change.** `FilterHasher.hash(...)`
-  now folds `fromMs` and `toMs` into the canonical hash, so a cursor
-  issued under one `(from, to)` returns HTTP 400 INVALID_REQUEST if
-  re-used under a different window — same contract as `sort_by` /
-  `sort_dir` / subject-filter mismatches (v0.1.25.12).
+- **Sorted-path cursor invalidation on window change.**
+  `FilterHasher.hash(...)` now folds `fromMs` and `toMs` into the
+  canonical hash that's embedded in the **sorted-path cursor**
+  (the opaque cursor returned when `sort_by` or `sort_dir` is
+  supplied, or when resuming a sorted cursor from a prior page),
+  so reusing such a cursor under a different `(from, to)` returns
+  HTTP 400 INVALID_REQUEST — same contract as the v0.1.25.12
+  `sort_by` / `sort_dir` / subject-filter mismatch path. The
+  legacy Redis-SCAN cursor (returned when no sort params are
+  supplied) is unchanged and does not carry filter state; clients
+  paginating with `from` / `to` but no `sort_by` must keep their
+  window stable across pages, matching how the legacy path
+  already treats every other filter.
 
 ### Validation
 
@@ -60,7 +68,7 @@ implementing `cycles-protocol-v0.yaml` revision 2026-05-21 and closing
 
 ### Coverage
 
-- 537 tests across the protocol-service modules pass (374 data + 163
+- 538 tests across the protocol-service modules pass (375 data + 163
   api). New tests:
   - `FilterHasherTest`: from/to inclusion, positional distinctness.
   - `RedisReservationQueryTest`: 7 new cases covering legacy-path

@@ -459,12 +459,18 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 | `cursor` | Opaque pagination cursor from previous response |
 | `sort_by` | One of `reservation_id`, `tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`, `expires_at_ms` (v0.1.25.12+). Omit for legacy unordered behaviour. |
 | `sort_dir` | `asc` or `desc`. Defaults to `desc` when `sort_by` is provided. Ignored unless `sort_by` is set. |
+| `from` | ISO 8601 date-time (v0.1.25.20+). Inclusive lower bound on `created_at_ms`. Always binds to `created_at_ms` regardless of `sort_by`. May be supplied alone (no upper bound) or with `to`. Blank string treated as unset. |
+| `to` | ISO 8601 date-time (v0.1.25.20+). Inclusive upper bound on `created_at_ms`. Same binding and blank-as-unset rules as `from`. `from > to` returns `400 INVALID_REQUEST`. |
 
 When `sort_by` or `sort_dir` is provided, the cursor encodes the
-`(sort_by, sort_dir, filters)` tuple — reusing a cursor after
-changing the sort key, direction, or any filter returns `400
-INVALID_REQUEST`. When both are omitted, the legacy Redis-SCAN
-cursor path is used and existing clients are unaffected.
+`(sort_by, sort_dir, filters)` tuple — reusing a sorted cursor after
+changing the sort key, direction, or any filter (including `from` /
+`to`) returns `400 INVALID_REQUEST`. When both are omitted, the
+legacy Redis-SCAN cursor path is used and existing clients are
+unaffected; the legacy cursor does **not** carry filter state, so
+callers paginating with `from` / `to` but no `sort_by` must keep
+their window stable across pages (same convention as `status` /
+`workspace` / other filters on the legacy path).
 
 **Response** `200 OK`
 ```json
