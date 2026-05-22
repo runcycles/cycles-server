@@ -461,6 +461,10 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 | `sort_dir` | `asc` or `desc`. Defaults to `desc` when `sort_by` is provided. Ignored unless `sort_by` is set. |
 | `from` | ISO 8601 date-time (v0.1.25.20+). Inclusive lower bound on `created_at_ms`. Always binds to `created_at_ms` regardless of `sort_by`. May be supplied alone (no upper bound) or with `to`. Blank string treated as unset. |
 | `to` | ISO 8601 date-time (v0.1.25.20+). Inclusive upper bound on `created_at_ms`. Same binding and blank-as-unset rules as `from`. `from > to` returns `400 INVALID_REQUEST`. |
+| `expires_from` | ISO 8601 date-time (v0.1.25.21+). Inclusive lower bound on `expires_at_ms`. Applies to every row regardless of status. May be supplied alone or with `expires_to`. Blank string treated as unset. |
+| `expires_to` | ISO 8601 date-time (v0.1.25.21+). Inclusive upper bound on `expires_at_ms`. Same blank-as-unset rule. `expires_from > expires_to` returns `400 INVALID_REQUEST`. |
+| `finalized_from` | ISO 8601 date-time (v0.1.25.21+). Inclusive lower bound on `finalized_at_ms`. Populated only on COMMITTED and RELEASED rows — ACTIVE and EXPIRED rows are normatively excluded when this is set. May be supplied alone or with `finalized_to`. Blank string treated as unset. |
+| `finalized_to` | ISO 8601 date-time (v0.1.25.21+). Inclusive upper bound on `finalized_at_ms`. Same blank-as-unset rule and ACTIVE/EXPIRED exclusion. `finalized_from > finalized_to` returns `400 INVALID_REQUEST`. |
 
 When `sort_by` or `sort_dir` is provided, the cursor encodes the
 `(sort_by, sort_dir, filters)` tuple — reusing a sorted cursor after

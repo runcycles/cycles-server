@@ -554,7 +554,9 @@ public class RedisReservationRepository {
                                                     String workflow, String agent, String toolset,
                                                     int limit, String startCursor,
                                                     String sortBy, String sortDir,
-                                                    Long fromMs, Long toMs) {
+                                                    Long fromMs, Long toMs,
+                                                    Long expiresFromMs, Long expiresToMs,
+                                                    Long finalizedFromMs, Long finalizedToMs) {
         boolean sortRequested = sortBy != null || sortDir != null;
         Optional<SortedListCursor> parsedCursor = SortedListCursor.decode(startCursor);
 
@@ -564,7 +566,7 @@ public class RedisReservationRepository {
         if (sortRequested || parsedCursor.isPresent()) {
             return listReservationsSorted(tenant, idempotencyKey, status, workspace, app,
                 workflow, agent, toolset, limit, parsedCursor.orElse(null), sortBy, sortDir,
-                fromMs, toMs);
+                fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs);
         }
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -605,6 +607,8 @@ public class RedisReservationRepository {
                             if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
                             if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
                             if (!createdAtInWindow(fields, fromMs, toMs)) continue;
+                            if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) continue;
+                            if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) continue;
 
                             result.add(toSummary(buildReservationSummary(fields)));
 
@@ -644,7 +648,9 @@ public class RedisReservationRepository {
             String tenant, String idempotencyKey, String status,
             String workspace, String app, String workflow, String agent, String toolset,
             int limit, SortedListCursor resumeCursor, String sortBy, String sortDir,
-            Long fromMs, Long toMs) {
+            Long fromMs, Long toMs,
+            Long expiresFromMs, Long expiresToMs,
+            Long finalizedFromMs, Long finalizedToMs) {
 
         // Normalize for cursor storage + comparator use. Null sort_dir with a non-null
         // sort_by defaults to DESC per spec; null sort_by with a non-null sort_dir defaults
@@ -655,7 +661,8 @@ public class RedisReservationRepository {
             : (resumeCursor != null ? resumeCursor.getSortDir() : "desc");
 
         String filterHash = FilterHasher.hash(tenant, idempotencyKey, status,
-            workspace, app, workflow, agent, toolset, fromMs, toMs);
+            workspace, app, workflow, agent, toolset, fromMs, toMs,
+            expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs);
 
         // Spec: cursor is valid only for the same (sort_by, sort_dir, filters) tuple.
         if (resumeCursor != null) {
@@ -707,6 +714,8 @@ public class RedisReservationRepository {
                             if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
                             if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
                             if (!createdAtInWindow(fields, fromMs, toMs)) continue;
+                            if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) continue;
+                            if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) continue;
 
                             matching.add(toSummary(buildReservationSummary(fields)));
                         } catch (Exception e) {
@@ -783,6 +792,92 @@ public class RedisReservationRepository {
         if (fromMs != null && createdAt < fromMs) return false;
         if (toMs != null && createdAt > toMs) return false;
         return true;
+    }
+
+    /**
+     * Inclusive time-window predicate for listReservations expires_from / expires_to
+     * filters (cycles-protocol-v0.yaml revision 2026-05-22). Reads the per-reservation
+     * {@code expires_at} hash field (epoch-ms decimal string). Same defensive shape as
+     * {@link #createdAtInWindow}: missing or unparseable {@code expires_at} is treated
+     * as out-of-window when EITHER bound is supplied. Returns true when both bounds
+     * are null (filter inactive).
+     *
+     * <p>{@code expires_at_ms} is REQUIRED on every reservation per the spec, so the
+     * field-absent path here is purely defensive against malformed Redis writes — in
+     * normal operation every hydrated reservation has it.
+     */
+    private static boolean expiresAtInWindow(Map<String, String> fields, Long fromMs, Long toMs) {
+        if (fromMs == null && toMs == null) return true;
+        String expiresAtStr = fields.get("expires_at");
+        if (expiresAtStr == null) return false;
+        long expiresAt;
+        try {
+            expiresAt = Long.parseLong(expiresAtStr);
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (fromMs != null && expiresAt < fromMs) return false;
+        if (toMs != null && expiresAt > toMs) return false;
+        return true;
+    }
+
+    /**
+     * Inclusive time-window predicate for listReservations finalized_from /
+     * finalized_to filters (cycles-protocol-v0.yaml revision 2026-05-22).
+     *
+     * <p>Per the spec, {@code finalized_at_ms} is populated ONLY on COMMITTED and
+     * RELEASED rows; absent on ACTIVE and EXPIRED. Mirrors the same projection logic
+     * as {@link #buildReservationSummary}: {@code committed_at} populates the
+     * timestamp for COMMITTED rows, {@code released_at} for RELEASED rows. Rows
+     * missing both hash fields (ACTIVE, EXPIRED, malformed) MUST be excluded from
+     * results when either bound is supplied — the spec makes this exclusion
+     * normative so conformant servers agree on the contract.
+     *
+     * <p>Returns true when both bounds are null (filter inactive); this case
+     * preserves the row regardless of whether {@code finalized_at_ms} is
+     * present, matching the v0.1.25.20 unfiltered behavior byte-for-byte.
+     */
+    private static boolean finalizedAtInWindow(Map<String, String> fields, Long fromMs, Long toMs) {
+        if (fromMs == null && toMs == null) return true;
+        String finalizedAtStr = resolveFinalizedAtStr(fields);
+        if (finalizedAtStr == null) return false;
+        long finalizedAt;
+        try {
+            finalizedAt = Long.parseLong(finalizedAtStr);
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (fromMs != null && finalizedAt < fromMs) return false;
+        if (toMs != null && finalizedAt > toMs) return false;
+        return true;
+    }
+
+    /**
+     * Centralized resolver for the projected {@code finalized_at_ms} timestamp,
+     * shared between the {@link #finalizedAtInWindow} predicate and the
+     * {@link #buildReservationSummary} projection. Both call sites MUST agree
+     * on which Redis hash field is the source of truth, otherwise a malformed
+     * row with both {@code committed_at} and {@code released_at} populated
+     * could be filtered using one timestamp and returned with another —
+     * violating the spec's contract that the filter operates against the
+     * returned {@code finalized_at_ms}.
+     *
+     * <p>Released-wins: {@code released_at} dominates when both are set, matching
+     * the projection's last-write-wins assignment order in
+     * {@link #buildReservationSummary}. In the normal lifecycle the two fields
+     * are mutually exclusive (commit XOR release), so this rule is a defensive
+     * tie-breaker for malformed Redis writes only.
+     *
+     * <p>Returns {@code null} when both fields are absent (ACTIVE / EXPIRED rows
+     * in the normal lifecycle). Returns the raw string form so callers can
+     * decide on parse-failure handling (the predicate swallows
+     * NumberFormatException to exclude the row from filter results; the
+     * projection lets it propagate as a data-corruption signal).
+     */
+    private static String resolveFinalizedAtStr(Map<String, String> fields) {
+        String releasedAt = fields.get("released_at");
+        if (releasedAt != null) return releasedAt;
+        return fields.get("committed_at");
     }
 
     private static int findSliceStart(List<ReservationSummary> sorted, String sortBy,
@@ -1215,6 +1310,11 @@ public class RedisReservationRepository {
             .reserved(detail.getReserved())
             .createdAtMs(detail.getCreatedAtMs())
             .expiresAtMs(detail.getExpiresAtMs())
+            // Spec: cycles-protocol-v0.yaml revision 2026-05-22. Optional;
+            // null on ACTIVE and EXPIRED rows. NON_NULL JsonInclude on the
+            // class skips the field from the wire when absent, preserving
+            // byte-for-byte response shape for pre-revision callers.
+            .finalizedAtMs(detail.getFinalizedAtMs())
             .scopePath(detail.getScopePath())
             .affectedScopes(detail.getAffectedScopes())
             .build();
@@ -1249,13 +1349,12 @@ public class RedisReservationRepository {
         if (chargedAmountStr != null) {
             committed = new Amount(unit, Long.parseLong(chargedAmountStr));
         }
-        String committedAtStr = fields.get("committed_at");
-        if (committedAtStr != null) {
-            finalizedAtMs = Long.parseLong(committedAtStr);
-        }
-        String releasedAtStr = fields.get("released_at");
-        if (releasedAtStr != null) {
-            finalizedAtMs = Long.parseLong(releasedAtStr);
+        // Shared resolver with finalizedAtInWindow — the predicate and the
+        // projection MUST agree on which hash field wins when both are set.
+        // See resolveFinalizedAtStr javadoc for the released-wins rationale.
+        String finalizedAtStr = resolveFinalizedAtStr(fields);
+        if (finalizedAtStr != null) {
+            finalizedAtMs = Long.parseLong(finalizedAtStr);
         }
 
         // Parse metadata if present

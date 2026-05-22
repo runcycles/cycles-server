@@ -499,7 +499,7 @@ class ReservationControllerTest {
                     .reservations(Collections.emptyList())
                     .hasMore(false)
                     .build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations"))
@@ -518,7 +518,7 @@ class ReservationControllerTest {
         void shouldListWithActiveStatusFilter() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), eq("ACTIVE"), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), eq("ACTIVE"), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations").param("status", "ACTIVE"))
@@ -530,7 +530,7 @@ class ReservationControllerTest {
         void shouldListWithCommittedStatusFilter() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), eq("COMMITTED"), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), eq("COMMITTED"), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations").param("status", "COMMITTED"))
@@ -541,7 +541,7 @@ class ReservationControllerTest {
         void shouldListWithExplicitTenantMatchingAuth() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
 
             mockMvc.perform(get("/v1/reservations").param("tenant", TENANT))
@@ -559,7 +559,7 @@ class ReservationControllerTest {
         void shouldDefaultTenantFromAuth() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
 
             // No tenant param — should use auth tenant
@@ -595,7 +595,7 @@ class ReservationControllerTest {
         void shouldPropagateSortParams() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), eq("status"), eq("asc"), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), eq("status"), eq("asc"), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations")
                             .param("sort_by", "status")
@@ -608,7 +608,7 @@ class ReservationControllerTest {
         void shouldAcceptAllSpecSortByValues() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
             for (String value : new String[] {"reservation_id", "tenant", "scope_path",
                     "status", "reserved", "created_at_ms", "expires_at_ms"}) {
@@ -653,7 +653,7 @@ class ReservationControllerTest {
             // No repository invocation expected — validation runs before list call.
             verify(repository, org.mockito.Mockito.never()).listReservations(
                     any(), any(), any(), any(), any(), any(), any(), any(),
-                    anyInt(), any(), any(), any(), any(), any());
+                    anyInt(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         }
 
         // Derive the expected epoch-ms from the same parser the controller uses so a
@@ -670,7 +670,7 @@ class ReservationControllerTest {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null)))
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations").param("from", SAMPLE_FROM_TO_INSTANT))
                     .andExpect(status().isOk());
@@ -678,7 +678,7 @@ class ReservationControllerTest {
             // a wrong eq(...) literal caused Mockito to silently return null while the
             // test still asserted HTTP 200.
             verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null));
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null), any(), any(), any(), any());
         }
 
         @Test
@@ -687,12 +687,12 @@ class ReservationControllerTest {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS)))
+                    eq(50), any(), any(), any(), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations").param("to", SAMPLE_FROM_TO_INSTANT))
                     .andExpect(status().isOk());
             verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS));
+                    eq(50), any(), any(), any(), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS), any(), any(), any(), any());
         }
 
         @Test
@@ -701,14 +701,14 @@ class ReservationControllerTest {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS)))
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations")
                             .param("from", SAMPLE_FROM_TO_INSTANT)
                             .param("to", SAMPLE_FROM_TO_INSTANT))
                     .andExpect(status().isOk());
             verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS));
+                    eq(50), any(), any(), any(), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS), any(), any(), any(), any());
         }
 
         @Test
@@ -717,7 +717,7 @@ class ReservationControllerTest {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), eq("expires_at_ms"), any(), any(), any()))
+                    eq(50), any(), eq("expires_at_ms"), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations")
                             .param("sort_by", "expires_at_ms")
@@ -732,11 +732,169 @@ class ReservationControllerTest {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
             when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
-                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null)))
+                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations")
                             .param("from", "")
                             .param("to", ""))
+                    .andExpect(status().isOk());
+        }
+
+        // cycles-protocol revision 2026-05-22: expires_from / expires_to bind
+        // to expires_at_ms; finalized_from / finalized_to bind to
+        // finalized_at_ms. Each pair validates independently with its own
+        // from > to check; malformed values surface a distinct 400 message
+        // identifying which param failed.
+
+        @Test
+        @DisplayName("expires_from=bogus → 400 INVALID_REQUEST")
+        void shouldRejectMalformedExpiresFrom() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("expires_from", "not-a-date"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Invalid expires_from")));
+        }
+
+        @Test
+        @DisplayName("expires_to=bogus → 400 INVALID_REQUEST")
+        void shouldRejectMalformedExpiresTo() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("expires_to", "2026-13-99T99:99:99Z"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Invalid expires_to")));
+        }
+
+        @Test
+        @DisplayName("finalized_from=bogus → 400 INVALID_REQUEST")
+        void shouldRejectMalformedFinalizedFrom() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("finalized_from", "not-a-date"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Invalid finalized_from")));
+        }
+
+        @Test
+        @DisplayName("finalized_to=bogus → 400 INVALID_REQUEST")
+        void shouldRejectMalformedFinalizedTo() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("finalized_to", "not-a-date"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Invalid finalized_to")));
+        }
+
+        @Test
+        @DisplayName("expires_from > expires_to → 400 before any repository call")
+        void shouldRejectReversedExpiresWindow() throws Exception {
+            mockMvc.perform(get("/v1/reservations")
+                            .param("expires_from", "2026-05-22T12:00:00Z")
+                            .param("expires_to", "2026-05-22T11:00:00Z"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("expires_from must be less than or equal to expires_to")));
+        }
+
+        @Test
+        @DisplayName("finalized_from > finalized_to → 400 before any repository call")
+        void shouldRejectReversedFinalizedWindow() throws Exception {
+            mockMvc.perform(get("/v1/reservations")
+                            .param("finalized_from", "2026-05-22T12:00:00Z")
+                            .param("finalized_to", "2026-05-22T11:00:00Z"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
+                    .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("finalized_from must be less than or equal to finalized_to")));
+        }
+
+        @Test
+        @DisplayName("expires_from/expires_to → epoch-ms propagates to repository (independent of from/to)")
+        void shouldPropagateExpiresWindow() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null),
+                    eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null), eq((Long) null)))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations")
+                            .param("expires_from", SAMPLE_FROM_TO_INSTANT)
+                            .param("expires_to", SAMPLE_FROM_TO_INSTANT))
+                    .andExpect(status().isOk());
+            // Lock in that the stub fired — the eq(...) matchers all matched the
+            // controller's parsed values. Without this verify(), a future refactor
+            // that misroutes expires_from into the from slot would silently pass.
+            verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null),
+                    eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS), eq((Long) null), eq((Long) null));
+        }
+
+        @Test
+        @DisplayName("finalized_from/finalized_to → epoch-ms propagates to repository")
+        void shouldPropagateFinalizedWindow() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null),
+                    eq((Long) null), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS)))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations")
+                            .param("finalized_from", SAMPLE_FROM_TO_INSTANT)
+                            .param("finalized_to", SAMPLE_FROM_TO_INSTANT))
+                    .andExpect(status().isOk());
+            verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null),
+                    eq((Long) null), eq((Long) null), eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS));
+        }
+
+        @Test
+        @DisplayName("all three windows combined → all 6 epoch-ms values propagate independently")
+        void shouldPropagateAllThreeWindows() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            // 2026-05-21T12:00:00Z (SAMPLE_FROM_TO) is the from/to value.
+            // Use different instants for expires/finalized so a slot mix-up would fail.
+            final String EXPIRES_INSTANT = "2026-05-23T00:00:00Z";
+            final long EXPIRES_MS = java.time.Instant.parse(EXPIRES_INSTANT).toEpochMilli();
+            final String FINALIZED_INSTANT = "2026-05-24T00:00:00Z";
+            final long FINALIZED_MS = java.time.Instant.parse(FINALIZED_INSTANT).toEpochMilli();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(),
+                    eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS),
+                    eq(EXPIRES_MS), eq(EXPIRES_MS),
+                    eq(FINALIZED_MS), eq(FINALIZED_MS)))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations")
+                            .param("from", SAMPLE_FROM_TO_INSTANT)
+                            .param("to", SAMPLE_FROM_TO_INSTANT)
+                            .param("expires_from", EXPIRES_INSTANT)
+                            .param("expires_to", EXPIRES_INSTANT)
+                            .param("finalized_from", FINALIZED_INSTANT)
+                            .param("finalized_to", FINALIZED_INSTANT))
+                    .andExpect(status().isOk());
+            verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(),
+                    eq(SAMPLE_FROM_TO_EPOCH_MS), eq(SAMPLE_FROM_TO_EPOCH_MS),
+                    eq(EXPIRES_MS), eq(EXPIRES_MS),
+                    eq(FINALIZED_MS), eq(FINALIZED_MS));
+        }
+
+        @Test
+        @DisplayName("expires_from/expires_to/finalized_from/finalized_to blank strings treated as unset")
+        void shouldTreatBlankAsUnsetForNewWindows() throws Exception {
+            ReservationListResponse resp = ReservationListResponse.builder()
+                    .reservations(Collections.emptyList()).hasMore(false).build();
+            when(repository.listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(), any(),
+                    eq(50), any(), any(), any(), eq((Long) null), eq((Long) null),
+                    eq((Long) null), eq((Long) null), eq((Long) null), eq((Long) null)))
+                    .thenReturn(resp);
+            mockMvc.perform(get("/v1/reservations")
+                            .param("expires_from", "")
+                            .param("expires_to", "")
+                            .param("finalized_from", "")
+                            .param("finalized_to", ""))
                     .andExpect(status().isOk());
         }
     }
@@ -757,7 +915,7 @@ class ReservationControllerTest {
         void adminListWithTenantFilter() throws Exception {
             ReservationListResponse resp = ReservationListResponse.builder()
                     .reservations(Collections.emptyList()).hasMore(false).build();
-            when(repository.listReservations(eq("any-tenant"), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any()))
+            when(repository.listReservations(eq("any-tenant"), any(), any(), any(), any(), any(), any(), any(), eq(50), any(), any(), any(), any(), any(), any(), any(), any(), any()))
                     .thenReturn(resp);
             mockMvc.perform(get("/v1/reservations").param("tenant", "any-tenant"))
                     .andExpect(status().isOk());

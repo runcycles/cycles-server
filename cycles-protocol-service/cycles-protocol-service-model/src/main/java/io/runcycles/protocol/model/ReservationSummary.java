@@ -19,6 +19,11 @@ public class ReservationSummary {
     @NotNull @Valid @JsonProperty("reserved") private Amount reserved;
     @NotNull @Min(0) @JsonProperty("created_at_ms") private Long createdAtMs;
     @NotNull @Min(0) @JsonProperty("expires_at_ms") private Long expiresAtMs;
+    /** Wall-clock time at which the reservation reached a terminal state.
+     * Populated on COMMITTED and RELEASED rows only; absent on ACTIVE and
+     * EXPIRED. Mirrors the same field on ReservationDetail.
+     * Spec: cycles-protocol-v0.yaml revision 2026-05-22. */
+    @Min(0) @JsonProperty("finalized_at_ms") private Long finalizedAtMs;
     @NotNull @JsonProperty("scope_path") private String scopePath;
     @NotNull @JsonProperty("affected_scopes") private List<String> affectedScopes;
 }

@@ -407,7 +407,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
 
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null);
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).isEmpty();
             assertThat(response.getHasMore()).isFalse();
@@ -433,7 +433,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             // Filter for ACTIVE but reservation is COMMITTED
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, "ACTIVE", null, null, null, null, null, 100, null, null, null, null, null);
+                    "acme", null, "ACTIVE", null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).isEmpty();
         }
@@ -463,7 +463,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
 
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null);
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
@@ -495,7 +495,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
 
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, null, "dev", null, null, null, null, 100, null, null, null, null, null);
+                    "acme", null, null, "dev", null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
@@ -527,7 +527,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
 
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, null, null, "myapp", null, null, null, 100, null, null, null, null, null);
+                    "acme", null, null, null, "myapp", null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
@@ -556,7 +556,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp1);
 
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, null, null, null, null, null, null, 1, null, null, null, null, null);
+                    "acme", null, null, null, null, null, null, null, 1, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getHasMore()).isTrue();
@@ -584,7 +584,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             // Filter for COMMITTED and reservation IS COMMITTED
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, "COMMITTED", null, null, null, null, null, 100, null, null, null, null, null);
+                    "acme", null, "COMMITTED", null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
@@ -623,7 +623,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
 
             ReservationListResponse response = repository.listReservations(
-                "acme", "idem-abc", null, null, null, null, null, null, 100, null, null, null, null, null);
+                "acme", "idem-abc", null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getReservations().get(0).getReservationId()).isEqualTo("r1");
@@ -650,7 +650,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
 
             ReservationListResponse response = repository.listReservations(
-                "acme", "idem-nonexistent", null, null, null, null, null, null, 100, null, null, null, null, null);
+                "acme", "idem-nonexistent", null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).isEmpty();
         }
@@ -689,7 +689,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp2);
 
             ReservationListResponse response = repository.listReservations(
-                    "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null);
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
 
             // Broken reservation skipped, valid one returned
             assertThat(response.getReservations()).hasSize(1);
@@ -738,7 +738,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 100, null,
-                "created_at_ms", "asc", null, null);
+                "created_at_ms", "asc", null, null, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                 .containsExactly("r2", "r3", "r1");
@@ -781,7 +781,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse page1 = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 2, null,
-                "created_at_ms", "asc", null, null);
+                "created_at_ms", "asc", null, null, null, null, null, null);
 
             assertThat(page1.getReservations()).extracting(ReservationSummary::getReservationId)
                 .containsExactly("r1", "r2");
@@ -790,7 +790,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse page2 = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 2, page1.getNextCursor(),
-                "created_at_ms", "asc", null, null);
+                "created_at_ms", "asc", null, null, null, null, null, null);
 
             assertThat(page2.getReservations()).extracting(ReservationSummary::getReservationId)
                 .containsExactly("r3", "r4");
@@ -823,7 +823,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse page1 = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 1, null,
-                "created_at_ms", "asc", null, null);
+                "created_at_ms", "asc", null, null, null, null, null, null);
 
             String cursor = page1.getNextCursor();
             assertThat(cursor).isNotNull();
@@ -831,7 +831,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             // Re-use cursor under a different sort_by — MUST 400 per spec.
             assertThatThrownBy(() -> repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 1, cursor,
-                "status", "asc", null, null))
+                "status", "asc", null, null, null, null, null, null))
                 .isInstanceOf(io.runcycles.protocol.data.exception.CyclesProtocolException.class)
                 .hasMessageContaining("cursor is not valid");
         }
@@ -879,7 +879,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 5, null,
-                "created_at_ms", "asc", null, null);
+                "created_at_ms", "asc", null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(5);
             assertThat(response.getReservations())
@@ -905,7 +905,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             // "42" is a legacy SCAN cursor. With no sort params, repo must honour it and
             // call jedis.scan with that exact cursor value — not route to sorted path.
             ReservationListResponse response = repository.listReservations(
-                "acme", null, null, null, null, null, null, null, 100, "42", null, null, null, null);
+                "acme", null, null, null, null, null, null, null, 100, "42", null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).isEmpty();
             verify(jedis).scan(eq("42"), any(ScanParams.class));
@@ -948,7 +948,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
-                    3000L, null);
+                    3000L, null, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                     .containsExactly("r2");
@@ -981,7 +981,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
-                    null, 7000L);
+                    null, 7000L, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                     .containsExactly("r1");
@@ -1027,7 +1027,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
-                    3000L, 7000L);
+                    3000L, 7000L, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                     .containsExactlyInAnyOrder("r1", "r2", "r3");
@@ -1067,7 +1067,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null,
-                    "created_at_ms", "asc", 200L, 1000L);
+                    "created_at_ms", "asc", 200L, 1000L, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                     .containsExactly("r2", "r3");
@@ -1099,7 +1099,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse page1 = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, null,
-                    "created_at_ms", "asc", 200L, 1000L);
+                    "created_at_ms", "asc", 200L, 1000L, null, null, null, null);
             String cursor = page1.getNextCursor();
             assertThat(cursor).isNotNull();
 
@@ -1107,7 +1107,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             // from/to so the cursor tuple invalidates on window change).
             assertThatThrownBy(() -> repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, cursor,
-                    "created_at_ms", "asc", 999L, 1000L))
+                    "created_at_ms", "asc", 999L, 1000L, null, null, null, null))
                     .isInstanceOf(io.runcycles.protocol.data.exception.CyclesProtocolException.class)
                     .hasMessageContaining("cursor is not valid");
         }
@@ -1142,7 +1142,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
-                    1000L, null);
+                    1000L, null, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                     .containsExactly("r1");
@@ -1175,10 +1175,284 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
-                    null, 10000L);
+                    null, 10000L, null, null, null, null);
 
             assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
                     .containsExactly("r1");
+        }
+    }
+
+    // cycles-protocol revision 2026-05-22 — expires_from / expires_to filter
+    // binds to expires_at_ms (required on every row); finalized_from /
+    // finalized_to filter binds to finalized_at_ms (resolved from
+    // committed_at or released_at; ACTIVE/EXPIRED rows have neither and
+    // are normatively excluded).
+    @Nested
+    @DisplayName("listReservations — expires_* / finalized_* time windows")
+    class ExpiresAndFinalizedWindowFilter {
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("legacy path: expires_from excludes rows expiring earlier")
+        void expiresFromExcludesEarlierExpiry() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Row r1 expires at 1000 (early), r2 expires at 5000. expires_from=3000.
+            Map<String, String> early = reservationFields("r1", "ACTIVE");
+            early.put("expires_at", "1000");
+            Map<String, String> late = reservationFields("r2", "ACTIVE");
+            late.put("expires_at", "5000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(early);
+            when(resp2.get()).thenReturn(late);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, 3000L, null, null, null);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r2");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("legacy path: expires_to excludes rows expiring later")
+        void expiresToExcludesLaterExpiry() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> inside = reservationFields("r1", "ACTIVE");
+            inside.put("expires_at", "5000");
+            Map<String, String> later = reservationFields("r2", "ACTIVE");
+            later.put("expires_at", "9000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(inside);
+            when(resp2.get()).thenReturn(later);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, 7000L, null, null);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("legacy path: finalized_from excludes ACTIVE rows (no committed_at/released_at)")
+        void finalizedFromExcludesActiveRows() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // r1 is ACTIVE — has neither committed_at nor released_at, so the
+            // predicate must drop it when finalized_from is supplied. r2 is
+            // COMMITTED at ts=5000 → kept.
+            Map<String, String> active = reservationFields("r1", "ACTIVE");
+            Map<String, String> committed = reservationFields("r2", "COMMITTED");
+            committed.put("committed_at", "5000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(active);
+            when(resp2.get()).thenReturn(committed);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, null, 1000L, null);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r2");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("legacy path: finalized_at resolves from released_at when committed_at absent")
+        void finalizedAtResolvesFromReleasedAt() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // r1 is RELEASED at ts=5000 — finalized_at should resolve from
+            // released_at; expect inside the window.
+            Map<String, String> released = reservationFields("r1", "RELEASED");
+            released.put("released_at", "5000");
+            // r2 is RELEASED at ts=9000 — outside window.
+            Map<String, String> releasedLate = reservationFields("r2", "RELEASED");
+            releasedLate.put("released_at", "9000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(released);
+            when(resp2.get()).thenReturn(releasedLate);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, null, 3000L, 7000L);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("all three windows compose with AND semantics")
+        void threeWindowsAndCompose() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // Three rows. r1 satisfies created+expires+finalized. r2 fails created
+            // (outside from/to). r3 fails finalized (ACTIVE → no finalized_at).
+            Map<String, String> matches = reservationFields("r1", "COMMITTED");
+            matches.put("created_at", "5000");
+            matches.put("expires_at", "5000");
+            matches.put("committed_at", "5000");
+            Map<String, String> wrongCreated = reservationFields("r2", "COMMITTED");
+            wrongCreated.put("created_at", "100"); // before from=3000
+            wrongCreated.put("expires_at", "5000");
+            wrongCreated.put("committed_at", "5000");
+            Map<String, String> activeRow = reservationFields("r3", "ACTIVE");
+            activeRow.put("created_at", "5000");
+            activeRow.put("expires_at", "5000");
+
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            Response<Map<String, String>> resp3 = mock(Response.class);
+            when(resp1.get()).thenReturn(matches);
+            when(resp2.get()).thenReturn(wrongCreated);
+            when(resp3.get()).thenReturn(activeRow);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of(
+                    "reservation:res_r1", "reservation:res_r2", "reservation:res_r3"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    3000L, 7000L, 3000L, 7000L, 3000L, 7000L);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("malformed row with both committed_at and released_at — predicate and projection agree (released-wins)")
+        void finalizedResolverAgreesWhenBothFieldsSet() {
+            // Defensive regression: in the normal lifecycle commit XOR release,
+            // so a row has at most one of committed_at / released_at. A
+            // malformed Redis write could produce both. Before centralizing
+            // resolveFinalizedAtStr, the predicate would filter using
+            // committed_at while the projection emitted released_at — the
+            // row could be filtered using one timestamp and returned with
+            // another, violating the spec contract that the filter operates
+            // against the returned finalized_at_ms.
+            //
+            // This test pins the post-fix behavior: both paths use released_at
+            // (last-write-wins, matching the original projection logic).
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> malformed = reservationFields("r1", "RELEASED");
+            malformed.put("committed_at", "3000");
+            malformed.put("released_at", "5000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            when(resp1.get()).thenReturn(malformed);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+
+            // Window [4000, 6000] — would match released_at=5000 but NOT committed_at=3000.
+            // Pre-fix the predicate would have excluded this row (committed-wins);
+            // post-fix it must include it (released-wins, matching projection).
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, null, 4000L, 6000L);
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r1");
+
+            // And the projection emits released_at on the returned summary —
+            // confirms predicate and projection agree on which timestamp.
+            assertThat(response.getReservations().get(0).getFinalizedAtMs())
+                    .isEqualTo(5000L);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("cursor reused with different expires_from → 400 (FilterHasher folds expires_*)")
+        void cursorMismatchOnExpiresWindowChange() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> f1 = reservationFields("r1", "ACTIVE");
+            f1.put("expires_at", "5000");
+            Map<String, String> f2 = reservationFields("r2", "ACTIVE");
+            f2.put("expires_at", "7000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(f1);
+            when(resp2.get()).thenReturn(f2);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse page1 = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 1, null,
+                    "expires_at_ms", "asc", null, null, 2000L, 10000L, null, null);
+            String cursor = page1.getNextCursor();
+            assertThat(cursor).isNotNull();
+
+            // Reuse cursor under a different expires_from → MUST 400.
+            assertThatThrownBy(() -> repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 1, cursor,
+                    "expires_at_ms", "asc", null, null, 9999L, 10000L, null, null))
+                    .isInstanceOf(io.runcycles.protocol.data.exception.CyclesProtocolException.class)
+                    .hasMessageContaining("cursor is not valid");
         }
     }
 }
