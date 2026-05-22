@@ -252,7 +252,11 @@ public class ReservationController extends BaseController{
             @RequestParam(value = "sort_by", required = false) String sortBy,
             @RequestParam(value = "sort_dir", required = false) String sortDir,
             @RequestParam(required = false) String from,
-            @RequestParam(value = "to", required = false) String toParam) {
+            @RequestParam(value = "to", required = false) String toParam,
+            @RequestParam(value = "expires_from", required = false) String expiresFrom,
+            @RequestParam(value = "expires_to", required = false) String expiresTo,
+            @RequestParam(value = "finalized_from", required = false) String finalizedFrom,
+            @RequestParam(value = "finalized_to", required = false) String finalizedTo) {
         // Validate status against ReservationStatus enum if provided
         if (status != null) {
             try {
@@ -296,6 +300,23 @@ public class ReservationController extends BaseController{
             throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
                 "from must be less than or equal to to (received from=" + from + ", to=" + toParam + ")", 400);
         }
+        // cycles-protocol revision 2026-05-22: expires_from/expires_to bind to
+        // expires_at_ms; finalized_from/finalized_to bind to finalized_at_ms.
+        // Each pair validates independently with its own from > to check;
+        // empty strings are treated as unset per the normative blank-string
+        // carve-out in the shared TIME-RANGE FILTERS validation block.
+        Long expiresFromMs = parseIsoToEpochMs(expiresFrom, "expires_from");
+        Long expiresToMs = parseIsoToEpochMs(expiresTo, "expires_to");
+        if (expiresFromMs != null && expiresToMs != null && expiresFromMs > expiresToMs) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "expires_from must be less than or equal to expires_to (received expires_from=" + expiresFrom + ", expires_to=" + expiresTo + ")", 400);
+        }
+        Long finalizedFromMs = parseIsoToEpochMs(finalizedFrom, "finalized_from");
+        Long finalizedToMs = parseIsoToEpochMs(finalizedTo, "finalized_to");
+        if (finalizedFromMs != null && finalizedToMs != null && finalizedFromMs > finalizedToMs) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "finalized_from must be less than or equal to finalized_to (received finalized_from=" + finalizedFrom + ", finalized_to=" + finalizedTo + ")", 400);
+        }
         // v0.1.25.8 (cycles-protocol revision 2026-04-13): tenant param
         // semantics differ by auth type. ApiKeyAuth: optional, falls
         // back to authenticated tenant, validation-only when present.
@@ -316,11 +337,12 @@ public class ReservationController extends BaseController{
             effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
             authorizeTenant(effectiveTenant);
         }
-        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}, from: {}, to: {}",
-                effectiveTenant, isAdminAuth(), sortBy, sortDir, fromMs, toMs);
+        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}, from: {}, to: {}, expires_from: {}, expires_to: {}, finalized_from: {}, finalized_to: {}",
+                effectiveTenant, isAdminAuth(), sortBy, sortDir, fromMs, toMs,
+                expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs);
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
                 status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir,
-                fromMs, toMs));
+                fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs));
     }
 
     private Long parseIsoToEpochMs(String raw, String paramName) {

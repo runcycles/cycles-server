@@ -14,6 +14,43 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.21] — 2026-05-22
+
+`expires_from`/`expires_to` and `finalized_from`/`finalized_to` ISO-8601 time-window filters on `GET /v1/reservations`, implementing `cycles-protocol-v0.yaml` revision 2026-05-22 ([runcycles/cycles-protocol#98](https://github.com/runcycles/cycles-protocol/pull/98)). Closes [#162](https://github.com/runcycles/cycles-server/issues/162).
+
+### Added
+
+- **Four new query parameters on `listReservations`** mirroring the v0.1.25.20 `from`/`to` shape. All ISO 8601 `format: date-time`, all optional, all inclusive bounds:
+  - `expires_from` / `expires_to` — bound on `expires_at_ms` (required field; applies to every row regardless of status).
+  - `finalized_from` / `finalized_to` — bound on `finalized_at_ms` (populated only on COMMITTED/RELEASED; ACTIVE and EXPIRED rows are normatively excluded since the field is absent).
+- The three window filters (`from`/`to` + `expires_*` + `finalized_*`) compose with AND semantics — a row must satisfy every supplied predicate to be returned.
+- **`finalized_at_ms` on `ReservationSummary`.** Pre-revision the field was only on `ReservationDetail`, which meant clients filtering with `finalized_*` couldn't see the timestamp they were filtering on without a per-row `getReservation` call. The summary now carries the field with the same population semantics. Strict-schema clients remain compatible because the field is optional (`@JsonInclude(NON_NULL)`).
+
+### Validation
+
+- Each pair rejects `expires_from > expires_to` and `finalized_from > finalized_to` with HTTP 400 before any repository call.
+- Malformed ISO-8601 → 400 with distinct `Invalid {param_name}` message identifying which parameter failed.
+- Blank-string values for any of the six bounds treated as unset per the normative carve-out in the 2026-05-22 spec revision.
+
+### Internal
+
+- `RedisReservationRepository.listReservations(...)` signature gains trailing `Long expiresFromMs, Long expiresToMs, Long finalizedFromMs, Long finalizedToMs` (14 → 18 args). Private `listReservationsSorted(...)` mirrors. Two new predicate helpers: `expiresAtInWindow(fields, fromMs, toMs)` and `finalizedAtInWindow(fields, fromMs, toMs)`, applied in both legacy SCAN-cursor and sorted paths after the existing scope/status/tenant predicates.
+- `finalizedAtInWindow` resolves the timestamp from `committed_at` OR `released_at` (whichever is set), matching `buildReservationSummary`'s projection logic. Both fields absent → row excluded per the normative ACTIVE/EXPIRED exclusion.
+- `FilterHasher.hash(...)` gains four trailing `Long` arguments (10 → 14 args) with independent gated emission. Each window pair emits its `|ef=|et=` / `|ff=|ft=` block only when at least one of its bounds is non-null — preserves byte-exact back-compat for **both** v0.1.25.18 cursors (no window canonical) and v0.1.25.20 cursors (`|fr=|to=` canonical, no expires/finalized). Locked down by `FilterHasherTest.preservesV01_25_20HashWhenOnlyFromTo` (golden `ad7204d521cfd133`).
+- `ReservationSummary.finalizedAtMs` projection added to `toSummary(...)` builder.
+
+### Coverage
+
+- 557 protocol-service tests pass (384 data + 173 api), up from 538 in v0.1.25.20 (+19 new):
+  - `FilterHasherTest`: +3 new (expires/finalized distinctness, finalized vs from/to distinctness, v0.1.25.20 8-byte golden lockdown).
+  - `RedisReservationQueryTest`: +6 new under `ExpiresAndFinalizedWindowFilter` nested class.
+  - `ReservationControllerTest`: +10 new under `ListReservations` nested class (4 malformed-*, 2 reversed-window, expires propagation, finalized propagation, all-three combined, blank-as-unset for new windows).
+- JaCoCo 95% bundle gate met.
+
+### Behavior change
+
+None for existing callers. All four new params are optional; the gated FilterHasher emission preserves byte-exact cursor back-compat for both v0.1.25.18 and v0.1.25.20 sorted-path cursors. The single new response-body field on `ReservationSummary` is optional with `@JsonInclude(NON_NULL)`, so v0.1.25.20-shape responses go out byte-for-byte when no terminal-state rows are returned.
+
 ## [0.1.25.20] — 2026-05-21
 
 `from` / `to` ISO-8601 time-window filter on `GET /v1/reservations`,
