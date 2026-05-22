@@ -839,12 +839,7 @@ public class RedisReservationRepository {
      */
     private static boolean finalizedAtInWindow(Map<String, String> fields, Long fromMs, Long toMs) {
         if (fromMs == null && toMs == null) return true;
-        String committedAt = fields.get("committed_at");
-        String releasedAt = fields.get("released_at");
-        // Resolve the finalized timestamp the same way buildReservationSummary does.
-        // committed_at wins if both somehow exist (shouldn't, given the lifecycle is
-        // commit XOR release); released_at falls through. Both absent → row excluded.
-        String finalizedAtStr = committedAt != null ? committedAt : releasedAt;
+        String finalizedAtStr = resolveFinalizedAtStr(fields);
         if (finalizedAtStr == null) return false;
         long finalizedAt;
         try {
@@ -855,6 +850,34 @@ public class RedisReservationRepository {
         if (fromMs != null && finalizedAt < fromMs) return false;
         if (toMs != null && finalizedAt > toMs) return false;
         return true;
+    }
+
+    /**
+     * Centralized resolver for the projected {@code finalized_at_ms} timestamp,
+     * shared between the {@link #finalizedAtInWindow} predicate and the
+     * {@link #buildReservationSummary} projection. Both call sites MUST agree
+     * on which Redis hash field is the source of truth, otherwise a malformed
+     * row with both {@code committed_at} and {@code released_at} populated
+     * could be filtered using one timestamp and returned with another —
+     * violating the spec's contract that the filter operates against the
+     * returned {@code finalized_at_ms}.
+     *
+     * <p>Released-wins: {@code released_at} dominates when both are set, matching
+     * the projection's last-write-wins assignment order in
+     * {@link #buildReservationSummary}. In the normal lifecycle the two fields
+     * are mutually exclusive (commit XOR release), so this rule is a defensive
+     * tie-breaker for malformed Redis writes only.
+     *
+     * <p>Returns {@code null} when both fields are absent (ACTIVE / EXPIRED rows
+     * in the normal lifecycle). Returns the raw string form so callers can
+     * decide on parse-failure handling (the predicate swallows
+     * NumberFormatException to exclude the row from filter results; the
+     * projection lets it propagate as a data-corruption signal).
+     */
+    private static String resolveFinalizedAtStr(Map<String, String> fields) {
+        String releasedAt = fields.get("released_at");
+        if (releasedAt != null) return releasedAt;
+        return fields.get("committed_at");
     }
 
     private static int findSliceStart(List<ReservationSummary> sorted, String sortBy,
@@ -1326,13 +1349,12 @@ public class RedisReservationRepository {
         if (chargedAmountStr != null) {
             committed = new Amount(unit, Long.parseLong(chargedAmountStr));
         }
-        String committedAtStr = fields.get("committed_at");
-        if (committedAtStr != null) {
-            finalizedAtMs = Long.parseLong(committedAtStr);
-        }
-        String releasedAtStr = fields.get("released_at");
-        if (releasedAtStr != null) {
-            finalizedAtMs = Long.parseLong(releasedAtStr);
+        // Shared resolver with finalizedAtInWindow — the predicate and the
+        // projection MUST agree on which hash field wins when both are set.
+        // See resolveFinalizedAtStr javadoc for the released-wins rationale.
+        String finalizedAtStr = resolveFinalizedAtStr(fields);
+        if (finalizedAtStr != null) {
+            finalizedAtMs = Long.parseLong(finalizedAtStr);
         }
 
         // Parse metadata if present

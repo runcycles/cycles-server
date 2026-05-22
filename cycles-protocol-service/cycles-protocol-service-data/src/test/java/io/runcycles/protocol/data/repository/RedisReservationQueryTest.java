@@ -1373,6 +1373,52 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
         @SuppressWarnings("unchecked")
         @Test
+        @DisplayName("malformed row with both committed_at and released_at — predicate and projection agree (released-wins)")
+        void finalizedResolverAgreesWhenBothFieldsSet() {
+            // Defensive regression: in the normal lifecycle commit XOR release,
+            // so a row has at most one of committed_at / released_at. A
+            // malformed Redis write could produce both. Before centralizing
+            // resolveFinalizedAtStr, the predicate would filter using
+            // committed_at while the projection emitted released_at — the
+            // row could be filtered using one timestamp and returned with
+            // another, violating the spec contract that the filter operates
+            // against the returned finalized_at_ms.
+            //
+            // This test pins the post-fix behavior: both paths use released_at
+            // (last-write-wins, matching the original projection logic).
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> malformed = reservationFields("r1", "RELEASED");
+            malformed.put("committed_at", "3000");
+            malformed.put("released_at", "5000");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            when(resp1.get()).thenReturn(malformed);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+
+            // Window [4000, 6000] — would match released_at=5000 but NOT committed_at=3000.
+            // Pre-fix the predicate would have excluded this row (committed-wins);
+            // post-fix it must include it (released-wins, matching projection).
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, null, 4000L, 6000L);
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r1");
+
+            // And the projection emits released_at on the returned summary —
+            // confirms predicate and projection agree on which timestamp.
+            assertThat(response.getReservations().get(0).getFinalizedAtMs())
+                    .isEqualTo(5000L);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
         @DisplayName("cursor reused with different expires_from → 400 (FilterHasher folds expires_*)")
         void cursorMismatchOnExpiresWindowChange() {
             when(jedisPool.getResource()).thenReturn(jedis);
