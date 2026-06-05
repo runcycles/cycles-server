@@ -103,3 +103,5 @@
 
 {"timestamp": "2026-06-04T10:33:46Z", "commit": "1c0b0a2", "tag": null, "trials": 3, "reserve_p50_ms": 3.3, "reserve_p99_ms": 6.4, "commit_p50_ms": 2.3, "commit_p99_ms": 5.5, "release_p50_ms": 3.0, "event_p50_ms": 2.8, "concurrent_throughput_32t": 535.2}
 
+{"timestamp": "2026-06-05T10:40:47Z", "commit": "1c0b0a2", "tag": null, "trials": 3, "reserve_p50_ms": 3.0, "reserve_p99_ms": 8.6, "commit_p50_ms": 2.4, "commit_p99_ms": 6.3, "release_p50_ms": 2.8, "event_p50_ms": 2.7, "concurrent_throughput_32t": 545.4}
+
