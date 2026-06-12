@@ -321,6 +321,71 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
             assertThat(response.getReservationId()).isEqualTo("existing-res");
         }
+
+        @Test
+        void shouldReplayCachedOriginalResponseVerbatimOnIdempotencyHit() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            // Lua signals an idempotency hit (reservation_id, no expires_at)
+            String luaResponse = objectMapper.writeValueAsString(Map.of("reservation_id", "orig-res"));
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(luaResponse);
+            // The FULL original response was cached at first create — return it verbatim.
+            ReservationCreateResponse original = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .reservationId("orig-res")
+                    .affectedScopes(List.of("tenant:acme"))
+                    .reserved(new Amount(Enums.UnitEnum.TOKENS, 1000L))
+                    .balances(List.of()) // ORIGINAL (snapshot) balances
+                    .cyclesEvidence(CyclesEvidenceRef.builder()
+                            .evidenceId("c".repeat(64))
+                            .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "c".repeat(64))
+                            .build())
+                    .build();
+            when(jedis.get("idem:acme:reserve:idem-hit"))
+                    .thenReturn(objectMapper.writeValueAsString(original));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-hit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            // returned the ORIGINAL body verbatim (including the original cycles_evidence)
+            assertThat(response.getReservationId()).isEqualTo("orig-res");
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
+            // did NOT rebuild from the reservation hash (cache hit short-circuits)
+            verify(jedis, never()).hgetAll("reservation:res_orig-res");
+        }
+
+        @Test
+        void shouldCacheFullReserveResponseUnderIdempotencyKey() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            ReservationCreateResponse response = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .reservationId("res-1")
+                    .affectedScopes(List.of("tenant:acme"))
+                    .build();
+
+            repository.cacheReserveResponse("acme", "key-1", response);
+
+            verify(jedis).psetex(eq("idem:acme:reserve:key-1"), eq(86400000L),
+                    contains("\"reservation_id\":\"res-1\""));
+        }
+
+        @Test
+        void shouldNotCacheReserveResponseWithoutIdempotencyKey() {
+            // no key → no replay possible → no cache write (and no Redis call)
+            repository.cacheReserveResponse("acme", null, ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW).build());
+            verifyNoInteractions(jedisPool);
+        }
     }
 
     // ---- createReservation dry_run ----

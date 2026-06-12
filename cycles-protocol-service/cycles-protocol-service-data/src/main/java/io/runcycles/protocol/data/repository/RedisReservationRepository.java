@@ -118,17 +118,30 @@ public class RedisReservationRepository {
             }
 
             // Idempotency hit: Lua returns existing reservation_id without expires_at.
-            // Fetch the stored reservation to build a complete, accurate response.
-            // Use hgetAll directly to avoid the 410 check in getReservationById.
             if (!response.containsKey("expires_at")) {
                 String existingId = (String) response.get("reservation_id");
+                metrics.recordReserve(tenant, Enums.DecisionEnum.ALLOW.name(), "IDEMPOTENT_REPLAY", overagePolicyTag);
+                // Spec (NORMATIVE): replay MUST return the ORIGINAL successful response
+                // payload. Prefer the full original response cached at first create —
+                // byte-identical body (original balances + original cycles_evidence), so
+                // it matches the CyclesEvidence envelope the evidence_id points to.
+                String cachedOriginal = jedis.get(reserveResponseCacheKey(tenant, request.getIdempotencyKey()));
+                if (cachedOriginal != null) {
+                    ReservationCreateResponse original =
+                        objectMapper.readValue(cachedOriginal, ReservationCreateResponse.class);
+                    original.setIdempotentReplay(true);
+                    return original;
+                }
+                // Fallback (cache expired/absent, e.g. a reservation created before the
+                // full-response cache existed): rebuild from the stored reservation. Balances
+                // reflect current state and no cycles_evidence is replayed — a bounded
+                // degradation only when the original body is no longer available.
                 Map<String, String> existingFields = jedis.hgetAll("reservation:res_" + existingId);
                 if (existingFields == null || existingFields.isEmpty()) {
                     throw CyclesProtocolException.notFound(existingId);
                 }
                 ReservationSummary existing = buildReservationSummary(existingFields);
                 List<Balance> idempotencyBalances = fetchBalancesForScopes(jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
-                metrics.recordReserve(tenant, Enums.DecisionEnum.ALLOW.name(), "IDEMPOTENT_REPLAY", overagePolicyTag);
                 return ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.ALLOW)
                     .reservationId(existingId)
@@ -137,12 +150,7 @@ public class RedisReservationRepository {
                     .reserved(existing.getReserved())
                     .expiresAtMs(existing.getExpiresAtMs())
                     .balances(idempotencyBalances)
-                    // Idempotent replay: flag it + carry the CyclesEvidence ref persisted
-                    // at first create, so the controller returns the SAME evidence (never
-                    // recomputes — replay balances reflect current state — nor re-emits).
                     .idempotentReplay(true)
-                    .storedEvidenceId(existingFields.get("evidence_id"))
-                    .storedEvidenceUrl(existingFields.get("cycles_evidence_url"))
                     .build();
             }
 
@@ -182,24 +190,33 @@ public class RedisReservationRepository {
         }
     }
 
+    /** Idempotency cache key for the full original reserve response. */
+    private static String reserveResponseCacheKey(String tenant, String idempotencyKey) {
+        return "idem:" + tenant + ":reserve:" + idempotencyKey;
+    }
+
     /**
-     * Persist the CyclesEvidence ref ({@code evidence_id} + {@code cycles_evidence_url})
-     * on the reservation hash so an idempotent replay of the same {@code idempotency_key}
-     * returns the IDENTICAL evidence (read back into {@code storedEvidence*} on the replay
-     * path). Called once, on a fresh create, after the evidence is computed.
+     * Cache the FULL original reserve response (with {@code cycles_evidence} already
+     * stamped) so an idempotent replay of the same {@code idempotency_key} returns the
+     * byte-identical original payload — satisfying the NORMATIVE reserve idempotency rule
+     * (original balances + original evidence, matching the envelope the {@code evidence_id}
+     * points to). Called once, by the controller, on a fresh non-dry-run create after
+     * evidence is stamped. No-op when there is no {@code idempotency_key} (no replay possible).
      *
-     * <p>Fail-open: a write failure is logged, never thrown — evidence is best-effort and
-     * must never fail an already-committed reservation. A lost write degrades a later
-     * replay to omitting {@code cycles_evidence}, not to a wrong value.
+     * <p>Fail-open: a write failure is logged, never thrown — it only degrades a later
+     * replay to the rebuild fallback, never fails the committed reservation.
      */
-    public void persistEvidenceRef(String reservationId, String evidenceId, String cyclesEvidenceUrl) {
+    public void cacheReserveResponse(String tenant, String idempotencyKey,
+                                     ReservationCreateResponse response) {
+        if (idempotencyKey == null || idempotencyKey.isEmpty()) {
+            return;
+        }
         try (Jedis jedis = jedisPool.getResource()) {
-            Map<String, String> fields = new LinkedHashMap<>();
-            fields.put("evidence_id", evidenceId);
-            fields.put("cycles_evidence_url", cyclesEvidenceUrl);
-            jedis.hset("reservation:res_" + reservationId, fields);
+            jedis.psetex(reserveResponseCacheKey(tenant, idempotencyKey), 86400000L,
+                    objectMapper.writeValueAsString(response));
         } catch (Exception e) {
-            LOG.warn("Failed to persist evidence ref for reservation {}: {}", reservationId, e.getMessage());
+            LOG.warn("Failed to cache reserve response for idempotency_key {}: {}",
+                    idempotencyKey, e.getMessage());
         }
     }
 

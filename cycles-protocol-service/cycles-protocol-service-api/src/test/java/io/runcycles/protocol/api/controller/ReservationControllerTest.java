@@ -86,6 +86,13 @@ class ReservationControllerTest {
         return objectMapper.writeValueAsString(req);
     }
 
+    private String dryRunReservationJson(String tenant, long amount) throws Exception {
+        ReservationCreateRequest req = objectMapper.readValue(reservationJson(tenant, amount),
+                ReservationCreateRequest.class);
+        req.setDryRun(true);
+        return objectMapper.writeValueAsString(req);
+    }
+
     private ReservationCreateResponse allowResponse() {
         return ReservationCreateResponse.builder()
                 .decision(Enums.DecisionEnum.ALLOW)
@@ -137,7 +144,7 @@ class ReservationControllerTest {
         }
 
         @Test
-        void shouldSurfaceCyclesEvidenceAndPersistRefOnFreshReserve() throws Exception {
+        void shouldSurfaceCyclesEvidenceAndCacheResponseOnFreshReserve() throws Exception {
             when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
             String evidenceId = "a".repeat(64);
             String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
@@ -150,21 +157,22 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
                     .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
-            // fresh create persists the ref so future idempotent replays return the same evidence
-            verify(repository).persistEvidenceRef("res_123", evidenceId, url);
+            // fresh create caches the FULL response (with evidence) so a later idempotent
+            // replay returns it byte-identically
+            verify(repository).cacheReserveResponse(eq(TENANT), any(), any(ReservationCreateResponse.class));
         }
 
         @Test
-        void shouldReplayStoredCyclesEvidenceWithoutRecomputingOrReemitting() throws Exception {
-            // Idempotency replay: repository returns the original ref; the controller must
-            // return it verbatim, NOT call emit() (no second source record, no drift) and
-            // NOT re-persist. Guards the reserve idempotency contract for cycles_evidence.
+        void shouldReturnOriginalCyclesEvidenceVerbatimOnReplay() throws Exception {
+            // Idempotency replay: the repository serves the cached ORIGINAL body (original
+            // balances + original cycles_evidence). The controller returns it verbatim:
+            // never re-emits and never re-caches. Guards the reserve idempotency contract.
             String evidenceId = "b".repeat(64);
             String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
             ReservationCreateResponse replay = allowResponse();
             replay.setIdempotentReplay(true);
-            replay.setStoredEvidenceId(evidenceId);
-            replay.setStoredEvidenceUrl(url);
+            replay.setCyclesEvidence(CyclesEvidenceRef.builder()
+                    .evidenceId(evidenceId).cyclesEvidenceUrl(url).build());
             when(repository.createReservation(any(), eq(TENANT))).thenReturn(replay);
 
             mockMvc.perform(post("/v1/reservations")
@@ -174,15 +182,15 @@ class ReservationControllerTest {
                     .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
                     .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
             verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).persistEvidenceRef(any(), any(), any());
+            verify(repository, never()).cacheReserveResponse(any(), any(), any());
         }
 
         @Test
-        void shouldOmitCyclesEvidenceOnReplayWhenNoneWasPersisted() throws Exception {
-            // Replay of a reservation created before evidence identity was configured:
-            // no stored ref → omit cycles_evidence (safe degradation), still no emit.
+        void shouldOmitCyclesEvidenceOnReplayWhenOriginalHadNone() throws Exception {
+            // Replay falling back to rebuild (original body unavailable) → no cycles_evidence;
+            // still no emit, still no re-cache.
             ReservationCreateResponse replay = allowResponse();
-            replay.setIdempotentReplay(true); // storedEvidenceId stays null
+            replay.setIdempotentReplay(true); // cyclesEvidence stays null
             when(repository.createReservation(any(), eq(TENANT))).thenReturn(replay);
 
             mockMvc.perform(post("/v1/reservations")
@@ -191,6 +199,23 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
             verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
+            verify(repository, never()).cacheReserveResponse(any(), any(), any());
+        }
+
+        @Test
+        void shouldNotEmitOrSurfaceEvidenceForDryRun() throws Exception {
+            // dry_run neither persists a reservation nor changes any budget → NO evidence.
+            ReservationCreateResponse dry = allowResponse();
+            dry.setReservationId(null); // dry_run responses carry no reservation_id
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(dry);
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(dryRunReservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
+            verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
+            verify(repository, never()).cacheReserveResponse(any(), any(), any());
         }
 
         @Test
@@ -202,6 +227,8 @@ class ReservationControllerTest {
                             .content(reservationJson(TENANT, 1000)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
+            // still caches the (evidence-less) response for idempotent replay
+            verify(repository).cacheReserveResponse(eq(TENANT), any(), any(ReservationCreateResponse.class));
         }
 
         @Test

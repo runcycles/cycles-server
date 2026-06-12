@@ -110,40 +110,31 @@ public class ReservationController extends BaseController{
                     resolveRequestId(httpRequest),
                     resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
-        // CyclesEvidence (cycles-evidence-v0.1) — IDEMPOTENT by construction:
-        EvidenceEmitter.EvidenceRef evidenceRef;
-        if (response.isIdempotentReplay()) {
-            // Idempotent replay: return the ORIGINAL evidence ref (persisted at first
-            // create), verbatim. Never recompute (the replayed response's balances
-            // reflect CURRENT state, so a recompute would drift to a different
-            // evidence_id) and never emit a second source record — preserving the
-            // "return the original successful response" rule for the same idempotency_key.
-            evidenceRef = response.getStoredEvidenceId() != null
-                    ? new EvidenceEmitter.EvidenceRef(response.getStoredEvidenceId(),
-                            response.getStoredEvidenceUrl())
-                    : null;
-        } else {
-            // Fresh reserve: queue a `reserve` SOURCE record (covers ALLOW and DENY)
-            // and compute the evidence_id. payload.reserve = {request, response}
-            // (LinkedHashMap: null-safe, ordered). The id is computed over `response`
-            // AS IT IS HERE — before cycles_evidence is stamped below — so the attested
-            // payload never references its own id. Persist the ref so future replays
-            // of this idempotency_key return the identical evidence.
+        // CyclesEvidence (cycles-evidence-v0.1) — IDEMPOTENT by construction.
+        // - dry_run: NO evidence. It neither persists a reservation nor changes any
+        //   budget, so there is nothing to attest or bind a receipt to.
+        // - idempotent replay: return the response verbatim. The repository served the
+        //   FULL original cached body (original balances + original cycles_evidence), so
+        //   we must NOT re-emit or re-stamp — that would break the "return the original
+        //   successful response" rule and point a new id at a stale body.
+        // - fresh reserve: emit a `reserve` SOURCE record + compute the evidence_id over
+        //   {request, response} AS IT IS HERE (before cycles_evidence is stamped, so the
+        //   attested payload never references its own id), stamp it, then cache the full
+        //   response so future replays of this idempotency_key return it byte-identically.
+        boolean dryRun = Boolean.TRUE.equals(request.getDryRun());
+        if (!dryRun && !response.isIdempotentReplay()) {
             java.util.Map<String, Object> evidenceBody = new java.util.LinkedHashMap<>();
             evidenceBody.put("request", request);
             evidenceBody.put("response", response);
-            evidenceRef = evidenceEmitter.emit("reserve", System.currentTimeMillis(),
-                    resolveTraceId(httpRequest), evidenceBody);
-            if (evidenceRef != null && response.getReservationId() != null) {
-                repository.persistEvidenceRef(response.getReservationId(),
-                        evidenceRef.evidenceId(), evidenceRef.cyclesEvidenceUrl());
+            EvidenceEmitter.EvidenceRef evidenceRef = evidenceEmitter.emit("reserve",
+                    System.currentTimeMillis(), resolveTraceId(httpRequest), evidenceBody);
+            if (evidenceRef != null) {
+                response.setCyclesEvidence(CyclesEvidenceRef.builder()
+                        .evidenceId(evidenceRef.evidenceId())
+                        .cyclesEvidenceUrl(evidenceRef.cyclesEvidenceUrl())
+                        .build());
             }
-        }
-        if (evidenceRef != null) {
-            response.setCyclesEvidence(CyclesEvidenceRef.builder()
-                    .evidenceId(evidenceRef.evidenceId())
-                    .cyclesEvidenceUrl(evidenceRef.cyclesEvidenceUrl())
-                    .build());
+            repository.cacheReserveResponse(tenant, request.getIdempotencyKey(), response);
         }
         return ResponseEntity.ok(response);
     }
