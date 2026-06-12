@@ -110,17 +110,35 @@ public class ReservationController extends BaseController{
                     resolveRequestId(httpRequest),
                     resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
-        // CyclesEvidence: queue a `reserve` envelope SOURCE record (covers both
-        // ALLOW and DENY — each is a `reserve` artifact carrying its decision).
-        // payload.reserve = {request, response} (LinkedHashMap: null-safe, ordered).
-        // The evidence_id is computed over `response` AS IT IS HERE — i.e. before
-        // we stamp cycles_evidence onto it below — so the attested payload never
-        // carries a reference to its own id.
-        java.util.Map<String, Object> evidenceBody = new java.util.LinkedHashMap<>();
-        evidenceBody.put("request", request);
-        evidenceBody.put("response", response);
-        EvidenceEmitter.EvidenceRef evidenceRef = evidenceEmitter.emit("reserve",
-                System.currentTimeMillis(), resolveTraceId(httpRequest), evidenceBody);
+        // CyclesEvidence (cycles-evidence-v0.1) — IDEMPOTENT by construction:
+        EvidenceEmitter.EvidenceRef evidenceRef;
+        if (response.isIdempotentReplay()) {
+            // Idempotent replay: return the ORIGINAL evidence ref (persisted at first
+            // create), verbatim. Never recompute (the replayed response's balances
+            // reflect CURRENT state, so a recompute would drift to a different
+            // evidence_id) and never emit a second source record — preserving the
+            // "return the original successful response" rule for the same idempotency_key.
+            evidenceRef = response.getStoredEvidenceId() != null
+                    ? new EvidenceEmitter.EvidenceRef(response.getStoredEvidenceId(),
+                            response.getStoredEvidenceUrl())
+                    : null;
+        } else {
+            // Fresh reserve: queue a `reserve` SOURCE record (covers ALLOW and DENY)
+            // and compute the evidence_id. payload.reserve = {request, response}
+            // (LinkedHashMap: null-safe, ordered). The id is computed over `response`
+            // AS IT IS HERE — before cycles_evidence is stamped below — so the attested
+            // payload never references its own id. Persist the ref so future replays
+            // of this idempotency_key return the identical evidence.
+            java.util.Map<String, Object> evidenceBody = new java.util.LinkedHashMap<>();
+            evidenceBody.put("request", request);
+            evidenceBody.put("response", response);
+            evidenceRef = evidenceEmitter.emit("reserve", System.currentTimeMillis(),
+                    resolveTraceId(httpRequest), evidenceBody);
+            if (evidenceRef != null && response.getReservationId() != null) {
+                repository.persistEvidenceRef(response.getReservationId(),
+                        evidenceRef.evidenceId(), evidenceRef.cyclesEvidenceUrl());
+            }
+        }
         if (evidenceRef != null) {
             response.setCyclesEvidence(CyclesEvidenceRef.builder()
                     .evidenceId(evidenceRef.evidenceId())

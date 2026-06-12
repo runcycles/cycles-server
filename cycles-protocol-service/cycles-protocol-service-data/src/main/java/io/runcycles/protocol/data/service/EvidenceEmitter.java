@@ -71,8 +71,10 @@ public class EvidenceEmitter {
     private String serverId;
 
     /** Public Ed25519 key hex stamped as {@code signer_did}. Must match the
-     *  public half of the worker's signing key. PUBLIC only — never the key. */
-    @Value("${cycles.evidence.signer-did:}")
+     *  public half of the worker's signing key. PUBLIC only — never the key.
+     *  Same property as the event-tier worker ({@code cycles.evidence.signing.signer-did}
+     *  / {@code EVIDENCE_SIGNING_SIGNER_DID}) so one env var configures both services. */
+    @Value("${cycles.evidence.signing.signer-did:}")
     private String signerDid;
 
     /**
