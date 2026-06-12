@@ -40,9 +40,10 @@ public class ReservationController extends BaseController{
     @Autowired
     private EventEmitterService eventEmitter;
 
-    // CyclesEvidence (cycles-evidence-v0.1): queue a signed-envelope SOURCE
-    // record for the event-tier worker. Fire-and-forget; never blocks the
-    // reservation response.
+    // CyclesEvidence (cycles-evidence-v0.1): durably enqueue a signed-envelope
+    // SOURCE record for the event-tier worker. Synchronous (same Redis as the
+    // ledger write) so a committed op cannot return without its evidence queued;
+    // fail-open (never fails the response). Expensive signing stays async.
     @Autowired
     private EvidenceEmitter evidenceEmitter;
 

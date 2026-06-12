@@ -1,19 +1,15 @@
 package io.runcycles.protocol.data.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.EvidenceQueueRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Emits CyclesEvidence SOURCE records — the operational facts a signed
@@ -32,26 +28,23 @@ import java.util.concurrent.TimeUnit;
  * carry {@code reservation_id}, and {@code error} carries
  * {@code {endpoint, http_status, request, response}}.
  *
- * <p>Fire-and-forget on a dedicated executor — emission never blocks or fails
- * the lifecycle response (mirrors {@link EventEmitterService}).
+ * <p>DURABILITY: the enqueue is SYNCHRONOUS — the source record is LPUSH'd
+ * before the lifecycle response returns, so a successful operation cannot return
+ * without its evidence being durably queued. The enqueue targets the same Redis
+ * as the ledger write that just committed, so it succeeds whenever the operation
+ * did (the loss window shrinks to a microsecond same-Redis gap). Only the cheap
+ * enqueue is on the request path; the expensive work (JCS canonicalization +
+ * Ed25519 signing) stays asynchronous in the event-tier worker.
  *
- * <p>CONTRACT: {@code payloadBody} is serialized ASYNCHRONOUSLY, so callers must
- * pass an effectively-immutable snapshot — do not mutate the request/response
- * objects after calling {@code emit}. This holds for the Spring MVC lifecycle
- * controllers (per-request DTOs are returned to the client and never mutated
- * afterward); a caller that reuses/pools mutable payloads must serialize first.
+ * <p>FAIL-OPEN: if the push fails (e.g. Redis died just after the ledger commit)
+ * it is logged and metered ({@link CyclesMetrics#recordEvidenceEmitFailed}) and
+ * NEVER fails the already-committed response — failing the response after the
+ * budget was reserved would be strictly worse than a rare evidence gap.
  */
 @Service
-public class EvidenceEmitter implements DisposableBean {
+public class EvidenceEmitter {
 
     private static final Logger LOG = LoggerFactory.getLogger(EvidenceEmitter.class);
-
-    private final ExecutorService executor = Executors.newFixedThreadPool(
-            2, r -> {
-                Thread t = new Thread(r, "evidence-emit");
-                t.setDaemon(true);
-                return t;
-            });
 
     @Autowired
     private EvidenceQueueRepository repository;
@@ -59,46 +52,34 @@ public class EvidenceEmitter implements DisposableBean {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private CyclesMetrics metrics;
+
     /**
-     * Queue an evidence-source record for a lifecycle artifact.
+     * Synchronously enqueue an evidence-source record for a lifecycle artifact.
+     * Call AFTER the ledger write commits and BEFORE returning the response.
      *
      * @param artifactType decide / reserve / commit / release / error
-     * @param issuedAtMs   the event's issuance clock (epoch millis). Stamped at
-     *                     RESPONSE time — the authoritative event time — not at
-     *                     async worker sign-time, matching the reference fixtures.
+     * @param issuedAtMs   the event's issuance clock (epoch millis), stamped at
+     *                     RESPONSE time — the authoritative event time
      * @param traceId      correlation id, or {@code null}/blank to omit
      * @param payloadBody  the artifact-specific body — becomes
-     *                     {@code payload.<artifactType>} (see class javadoc for
-     *                     the per-artifact shape)
+     *                     {@code payload.<artifactType>} (see class javadoc)
      */
     public void emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
         try {
-            executor.execute(() -> {
-                try {
-                    Map<String, Object> record = new LinkedHashMap<>();
-                    record.put("artifact_type", artifactType);
-                    record.put("issued_at_ms", issuedAtMs);
-                    if (traceId != null && !traceId.isBlank()) {
-                        record.put("trace_id", traceId);
-                    }
-                    record.put("payload", payloadBody);
+            Map<String, Object> record = new LinkedHashMap<>();
+            record.put("artifact_type", artifactType);
+            record.put("issued_at_ms", issuedAtMs);
+            if (traceId != null && !traceId.isBlank()) {
+                record.put("trace_id", traceId);
+            }
+            record.put("payload", payloadBody);
 
-                    repository.push(objectMapper.writeValueAsString(record));
-                } catch (Exception e) {
-                    LOG.error("Failed to emit evidence-source record (artifact_type={}): {}",
-                            artifactType, e.getMessage());
-                }
-            });
-        } catch (RejectedExecutionException e) {
-            LOG.error("Evidence-source emission rejected (artifact_type={}): {}", artifactType, e.getMessage());
-        }
-    }
-
-    @Override
-    public void destroy() throws InterruptedException {
-        executor.shutdown();
-        if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-            executor.shutdownNow();
+            repository.push(objectMapper.writeValueAsString(record));
+        } catch (Exception e) {
+            LOG.error("evidence-source emission failed (artifact_type={}): {}", artifactType, e.getMessage());
+            metrics.recordEvidenceEmitFailed(artifactType);
         }
     }
 }
