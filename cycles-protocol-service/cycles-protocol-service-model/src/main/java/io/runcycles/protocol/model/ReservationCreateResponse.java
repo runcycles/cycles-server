@@ -7,7 +7,7 @@ import lombok.*;
 import java.util.List;
 import java.util.Map;
 
-/** Cycles Protocol v0.1.25 */
+/** Cycles Protocol v0.1.25.1 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = false)
@@ -22,6 +22,7 @@ public class ReservationCreateResponse {
     @JsonProperty("reason_code") private Enums.ReasonCode reasonCode;
     @Min(0) @JsonProperty("retry_after_ms") private Integer retryAfterMs;
     @Valid @JsonProperty("balances") private List<Balance> balances;
+    @Valid @JsonProperty("cycles_evidence") private CyclesEvidenceRef cyclesEvidence;
     /** Internal: per-scope pre-mutation remaining for transition detection. Not serialized. */
     @JsonIgnore private Map<String, Long> preRemaining;
     /** Internal: per-scope pre-mutation is_over_limit for transition detection. Not serialized. */
