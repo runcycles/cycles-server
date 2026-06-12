@@ -58,6 +58,15 @@ public class CyclesMetrics {
                 .increment();
     }
 
+    /** Bumped when an evidence-source enqueue fails (fail-open). Tracks the
+     *  rare loss window where a lifecycle op committed but its evidence record
+     *  could not be queued (e.g. Redis died just after the ledger write). */
+    public void recordEvidenceEmitFailed(String artifactType) {
+        registry.counter("cycles.evidence.emit_failed",
+                "artifact_type", artifactType == null ? "unknown" : artifactType)
+                .increment();
+    }
+
     /** Emitted on every {@code POST /v1/reservations/{id}/commit} outcome. */
     public void recordCommit(String tenant, String decision, String reason, String overagePolicy) {
         registry.counter("cycles.reservations.commit",
