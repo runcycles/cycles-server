@@ -30,6 +30,7 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
@@ -131,6 +132,33 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.decision").value("DENY"))
                     .andExpect(jsonPath("$.reason_code").value("BUDGET_EXCEEDED"));
+        }
+
+        @Test
+        void shouldSurfaceCyclesEvidenceWhenEmitterReturnsRef() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
+            String evidenceId = "a".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
+            when(evidenceEmitter.emit(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evidenceId, url));
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
+                    .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
+        }
+
+        @Test
+        void shouldOmitCyclesEvidenceWhenEmitterReturnsNull() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
+            // emit() returns null (identity unconfigured / emission failed) by mock default
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
         }
 
         @Test

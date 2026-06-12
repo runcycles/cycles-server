@@ -113,11 +113,20 @@ public class ReservationController extends BaseController{
         // CyclesEvidence: queue a `reserve` envelope SOURCE record (covers both
         // ALLOW and DENY — each is a `reserve` artifact carrying its decision).
         // payload.reserve = {request, response} (LinkedHashMap: null-safe, ordered).
+        // The evidence_id is computed over `response` AS IT IS HERE — i.e. before
+        // we stamp cycles_evidence onto it below — so the attested payload never
+        // carries a reference to its own id.
         java.util.Map<String, Object> evidenceBody = new java.util.LinkedHashMap<>();
         evidenceBody.put("request", request);
         evidenceBody.put("response", response);
-        evidenceEmitter.emit("reserve", System.currentTimeMillis(),
-                resolveTraceId(httpRequest), evidenceBody);
+        EvidenceEmitter.EvidenceRef evidenceRef = evidenceEmitter.emit("reserve",
+                System.currentTimeMillis(), resolveTraceId(httpRequest), evidenceBody);
+        if (evidenceRef != null) {
+            response.setCyclesEvidence(CyclesEvidenceRef.builder()
+                    .evidenceId(evidenceRef.evidenceId())
+                    .cyclesEvidenceUrl(evidenceRef.cyclesEvidenceUrl())
+                    .build());
+        }
         return ResponseEntity.ok(response);
     }
 
