@@ -137,6 +137,12 @@ public class RedisReservationRepository {
                     .reserved(existing.getReserved())
                     .expiresAtMs(existing.getExpiresAtMs())
                     .balances(idempotencyBalances)
+                    // Idempotent replay: flag it + carry the CyclesEvidence ref persisted
+                    // at first create, so the controller returns the SAME evidence (never
+                    // recomputes — replay balances reflect current state — nor re-emits).
+                    .idempotentReplay(true)
+                    .storedEvidenceId(existingFields.get("evidence_id"))
+                    .storedEvidenceUrl(existingFields.get("cycles_evidence_url"))
                     .build();
             }
 
@@ -173,6 +179,27 @@ public class RedisReservationRepository {
             LOG.error("Failed to create reservation", e);
             metrics.recordReserve(tenant, "DENY", "INTERNAL_ERROR", overagePolicyTag);
             throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Persist the CyclesEvidence ref ({@code evidence_id} + {@code cycles_evidence_url})
+     * on the reservation hash so an idempotent replay of the same {@code idempotency_key}
+     * returns the IDENTICAL evidence (read back into {@code storedEvidence*} on the replay
+     * path). Called once, on a fresh create, after the evidence is computed.
+     *
+     * <p>Fail-open: a write failure is logged, never thrown — evidence is best-effort and
+     * must never fail an already-committed reservation. A lost write degrades a later
+     * replay to omitting {@code cycles_evidence}, not to a wrong value.
+     */
+    public void persistEvidenceRef(String reservationId, String evidenceId, String cyclesEvidenceUrl) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            Map<String, String> fields = new LinkedHashMap<>();
+            fields.put("evidence_id", evidenceId);
+            fields.put("cycles_evidence_url", cyclesEvidenceUrl);
+            jedis.hset("reservation:res_" + reservationId, fields);
+        } catch (Exception e) {
+            LOG.warn("Failed to persist evidence ref for reservation {}: {}", reservationId, e.getMessage());
         }
     }
 

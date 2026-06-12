@@ -31,6 +31,16 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
+        <!-- RFC 8785 (JCS) canonicalization for computing the CyclesEvidence
+             content hash (evidence_id) synchronously at decision time. erdtman
+             is the reference impl (same author as the JS/Python JCS), so the
+             bytes match the event-tier signing worker and the APS verifier
+             byte-for-byte. -->
+        <dependency>
+            <groupId>io.github.erdtman</groupId>
+            <artifactId>java-json-canonicalization</artifactId>
+            <version>1.1</version>
+        </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>

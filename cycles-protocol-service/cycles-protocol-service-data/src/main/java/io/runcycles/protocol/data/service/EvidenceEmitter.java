@@ -6,6 +6,7 @@ import io.runcycles.protocol.data.repository.EvidenceQueueRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -17,10 +18,16 @@ import java.util.Map;
  * for the event-tier worker to canonicalize, sign (with the server's Ed25519
  * identity), store and serve.
  *
- * <p>This server stamps ONLY operational facts: {@code artifact_type},
- * {@code issued_at_ms}, {@code trace_id}, and the artifact-specific payload
- * body. The server identity ({@code server_id} / {@code signer_did}) is added
- * by the signing worker, co-located with the key.
+ * <p>This server stamps the operational facts ({@code artifact_type},
+ * {@code issued_at_ms}, {@code trace_id}, payload) AND — when the public server
+ * identity ({@code cycles.evidence.server-id} + {@code cycles.evidence.signer-did})
+ * is configured — computes the {@code evidence_id} SYNCHRONOUSLY via
+ * {@link EvidenceIdComputer} and stamps it on the record. The {@code evidence_id}
+ * is a pure function of the envelope contents (no private key needed), so it can
+ * be returned on the lifecycle response ({@link EvidenceRef}) for a caller to
+ * bind a receipt to, while the actual Ed25519 signing + storage stay async in
+ * the event-tier worker, which recomputes the id and cross-checks it against the
+ * stamped one (dead-lettering on mismatch) so drift fails closed.
  *
  * <p>The payload body shape is the caller's responsibility because it varies by
  * artifact type (cycles-evidence-v0.1): {@code reserve}/{@code decide} carry
@@ -55,9 +62,27 @@ public class EvidenceEmitter {
     @Autowired
     private CyclesMetrics metrics;
 
+    @Autowired
+    private EvidenceIdComputer evidenceIdComputer;
+
+    /** Public issuing-server URI stamped as {@code server_id}; also the base of
+     *  {@code cycles_evidence_url}. Must match the event-tier worker's value. */
+    @Value("${cycles.evidence.server-id:}")
+    private String serverId;
+
+    /** Public Ed25519 key hex stamped as {@code signer_did}. Must match the
+     *  public half of the worker's signing key. PUBLIC only — never the key.
+     *  Same property as the event-tier worker ({@code cycles.evidence.signing.signer-did}
+     *  / {@code EVIDENCE_SIGNING_SIGNER_DID}) so one env var configures both services. */
+    @Value("${cycles.evidence.signing.signer-did:}")
+    private String signerDid;
+
     /**
-     * Synchronously enqueue an evidence-source record for a lifecycle artifact.
-     * Call AFTER the ledger write commits and BEFORE returning the response.
+     * Synchronously enqueue an evidence-source record for a lifecycle artifact
+     * and, when the public server identity is configured, compute its
+     * {@code evidence_id} and return a {@link EvidenceRef} for the caller to
+     * surface on the response. Call AFTER the ledger write commits and BEFORE
+     * returning the response.
      *
      * @param artifactType decide / reserve / commit / release / error
      * @param issuedAtMs   the event's issuance clock (epoch millis), stamped at
@@ -65,8 +90,11 @@ public class EvidenceEmitter {
      * @param traceId      correlation id, or {@code null}/blank to omit
      * @param payloadBody  the artifact-specific body — becomes
      *                     {@code payload.<artifactType>} (see class javadoc)
+     * @return the evidence reference ({@code evidence_id} + {@code cycles_evidence_url})
+     *         when the id could be computed, or {@code null} if the server
+     *         identity is unconfigured or emission failed (fail-open — never throws)
      */
-    public void emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
+    public EvidenceRef emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
         try {
             Map<String, Object> record = new LinkedHashMap<>();
             record.put("artifact_type", artifactType);
@@ -76,10 +104,49 @@ public class EvidenceEmitter {
             }
             record.put("payload", payloadBody);
 
+            EvidenceRef ref = null;
+            if (identityConfigured()) {
+                // Compute the content id over the SAME envelope the worker will
+                // build, BEFORE the record is serialized — and never over a
+                // response already carrying cycles_evidence (the caller stamps
+                // the ref on the response only AFTER this returns), so the
+                // attested payload stays free of a self-reference.
+                String evidenceId = evidenceIdComputer.compute(
+                        artifactType, serverId, signerDid, issuedAtMs, traceId, payloadBody);
+                record.put("evidence_id", evidenceId);
+                ref = new EvidenceRef(evidenceId, evidenceUrl(evidenceId));
+            }
+
             repository.push(objectMapper.writeValueAsString(record));
+            return ref;
         } catch (Exception e) {
             LOG.error("evidence-source emission failed (artifact_type={}): {}", artifactType, e.getMessage());
             metrics.recordEvidenceEmitFailed(artifactType);
+            return null;
         }
+    }
+
+    private boolean identityConfigured() {
+        return serverId != null && !serverId.isBlank()
+                && signerDid != null && !signerDid.isBlank();
+    }
+
+    /**
+     * {@code {server_id}/evidence/{evidence_id}}. {@code server_id} is already
+     * the canonical base INCLUDING the {@code /v1} prefix (e.g.
+     * {@code https://cycles.example.com/v1}), so the join adds only
+     * {@code /evidence/{id}} and MUST NOT re-add {@code /v1}.
+     */
+    private String evidenceUrl(String evidenceId) {
+        String base = serverId.endsWith("/") ? serverId.substring(0, serverId.length() - 1) : serverId;
+        return base + "/evidence/" + evidenceId;
+    }
+
+    /**
+     * A reference to the CyclesEvidence envelope emitted for an operation: its
+     * content-addressed {@code evidence_id} and the absolute {@code cycles_evidence_url}
+     * to fetch the signed envelope (via {@code getEvidence}).
+     */
+    public record EvidenceRef(String evidenceId, String cyclesEvidenceUrl) {
     }
 }

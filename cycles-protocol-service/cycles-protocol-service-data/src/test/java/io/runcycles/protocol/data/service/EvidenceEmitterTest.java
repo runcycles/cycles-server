@@ -20,6 +20,9 @@ import static org.mockito.Mockito.verify;
 
 class EvidenceEmitterTest {
 
+    private static final String SERVER_ID = "https://cycles.example.com/v1";
+    private static final String SIGNER_DID = "ec52b49b81eb29ef6f62947cade245c715bf943b7ef2a5f2789288574466fc43";
+
     private final EvidenceQueueRepository repository = mock(EvidenceQueueRepository.class);
     private final CyclesMetrics metrics = mock(CyclesMetrics.class);
     private final ObjectMapper mapper = new ObjectMapper();
@@ -30,6 +33,15 @@ class EvidenceEmitterTest {
         setField("repository", repository);
         setField("objectMapper", mapper);
         setField("metrics", metrics);
+        setField("evidenceIdComputer", new EvidenceIdComputer(mapper));
+        // default: identity unconfigured (blank) — individual tests configure it
+        setField("serverId", "");
+        setField("signerDid", "");
+    }
+
+    private void configureIdentity() throws Exception {
+        setField("serverId", SERVER_ID);
+        setField("signerDid", SIGNER_DID);
     }
 
     @Test
@@ -59,12 +71,61 @@ class EvidenceEmitterTest {
     }
 
     @Test
+    void returnsNullAndOmitsEvidenceIdWhenIdentityUnconfigured() throws Exception {
+        // default wire() leaves server-id/signer-did blank
+        EvidenceEmitter.EvidenceRef ref = emitter.emit("reserve", 1L, null,
+                Map.of("request", Map.of(), "response", Map.of("decision", "ALLOW")));
+
+        assertThat(ref).isNull();
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(repository).push(captor.capture());
+        assertThat(mapper.readTree(captor.getValue()).has("evidence_id")).isFalse();
+    }
+
+    @Test
+    void computesEvidenceIdAndReturnsRefWhenConfigured() throws Exception {
+        configureIdentity();
+
+        EvidenceEmitter.EvidenceRef ref = emitter.emit("reserve", 1810000000100L, "trace-abc",
+                Map.of("response", Map.of("decision", "ALLOW")));
+
+        assertThat(ref).isNotNull();
+        assertThat(ref.evidenceId()).matches("^[0-9a-f]{64}$");
+        // server_id already includes /v1, so the url adds only /evidence/{id}
+        assertThat(ref.cyclesEvidenceUrl())
+                .isEqualTo(SERVER_ID + "/evidence/" + ref.evidenceId())
+                .doesNotContain("/v1/v1/");
+
+        // the same evidence_id is stamped on the queued record for the worker to cross-check
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(repository).push(captor.capture());
+        assertThat(mapper.readTree(captor.getValue()).get("evidence_id").asText())
+                .isEqualTo(ref.evidenceId());
+    }
+
+    @Test
+    void evidenceUrlJoinsCleanlyWhenServerIdHasTrailingSlash() throws Exception {
+        setField("serverId", "https://cycles.example.com/v1/");
+        setField("signerDid", SIGNER_DID);
+
+        EvidenceEmitter.EvidenceRef ref = emitter.emit("reserve", 1L, null,
+                Map.of("response", Map.of("decision", "ALLOW")));
+
+        // trailing slash trimmed, no double slash, and /v1 not re-added
+        assertThat(ref.cyclesEvidenceUrl())
+                .isEqualTo("https://cycles.example.com/v1/evidence/" + ref.evidenceId())
+                .doesNotContain("//evidence")
+                .doesNotContain("/v1/v1/");
+    }
+
+    @Test
     void failsOpenAndMetersWhenPushThrows() {
         doThrow(new RuntimeException("redis down")).when(repository).push(anyString());
 
         // a push failure must NOT propagate (the ledger write already committed)
-        assertThatCode(() -> emitter.emit("reserve", 1L, null,
-                Map.of("request", Map.of(), "response", Map.of()))).doesNotThrowAnyException();
+        assertThatCode(() -> assertThat(emitter.emit("reserve", 1L, null,
+                Map.of("request", Map.of(), "response", Map.of()))).isNull())
+                .doesNotThrowAnyException();
 
         verify(metrics).recordEvidenceEmitFailed("reserve");
     }

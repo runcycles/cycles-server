@@ -30,8 +30,10 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -132,6 +134,74 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.decision").value("DENY"))
                     .andExpect(jsonPath("$.reason_code").value("BUDGET_EXCEEDED"));
+        }
+
+        @Test
+        void shouldSurfaceCyclesEvidenceAndPersistRefOnFreshReserve() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
+            String evidenceId = "a".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
+            when(evidenceEmitter.emit(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evidenceId, url));
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
+                    .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
+            // fresh create persists the ref so future idempotent replays return the same evidence
+            verify(repository).persistEvidenceRef("res_123", evidenceId, url);
+        }
+
+        @Test
+        void shouldReplayStoredCyclesEvidenceWithoutRecomputingOrReemitting() throws Exception {
+            // Idempotency replay: repository returns the original ref; the controller must
+            // return it verbatim, NOT call emit() (no second source record, no drift) and
+            // NOT re-persist. Guards the reserve idempotency contract for cycles_evidence.
+            String evidenceId = "b".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
+            ReservationCreateResponse replay = allowResponse();
+            replay.setIdempotentReplay(true);
+            replay.setStoredEvidenceId(evidenceId);
+            replay.setStoredEvidenceUrl(url);
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(replay);
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
+                    .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
+            verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
+            verify(repository, never()).persistEvidenceRef(any(), any(), any());
+        }
+
+        @Test
+        void shouldOmitCyclesEvidenceOnReplayWhenNoneWasPersisted() throws Exception {
+            // Replay of a reservation created before evidence identity was configured:
+            // no stored ref → omit cycles_evidence (safe degradation), still no emit.
+            ReservationCreateResponse replay = allowResponse();
+            replay.setIdempotentReplay(true); // storedEvidenceId stays null
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(replay);
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
+            verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
+        }
+
+        @Test
+        void shouldOmitCyclesEvidenceWhenEmitterReturnsNull() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
+            // emit() returns null (identity unconfigured / emission failed) by mock default
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
         }
 
         @Test
