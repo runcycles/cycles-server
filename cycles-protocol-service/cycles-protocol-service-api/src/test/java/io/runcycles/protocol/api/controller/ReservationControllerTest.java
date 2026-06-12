@@ -30,7 +30,6 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
@@ -56,7 +55,6 @@ class ReservationControllerTest {
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
-    @MockitoBean private io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;
     @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.repository.EvidenceStoreReader evidenceStoreReader;
@@ -86,12 +84,6 @@ class ReservationControllerTest {
         return objectMapper.writeValueAsString(req);
     }
 
-    private String dryRunReservationJson(String tenant, long amount) throws Exception {
-        ReservationCreateRequest req = objectMapper.readValue(reservationJson(tenant, amount),
-                ReservationCreateRequest.class);
-        req.setDryRun(true);
-        return objectMapper.writeValueAsString(req);
-    }
 
     private ReservationCreateResponse allowResponse() {
         return ReservationCreateResponse.builder()
@@ -121,7 +113,7 @@ class ReservationControllerTest {
 
         @Test
         void shouldCreateReservation() throws Exception {
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
+            when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(allowResponse());
 
             mockMvc.perform(post("/v1/reservations")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -133,7 +125,7 @@ class ReservationControllerTest {
 
         @Test
         void shouldReturnDenyAndEmitEvent() throws Exception {
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(denyResponse());
+            when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(denyResponse());
 
             mockMvc.perform(post("/v1/reservations")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -144,36 +136,15 @@ class ReservationControllerTest {
         }
 
         @Test
-        void shouldSurfaceCyclesEvidenceAndCacheResponseOnFreshReserve() throws Exception {
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
+        void shouldPassThroughCyclesEvidenceFromRepository() throws Exception {
+            // Evidence is emitted, stamped and idempotently cached INSIDE createReservation
+            // (the repository); the controller just returns whatever it produced.
             String evidenceId = "a".repeat(64);
             String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
-            when(evidenceEmitter.emit(eq("reserve"), anyLong(), any(), any()))
-                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evidenceId, url));
-
-            mockMvc.perform(post("/v1/reservations")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(reservationJson(TENANT, 1000)))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
-                    .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
-            // fresh create caches the FULL response (with evidence) keyed by reservation_id
-            // so a later idempotent replay returns it byte-identically
-            verify(repository).cacheReserveResponse(eq("res_123"), any(ReservationCreateResponse.class));
-        }
-
-        @Test
-        void shouldReturnOriginalCyclesEvidenceVerbatimOnReplay() throws Exception {
-            // Idempotency replay: the repository serves the cached ORIGINAL body (original
-            // balances + original cycles_evidence). The controller returns it verbatim:
-            // never re-emits and never re-caches. Guards the reserve idempotency contract.
-            String evidenceId = "b".repeat(64);
-            String url = "https://cycles.example.com/v1/evidence/" + evidenceId;
-            ReservationCreateResponse replay = allowResponse();
-            replay.setIdempotentReplay(true);
-            replay.setCyclesEvidence(CyclesEvidenceRef.builder()
+            ReservationCreateResponse withEvidence = allowResponse();
+            withEvidence.setCyclesEvidence(CyclesEvidenceRef.builder()
                     .evidenceId(evidenceId).cyclesEvidenceUrl(url).build());
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(replay);
+            when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(withEvidence);
 
             mockMvc.perform(post("/v1/reservations")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -181,54 +152,30 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
                     .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
-            verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).cacheReserveResponse(any(), any());
         }
 
         @Test
-        void shouldOmitCyclesEvidenceOnReplayWhenOriginalHadNone() throws Exception {
-            // Replay falling back to rebuild (original body unavailable) → no cycles_evidence;
-            // still no emit, still no re-cache.
-            ReservationCreateResponse replay = allowResponse();
-            replay.setIdempotentReplay(true); // cyclesEvidence stays null
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(replay);
+        void shouldOmitCyclesEvidenceWhenRepositoryReturnsNone() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(allowResponse());
 
             mockMvc.perform(post("/v1/reservations")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(reservationJson(TENANT, 1000)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
-            verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).cacheReserveResponse(any(), any());
         }
 
         @Test
-        void shouldNotEmitOrSurfaceEvidenceForDryRun() throws Exception {
-            // dry_run neither persists a reservation nor changes any budget → NO evidence.
-            ReservationCreateResponse dry = allowResponse();
-            dry.setReservationId(null); // dry_run responses carry no reservation_id
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(dry);
+        void shouldCallCreateReservationWithTraceContextArg() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(allowResponse());
 
-            mockMvc.perform(post("/v1/reservations")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(dryRunReservationJson(TENANT, 1000)))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
-            verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).cacheReserveResponse(any(), any());
-        }
-
-        @Test
-        void shouldOmitCyclesEvidenceWhenEmitterReturnsNull() throws Exception {
-            when(repository.createReservation(any(), eq(TENANT))).thenReturn(allowResponse());
-            // emit() returns null (identity unconfigured / emission failed) by mock default
             mockMvc.perform(post("/v1/reservations")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(reservationJson(TENANT, 1000)))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
-            // still caches the (evidence-less) response for idempotent replay
-            verify(repository).cacheReserveResponse(eq("res_123"), any(ReservationCreateResponse.class));
+                    .andExpect(status().isOk());
+            // the controller routes through the trace-aware 3-arg overload (the trace id is
+            // threaded to the repository for the evidence envelope's trace_id)
+            verify(repository).createReservation(any(), eq(TENANT), any());
         }
 
         @Test
@@ -301,7 +248,7 @@ class ReservationControllerTest {
 
         @Test
         void shouldReturnBudgetExceeded() throws Exception {
-            when(repository.createReservation(any(), eq(TENANT)))
+            when(repository.createReservation(any(), eq(TENANT), any()))
                     .thenThrow(CyclesProtocolException.budgetExceeded("tenant:acme-corp"));
 
             mockMvc.perform(post("/v1/reservations")

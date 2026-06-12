@@ -5,6 +5,7 @@ import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.support.FilterHasher;
 import io.runcycles.protocol.data.repository.support.ReservationComparators;
 import io.runcycles.protocol.data.repository.support.SortedListCursor;
+import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
@@ -34,6 +35,12 @@ public class RedisReservationRepository {
     @Autowired private ScopeDerivationService scopeService;
     @Autowired private LuaScriptRegistry luaScripts;
     @Autowired private CyclesMetrics metrics;
+    // CyclesEvidence (cycles-evidence-v0.1): computing + emitting + stamping +
+    // caching the `reserve` evidence lives HERE, inside the reservation-creation
+    // flow, so it is part of the same idempotent unit — replay returns the cached
+    // ORIGINAL response (with its evidence) and the body cache shares the Lua
+    // idempotency TTL. Covers dry_run too (its ALLOW/DENY is `reserve` evidence).
+    @Autowired private EvidenceEmitter evidenceEmitter;
     @Autowired @Qualifier("reserveLuaScript") private String reserveScript;
     @Autowired @Qualifier("commitLuaScript") private String commitScript;
     @Autowired @Qualifier("releaseLuaScript") private String releaseScript;
@@ -70,7 +77,16 @@ public class RedisReservationRepository {
         }
     });
 
+    /** Back-compat overload (no trace context) — used by tests and any non-HTTP caller. */
     public ReservationCreateResponse createReservation(ReservationCreateRequest request, String tenant) {
+        return createReservation(request, tenant, null);
+    }
+
+    /**
+     * @param traceId W3C trace correlation id for the CyclesEvidence envelope, or
+     *                {@code null}/blank to omit. Threaded from the HTTP layer.
+     */
+    public ReservationCreateResponse createReservation(ReservationCreateRequest request, String tenant, String traceId) {
         LOG.debug("Creating reservation for tenant: {}", tenant);
         String overagePolicyTag = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "DEFAULT";
 
@@ -82,9 +98,18 @@ public class RedisReservationRepository {
             long effectiveTtl = resolveReservationTtl(request.getTtlMs(), tenantConfig);
             int maxExtensions = resolveMaxExtensions(tenantConfig);
 
-            // dry_run: evaluate budget without persisting a reservation
+            // dry_run: evaluate budget without persisting a reservation. Its ALLOW/DENY
+            // outcome IS captured as `reserve` evidence (cycles-evidence-v0.1) — a dry_run
+            // DENY is the canonical signed "would this be allowed?" attestation. On a fresh
+            // evaluation, stamp evidence + cache the full body (keyed by the dry_run idem key)
+            // so a replay returns the ORIGINAL stamped payload; a replay is returned verbatim.
             if (Boolean.TRUE.equals(request.getDryRun())) {
-                return evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
+                ReservationCreateResponse dryRun = evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
+                if (!dryRun.isIdempotentReplay()) {
+                    stampAndEmitEvidence(dryRun, request, traceId);
+                    cacheDryRunResponse(jedis, tenant, request.getIdempotencyKey(), computePayloadHash(request), dryRun);
+                }
+                return dryRun;
             }
 
             String reservationId = UUID.randomUUID().toString();
@@ -168,7 +193,7 @@ public class RedisReservationRepository {
             }
 
             metrics.recordReserve(tenant, decision.name(), "OK", overagePolicyTag);
-            return ReservationCreateResponse.builder()
+            ReservationCreateResponse created = ReservationCreateResponse.builder()
                 .decision(decision)
                 .reservationId(reservationId)
                 .affectedScopes(affectedScopes)
@@ -180,6 +205,14 @@ public class RedisReservationRepository {
                 .preRemaining(parsePreRemaining(response))
                 .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
+            // Fresh reserve: emit + stamp evidence (over the pre-evidence body), then cache
+            // the WHOLE response so an idempotent replay returns it verbatim. Cache for the
+            // SAME TTL as reserve.lua's idempotency mapping (max(ttl_ms+grace_ms, 24h)) so the
+            // body never expires before the idempotency key.
+            stampAndEmitEvidence(created, request, traceId);
+            long graceMs = request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000;
+            cacheReserveResponse(jedis, reservationId, created, Math.max(effectiveTtl + graceMs, 86400000L));
+            return created;
         } catch (CyclesProtocolException e) {
             metrics.recordReserve(tenant, "DENY", e.getErrorCode().name(), overagePolicyTag);
             throw e;
@@ -201,22 +234,45 @@ public class RedisReservationRepository {
     }
 
     /**
-     * Cache the FULL original reserve response (with {@code cycles_evidence} already
-     * stamped), keyed by {@code reservation_id}, so an idempotent replay returns the
-     * byte-identical original payload — satisfying the NORMATIVE reserve idempotency rule
-     * (original balances + original evidence, matching the envelope the {@code evidence_id}
-     * points to). Called once, by the controller, on a fresh non-dry-run create after
-     * evidence is stamped. No-op when there is no {@code reservation_id} (e.g. dry_run).
+     * Emit a {@code reserve} CyclesEvidence source record over {@code {request, response}}
+     * (the response AS-IS, before {@code cycles_evidence} is stamped, so the attested
+     * payload never references its own id) and stamp the returned ref onto the response.
+     * No-op (no field stamped) when the server identity is unconfigured. Covers dry_run too
+     * — its ALLOW/DENY outcome is captured as {@code reserve} evidence (cycles-evidence-v0.1).
+     */
+    private void stampAndEmitEvidence(ReservationCreateResponse response,
+                                      ReservationCreateRequest request, String traceId) {
+        Map<String, Object> evidenceBody = new LinkedHashMap<>();
+        evidenceBody.put("request", request);
+        evidenceBody.put("response", response);
+        EvidenceEmitter.EvidenceRef ref = evidenceEmitter.emit("reserve",
+                System.currentTimeMillis(), traceId, evidenceBody);
+        if (ref != null) {
+            response.setCyclesEvidence(CyclesEvidenceRef.builder()
+                    .evidenceId(ref.evidenceId())
+                    .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
+                    .build());
+        }
+    }
+
+    /**
+     * Cache the FULL original reserve response (with {@code cycles_evidence} stamped),
+     * keyed by {@code reservation_id}, so an idempotent replay returns the byte-identical
+     * original payload (original balances + original evidence, matching the envelope the
+     * {@code evidence_id} points to). The {@code ttlMs} MUST be ≥ reserve.lua's idempotency
+     * TTL ({@code max(ttl_ms+grace_ms, 24h)}) so the body never expires before the
+     * idempotency key (else a replay in the gap falls back to rebuilt current balances).
      *
      * <p>Fail-open: a write failure is logged, never thrown — it only degrades a later
      * replay to the rebuild fallback, never fails the committed reservation.
      */
-    public void cacheReserveResponse(String reservationId, ReservationCreateResponse response) {
+    private void cacheReserveResponse(Jedis jedis, String reservationId,
+                                      ReservationCreateResponse response, long ttlMs) {
         if (reservationId == null || reservationId.isEmpty()) {
             return;
         }
-        try (Jedis jedis = jedisPool.getResource()) {
-            jedis.psetex(reserveResponseCacheKey(reservationId), 86400000L,
+        try {
+            jedis.psetex(reserveResponseCacheKey(reservationId), ttlMs,
                     objectMapper.writeValueAsString(response));
         } catch (Exception e) {
             LOG.warn("Failed to cache reserve response for reservation {}: {}",
@@ -249,7 +305,12 @@ public class RedisReservationRepository {
                         throw CyclesProtocolException.idempotencyMismatch();
                     }
                 }
-                return objectMapper.readValue(cached, ReservationCreateResponse.class);
+                // Replay the ORIGINAL cached dry_run body verbatim (it carries the original
+                // cycles_evidence stamped at first evaluation); never re-emit.
+                ReservationCreateResponse replay =
+                    objectMapper.readValue(cached, ReservationCreateResponse.class);
+                replay.setIdempotentReplay(true);
+                return replay;
             }
         }
 
@@ -366,7 +427,10 @@ public class RedisReservationRepository {
             dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
         }
 
-        ReservationCreateResponse dryRunResponse = ReservationCreateResponse.builder()
+        // Caching + evidence for ALL fresh dry_run outcomes (ALLOW and the early DENYs) is
+        // handled uniformly by the caller (createReservation) via cacheDryRunResponse, so the
+        // cached body carries the stamped cycles_evidence and every outcome is idempotent.
+        return ReservationCreateResponse.builder()
             .decision(dryRunDecision)
             .affectedScopes(affectedScopes)
             .scopePath(scopePath)
@@ -374,19 +438,31 @@ public class RedisReservationRepository {
             .caps(dryRunCaps)
             .balances(balances)
             .build();
+    }
 
-        // Cache dry_run result (24 h TTL) - pipeline both writes
-        if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
-            String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
-            Pipeline idemWritePipe = jedis.pipelined();
-            idemWritePipe.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(dryRunResponse));
-            if (!payloadHash.isEmpty()) {
-                idemWritePipe.psetex(idemKey + ":hash", 86400000L, payloadHash);
-            }
-            idemWritePipe.sync();
+    /**
+     * Cache a fresh dry_run response (with {@code cycles_evidence} stamped) + its payload
+     * hash under {@code idem:<tenant>:dry_run:<key>} (24h), so a replay returns the original
+     * stamped body and a key-reuse with a different payload is rejected. No-op without an
+     * {@code idempotency_key}. Fail-open: a write failure only degrades a later replay.
+     */
+    private void cacheDryRunResponse(Jedis jedis, String tenant, String idempotencyKey,
+                                     String payloadHash, ReservationCreateResponse response) {
+        if (idempotencyKey == null || idempotencyKey.isEmpty()) {
+            return;
         }
-
-        return dryRunResponse;
+        try {
+            String idemKey = "idem:" + tenant + ":dry_run:" + idempotencyKey;
+            Pipeline pipe = jedis.pipelined();
+            pipe.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(response));
+            if (payloadHash != null && !payloadHash.isEmpty()) {
+                pipe.psetex(idemKey + ":hash", 86400000L, payloadHash);
+            }
+            pipe.sync();
+        } catch (Exception e) {
+            LOG.warn("Failed to cache dry_run response for idempotency_key {}: {}",
+                    idempotencyKey, e.getMessage());
+        }
     }
 
     public CommitResponse commitReservation(String reservationId, CommitRequest request, String tenant) {

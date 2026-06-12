@@ -365,27 +365,64 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
-        void shouldCacheFullReserveResponseByReservationId() throws Exception {
+        void freshReserveStampsEvidenceAndCachesBodyWithIdempotencyTtl() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            ReservationCreateResponse response = ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.ALLOW)
-                    .reservationId("res-1")
-                    .affectedScopes(List.of("tenant:acme"))
-                    .build();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            String luaResponse = objectMapper.writeValueAsString(
+                    Map.of("reservation_id", "fresh-res", "expires_at", 9999999L));
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(luaResponse);
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+            // identity configured → emit returns a ref that the repository stamps
+            String evId = "d".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evId;
+            when(evidenceEmitter.emit(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url));
 
-            repository.cacheReserveResponse("res-1", response);
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-fresh");
+            request.setTtlMs(30000L); // ttl + 5s grace < 24h → TTL floors at 24h
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
 
-            verify(jedis).psetex(eq("reserve:body:res-1"), eq(86400000L),
-                    contains("\"reservation_id\":\"res-1\""));
+            ReservationCreateResponse response = repository.createReservation(request, "acme", "trace-1");
+
+            // evidence stamped on the response
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+            assertThat(response.getCyclesEvidence().getCyclesEvidenceUrl()).isEqualTo(url);
+            // full body cached keyed by reservation_id (a generated UUID), TTL >= 24h floor
+            verify(jedis).psetex(startsWith("reserve:body:"), longThat(ttl -> ttl >= 86400000L),
+                    contains("\"evidence_id\":\"" + evId + "\""));
         }
 
         @Test
-        void shouldNotCacheReserveResponseWithoutReservationId() {
-            // no reservation_id (e.g. dry_run) → no replay possible → no cache write
-            repository.cacheReserveResponse(null, ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.ALLOW).build());
-            verifyNoInteractions(jedisPool);
+        void freshReserveCachesBodyWithExtendedTtlForLongLivedReservation() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            // tenant permits a 48h reservation (default max is only 1h)
+            when(jedis.get("tenant:acme-long"))
+                    .thenReturn("{\"max_reservation_ttl_ms\":172800000}");
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(
+                            Map.of("reservation_id", "long-res", "expires_at", 9999999L)));
+            lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-long");
+            request.setTtlMs(172800000L);       // 48h reservation
+            request.setGracePeriodMs(5000L);
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            repository.createReservation(request, "acme-long", null);
+
+            // body TTL must match the Lua mapping max(ttl+grace, 24h) = 48h+5s, NOT a fixed 24h
+            // (the bug finding 1 fixed: previously hard-coded 86400000)
+            verify(jedis).psetex(startsWith("reserve:body:"), eq(172800000L + 5000L), anyString());
         }
     }
 
