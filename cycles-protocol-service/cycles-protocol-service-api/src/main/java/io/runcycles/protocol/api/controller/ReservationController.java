@@ -111,8 +111,12 @@ public class ReservationController extends BaseController{
         } catch (Exception e) { /* non-blocking */ }
         // CyclesEvidence: queue a `reserve` envelope SOURCE record (covers both
         // ALLOW and DENY — each is a `reserve` artifact carrying its decision).
+        // payload.reserve = {request, response} (LinkedHashMap: null-safe, ordered).
+        java.util.Map<String, Object> evidenceBody = new java.util.LinkedHashMap<>();
+        evidenceBody.put("request", request);
+        evidenceBody.put("response", response);
         evidenceEmitter.emit("reserve", System.currentTimeMillis(),
-                resolveTraceId(httpRequest), request, response);
+                resolveTraceId(httpRequest), evidenceBody);
         return ResponseEntity.ok(response);
     }
 

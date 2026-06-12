@@ -22,9 +22,15 @@ import java.util.concurrent.TimeUnit;
  * identity), store and serve.
  *
  * <p>This server stamps ONLY operational facts: {@code artifact_type},
- * {@code issued_at_ms}, {@code trace_id}, and the payload body
- * {@code {request, response}}. The server identity ({@code server_id} /
- * {@code signer_did}) is added by the signing worker, co-located with the key.
+ * {@code issued_at_ms}, {@code trace_id}, and the artifact-specific payload
+ * body. The server identity ({@code server_id} / {@code signer_did}) is added
+ * by the signing worker, co-located with the key.
+ *
+ * <p>The payload body shape is the caller's responsibility because it varies by
+ * artifact type (cycles-evidence-v0.1): {@code reserve}/{@code decide} carry
+ * {@code {request, response}}, {@code commit}/{@code release} additionally
+ * carry {@code reservation_id}, and {@code error} carries
+ * {@code {endpoint, http_status, request, response}}.
  *
  * <p>Fire-and-forget on a dedicated executor — emission never blocks or fails
  * the lifecycle response (mirrors {@link EventEmitterService}).
@@ -50,20 +56,19 @@ public class EvidenceEmitter implements DisposableBean {
     /**
      * Queue an evidence-source record for a lifecycle artifact.
      *
-     * @param artifactType decide / reserve / commit / release
-     * @param issuedAtMs   the event's issuance clock (epoch millis)
+     * @param artifactType decide / reserve / commit / release / error
+     * @param issuedAtMs   the event's issuance clock (epoch millis). Stamped at
+     *                     RESPONSE time — the authoritative event time — not at
+     *                     async worker sign-time, matching the reference fixtures.
      * @param traceId      correlation id, or {@code null}/blank to omit
-     * @param request      the request body — becomes {@code payload.<type>.request}
-     * @param response     the response body — becomes {@code payload.<type>.response}
+     * @param payloadBody  the artifact-specific body — becomes
+     *                     {@code payload.<artifactType>} (see class javadoc for
+     *                     the per-artifact shape)
      */
-    public void emit(String artifactType, long issuedAtMs, String traceId, Object request, Object response) {
+    public void emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
         try {
             executor.execute(() -> {
                 try {
-                    Map<String, Object> payloadBody = new LinkedHashMap<>();
-                    payloadBody.put("request", request);
-                    payloadBody.put("response", response);
-
                     Map<String, Object> record = new LinkedHashMap<>();
                     record.put("artifact_type", artifactType);
                     record.put("issued_at_ms", issuedAtMs);

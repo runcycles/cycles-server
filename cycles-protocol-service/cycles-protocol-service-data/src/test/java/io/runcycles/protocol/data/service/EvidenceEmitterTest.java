@@ -40,9 +40,10 @@ class EvidenceEmitterTest {
     }
 
     @Test
-    void emitsRecordWithArtifactTypeTraceAndRequestResponsePayload() throws Exception {
+    void emitsRecordWithArtifactTypeTraceAndPayloadBody() throws Exception {
         emitter.emit("reserve", 1810000000100L, "trace-abc",
-                Map.of("idempotency_key", "k1"), Map.of("decision", "ALLOW"));
+                Map.of("request", Map.of("idempotency_key", "k1"),
+                        "response", Map.of("decision", "ALLOW")));
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         verify(repository, timeout(2000)).push(captor.capture());
@@ -57,7 +58,7 @@ class EvidenceEmitterTest {
 
     @Test
     void omitsTraceIdWhenBlank() throws Exception {
-        emitter.emit("commit", 123L, "  ", Map.of("a", 1), Map.of("b", 2));
+        emitter.emit("commit", 123L, "  ", Map.of("request", Map.of("a", 1), "response", Map.of("b", 2)));
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         verify(repository, timeout(2000)).push(captor.capture());
