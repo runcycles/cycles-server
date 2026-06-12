@@ -773,6 +773,62 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                     any(SetParams.class));
             verify(pipeline).psetex(eq("idem:acme:dry_run:dry-store"), eq(86400000L), anyString());
         }
+
+        @Test
+        void shouldClearDryRunPendingClaimWhenCacheWriteFails() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            doNothing().doNothing().doThrow(new RuntimeException("cache down")).when(pipeline).sync();
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-cache-fail");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            verify(jedis).set(eq("idem:acme:dry_run:dry-cache-fail"), markerCaptor.capture(),
+                    any(SetParams.class));
+            verify(jedis).eval(contains("redis.call('GET'"),
+                    eq(List.of("idem:acme:dry_run:dry-cache-fail")),
+                    eq(List.of(markerCaptor.getValue())));
+        }
+
+        @Test
+        void shouldClearDryRunPendingClaimWhenEvaluationFails() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> invalidBudget = budgetMap(10000, 8000, 0, 2000);
+            invalidBudget.put("remaining", "not-a-number");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", invalidBudget);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-eval-fail");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasRootCauseInstanceOf(NumberFormatException.class);
+
+            org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+            verify(jedis).set(eq("idem:acme:dry_run:dry-eval-fail"), markerCaptor.capture(),
+                    any(SetParams.class));
+            verify(jedis).eval(contains("redis.call('GET'"),
+                    eq(List.of("idem:acme:dry_run:dry-eval-fail")),
+                    eq(List.of(markerCaptor.getValue())));
+        }
     }
 
     // ---- createReservation null defaults ----

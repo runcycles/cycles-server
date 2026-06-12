@@ -75,6 +75,9 @@ public class RedisReservationRepository {
     private static final long IDEMPOTENCY_CACHE_WAIT_SLEEP_MS = 25L;
     private static final long DRY_RUN_PENDING_TTL_MS = 60_000L;
     private static final String DRY_RUN_PENDING_PREFIX = "__dry_run_pending__:";
+    private static final String COMPARE_AND_DELETE_SCRIPT =
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
+            "return redis.call('DEL', KEYS[1]) else return 0 end";
 
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
@@ -111,12 +114,17 @@ public class RedisReservationRepository {
             // evaluation, stamp evidence + cache the full body (keyed by the dry_run idem key)
             // so a replay returns the ORIGINAL stamped payload; a replay is returned verbatim.
             if (Boolean.TRUE.equals(request.getDryRun())) {
-                ReservationCreateResponse dryRun = evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
-                if (!dryRun.isIdempotentReplay()) {
-                    stampAndEmitEvidence(dryRun, request, traceId);
-                    cacheDryRunResponse(jedis, tenant, request.getIdempotencyKey(), computePayloadHash(request), dryRun);
+                DryRunResult dryRun = evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
+                ReservationCreateResponse dryRunResponse = dryRun.response();
+                if (!dryRunResponse.isIdempotentReplay()) {
+                    stampAndEmitEvidence(dryRunResponse, request, traceId);
+                    boolean cached = cacheDryRunResponse(jedis, tenant, request.getIdempotencyKey(),
+                        computePayloadHash(request), dryRunResponse);
+                    if (!cached) {
+                        clearDryRunPendingClaim(jedis, dryRun.claimKey(), dryRun.claimMarker());
+                    }
                 }
-                return dryRun;
+                return dryRunResponse;
             }
 
             String reservationId = UUID.randomUUID().toString();
@@ -300,9 +308,9 @@ public class RedisReservationRepository {
         return original;
     }
 
-    private ReservationCreateResponse evaluateDryRun(Jedis jedis, ReservationCreateRequest request,
-                                                      List<String> affectedScopes, String scopePath,
-                                                      String tenant) throws Exception {
+    private DryRunResult evaluateDryRun(Jedis jedis, ReservationCreateRequest request,
+                                        List<String> affectedScopes, String scopePath,
+                                        String tenant) throws Exception {
         long estimateAmount = request.getEstimate().getAmount();
         String unit = request.getEstimate().getUnit().name();
 
@@ -323,11 +331,11 @@ public class RedisReservationRepository {
                 if (cached != null) {
                     ReservationCreateResponse replay = parseDryRunReplay(cached, hashResp.get(), payloadHash);
                     if (replay != null) {
-                        return replay;
+                        return DryRunResult.replay(replay);
                     }
                     replay = waitForDryRunReplay(jedis, idemKey, payloadHash);
                     if (replay != null) {
-                        return replay;
+                        return DryRunResult.replay(replay);
                     }
                     throw idempotencyInProgress();
                 }
@@ -340,7 +348,7 @@ public class RedisReservationRepository {
                 } else {
                     ReservationCreateResponse replay = waitForDryRunReplay(jedis, idemKey, payloadHash);
                     if (replay != null) {
-                        return replay;
+                        return DryRunResult.replay(replay);
                     }
                     throw idempotencyInProgress();
                 }
@@ -355,121 +363,121 @@ public class RedisReservationRepository {
             Response<List<String>> capsResponse = pipeline.hmget("budget:" + scopePath + ":" + unit, "caps_json");
             pipeline.sync();
 
-        // Skip scopes without budgets — operators may only define budgets at certain levels.
-        // At least one scope must have a budget (consistent with reserve.lua).
-        boolean foundBudget = false;
-        for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
-            Map<String, String> budget = entry.getValue().get();
+            // Skip scopes without budgets — operators may only define budgets at certain levels.
+            // At least one scope must have a budget (consistent with reserve.lua).
+            boolean foundBudget = false;
+            for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
+                Map<String, String> budget = entry.getValue().get();
 
-            if (budget == null || budget.isEmpty()) {
-                continue; // Skip scopes without budgets
-            }
-            foundBudget = true;
+                if (budget == null || budget.isEmpty()) {
+                    continue; // Skip scopes without budgets
+                }
+                foundBudget = true;
 
-            // Check budget status (consistent with admin FUND_LUA and reserve.lua)
-            String budgetStatus = budget.getOrDefault("status", "ACTIVE");
-            if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
-                return ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode("FROZEN".equals(budgetStatus)
-                        ? Enums.ReasonCode.BUDGET_FROZEN
-                        : Enums.ReasonCode.BUDGET_CLOSED)
-                    .affectedScopes(affectedScopes)
-                    .scopePath(scopePath)
-                    .build();
-            }
-            if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
-                return ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode(Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED)
-                    .affectedScopes(affectedScopes)
-                    .scopePath(scopePath)
-                    .build();
-            }
-            long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
-            long overdraftLimit = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
-            if (debt > 0 && overdraftLimit == 0) {
-                return ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
-                    .affectedScopes(affectedScopes)
-                    .scopePath(scopePath)
-                    .build();
-            }
-            long remaining = Long.parseLong(budget.getOrDefault("remaining", "0"));
-            if (remaining < estimateAmount) {
-                return ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode(Enums.ReasonCode.BUDGET_EXCEEDED)
-                    .affectedScopes(affectedScopes)
-                    .scopePath(scopePath)
-                    .build();
-            }
-        }
-
-        if (!foundBudget) {
-            // Distinguish "wrong unit" from "truly missing" — symmetric with reserve.lua probe.
-            // If any affected scope has a budget in a different unit, throw UNIT_MISMATCH (400)
-            // so the client can self-correct. Otherwise fall through to the DENY + BUDGET_NOT_FOUND
-            // dry_run response.
-            for (String scope : affectedScopes) {
-                List<String> expectedUnits = probeAlternateUnits(jedis, scope, unit);
-                if (!expectedUnits.isEmpty()) {
-                    throw CyclesProtocolException.unitMismatch(scope, unit, expectedUnits);
+                // Check budget status (consistent with admin FUND_LUA and reserve.lua)
+                String budgetStatus = budget.getOrDefault("status", "ACTIVE");
+                if ("FROZEN".equals(budgetStatus) || "CLOSED".equals(budgetStatus)) {
+                    return DryRunResult.fresh(ReservationCreateResponse.builder()
+                        .decision(Enums.DecisionEnum.DENY)
+                        .reasonCode("FROZEN".equals(budgetStatus)
+                            ? Enums.ReasonCode.BUDGET_FROZEN
+                            : Enums.ReasonCode.BUDGET_CLOSED)
+                        .affectedScopes(affectedScopes)
+                        .scopePath(scopePath)
+                        .build(), dryRunClaimKey, dryRunClaimMarker);
+                }
+                if ("true".equals(budget.getOrDefault("is_over_limit", "false"))) {
+                    return DryRunResult.fresh(ReservationCreateResponse.builder()
+                        .decision(Enums.DecisionEnum.DENY)
+                        .reasonCode(Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED)
+                        .affectedScopes(affectedScopes)
+                        .scopePath(scopePath)
+                        .build(), dryRunClaimKey, dryRunClaimMarker);
+                }
+                long debt = Long.parseLong(budget.getOrDefault("debt", "0"));
+                long overdraftLimit = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+                if (debt > 0 && overdraftLimit == 0) {
+                    return DryRunResult.fresh(ReservationCreateResponse.builder()
+                        .decision(Enums.DecisionEnum.DENY)
+                        .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
+                        .affectedScopes(affectedScopes)
+                        .scopePath(scopePath)
+                        .build(), dryRunClaimKey, dryRunClaimMarker);
+                }
+                long remaining = Long.parseLong(budget.getOrDefault("remaining", "0"));
+                if (remaining < estimateAmount) {
+                    return DryRunResult.fresh(ReservationCreateResponse.builder()
+                        .decision(Enums.DecisionEnum.DENY)
+                        .reasonCode(Enums.ReasonCode.BUDGET_EXCEEDED)
+                        .affectedScopes(affectedScopes)
+                        .scopePath(scopePath)
+                        .build(), dryRunClaimKey, dryRunClaimMarker);
                 }
             }
-            return ReservationCreateResponse.builder()
-                .decision(Enums.DecisionEnum.DENY)
-                .reasonCode(Enums.ReasonCode.BUDGET_NOT_FOUND)
-                .affectedScopes(affectedScopes)
-                .scopePath(scopePath)
-                .build();
-        }
 
-        // Collect current balances from the already-fetched pipeline results
-        Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
-        List<Balance> balances = new ArrayList<>();
-        for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
-            Map<String, String> budget = entry.getValue().get();
-            if (budget != null && !budget.isEmpty()) {
-                long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
-                long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
-                boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
-                balances.add(Balance.builder()
-                    .scope(leafScope(entry.getKey()))
-                    .scopePath(entry.getKey())
-                    .remaining(new SignedAmount(unitEnum, Long.parseLong(budget.getOrDefault("remaining", "0"))))
-                    .reserved(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("reserved", "0"))))
-                    .spent(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("spent", "0"))))
-                    .allocated(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("allocated", "0"))))
-                    .debt(debtVal > 0 ? new Amount(unitEnum, debtVal) : null)
-                    .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unitEnum, overdraftLimitVal) : null)
-                    .isOverLimit(isOverLimit ? true : null)
-                    .build());
+            if (!foundBudget) {
+                // Distinguish "wrong unit" from "truly missing" — symmetric with reserve.lua probe.
+                // If any affected scope has a budget in a different unit, throw UNIT_MISMATCH (400)
+                // so the client can self-correct. Otherwise fall through to the DENY + BUDGET_NOT_FOUND
+                // dry_run response.
+                for (String scope : affectedScopes) {
+                    List<String> expectedUnits = probeAlternateUnits(jedis, scope, unit);
+                    if (!expectedUnits.isEmpty()) {
+                        throw CyclesProtocolException.unitMismatch(scope, unit, expectedUnits);
+                    }
+                }
+                return DryRunResult.fresh(ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.DENY)
+                    .reasonCode(Enums.ReasonCode.BUDGET_NOT_FOUND)
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build(), dryRunClaimKey, dryRunClaimMarker);
             }
-        }
 
-        // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
-        Enums.DecisionEnum dryRunDecision = Enums.DecisionEnum.ALLOW;
-        Caps dryRunCaps = null;
-        List<String> capsList = capsResponse.get();
-        String capsJson = (capsList != null && !capsList.isEmpty()) ? capsList.get(0) : null;
-        if (capsJson != null && !capsJson.isEmpty()) {
-            dryRunCaps = objectMapper.readValue(capsJson, Caps.class);
-            dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
-        }
+            // Collect current balances from the already-fetched pipeline results
+            Enums.UnitEnum unitEnum = request.getEstimate().getUnit();
+            List<Balance> balances = new ArrayList<>();
+            for (Map.Entry<String, Response<Map<String, String>>> entry : budgetResponses.entrySet()) {
+                Map<String, String> budget = entry.getValue().get();
+                if (budget != null && !budget.isEmpty()) {
+                    long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
+                    long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+                    boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
+                    balances.add(Balance.builder()
+                        .scope(leafScope(entry.getKey()))
+                        .scopePath(entry.getKey())
+                        .remaining(new SignedAmount(unitEnum, Long.parseLong(budget.getOrDefault("remaining", "0"))))
+                        .reserved(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("reserved", "0"))))
+                        .spent(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("spent", "0"))))
+                        .allocated(new Amount(unitEnum, Long.parseLong(budget.getOrDefault("allocated", "0"))))
+                        .debt(debtVal > 0 ? new Amount(unitEnum, debtVal) : null)
+                        .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unitEnum, overdraftLimitVal) : null)
+                        .isOverLimit(isOverLimit ? true : null)
+                        .build());
+                }
+            }
 
-        // Caching + evidence for ALL fresh dry_run outcomes (ALLOW and the early DENYs) is
-        // handled uniformly by the caller (createReservation) via cacheDryRunResponse, so the
-        // cached body carries the stamped cycles_evidence and every outcome is idempotent.
-            return ReservationCreateResponse.builder()
+            // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+            Enums.DecisionEnum dryRunDecision = Enums.DecisionEnum.ALLOW;
+            Caps dryRunCaps = null;
+            List<String> capsList = capsResponse.get();
+            String capsJson = (capsList != null && !capsList.isEmpty()) ? capsList.get(0) : null;
+            if (capsJson != null && !capsJson.isEmpty()) {
+                dryRunCaps = objectMapper.readValue(capsJson, Caps.class);
+                dryRunDecision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
+            }
+
+            // Caching + evidence for ALL fresh dry_run outcomes (ALLOW and the early DENYs) is
+            // handled uniformly by the caller (createReservation) via cacheDryRunResponse, so the
+            // cached body carries the stamped cycles_evidence and every outcome is idempotent.
+            return DryRunResult.fresh(ReservationCreateResponse.builder()
                 .decision(dryRunDecision)
                 .affectedScopes(affectedScopes)
                 .scopePath(scopePath)
                 .reserved(request.getEstimate())
                 .caps(dryRunCaps)
                 .balances(balances)
-                .build();
+                .build(), dryRunClaimKey, dryRunClaimMarker);
         } catch (Exception e) {
             clearDryRunPendingClaim(jedis, dryRunClaimKey, dryRunClaimMarker);
             throw e;
@@ -482,10 +490,10 @@ public class RedisReservationRepository {
      * stamped body and a key-reuse with a different payload is rejected. No-op without an
      * {@code idempotency_key}. Fail-open: a write failure only degrades a later replay.
      */
-    private void cacheDryRunResponse(Jedis jedis, String tenant, String idempotencyKey,
-                                     String payloadHash, ReservationCreateResponse response) {
+    private boolean cacheDryRunResponse(Jedis jedis, String tenant, String idempotencyKey,
+                                        String payloadHash, ReservationCreateResponse response) {
         if (idempotencyKey == null || idempotencyKey.isEmpty()) {
-            return;
+            return true;
         }
         try {
             String idemKey = dryRunIdempotencyKey(tenant, idempotencyKey);
@@ -495,9 +503,11 @@ public class RedisReservationRepository {
             }
             pipe.psetex(idemKey, IDEMPOTENCY_CACHE_TTL_MS, objectMapper.writeValueAsString(response));
             pipe.sync();
+            return true;
         } catch (Exception e) {
             LOG.warn("Failed to cache dry_run response for idempotency_key {}: {}",
                     idempotencyKey, e.getMessage());
+            return false;
         }
     }
 
@@ -570,9 +580,7 @@ public class RedisReservationRepository {
             return;
         }
         try {
-            if (marker.equals(jedis.get(idemKey))) {
-                jedis.del(idemKey);
-            }
+            jedis.eval(COMPARE_AND_DELETE_SCRIPT, List.of(idemKey), List.of(marker));
         } catch (Exception clearError) {
             LOG.warn("Failed to clear pending dry_run idempotency claim {}: {}",
                 idemKey, clearError.getMessage());
@@ -604,6 +612,16 @@ public class RedisReservationRepository {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
+        }
+    }
+
+    private record DryRunResult(ReservationCreateResponse response, String claimKey, String claimMarker) {
+        static DryRunResult replay(ReservationCreateResponse response) {
+            return new DryRunResult(response, null, null);
+        }
+
+        static DryRunResult fresh(ReservationCreateResponse response, String claimKey, String claimMarker) {
+            return new DryRunResult(response, claimKey, claimMarker);
         }
     }
 
