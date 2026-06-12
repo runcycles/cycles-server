@@ -5,7 +5,6 @@ import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.AuditRepository;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.EventEmitterService;
-import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import io.runcycles.protocol.model.event.*;
@@ -40,13 +39,6 @@ public class ReservationController extends BaseController{
     @Autowired
     private EventEmitterService eventEmitter;
 
-    // CyclesEvidence (cycles-evidence-v0.1): durably enqueue a signed-envelope
-    // SOURCE record for the event-tier worker. Synchronous (same Redis as the
-    // ledger write) so a committed op cannot return without its evidence queued;
-    // fail-open (never fails the response). Expensive signing stays async.
-    @Autowired
-    private EvidenceEmitter evidenceEmitter;
-
     // v0.1.25.8: writes admin-driven release audit entries to the
     // shared Redis store. Same repo the governance plane reads from
     // via /v1/admin/audit/logs.
@@ -68,7 +60,11 @@ public class ReservationController extends BaseController{
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
         authorizeTenant(request.getSubject().getTenant());
         String tenant = extractAuthTenantId();
-        ReservationCreateResponse response = repository.createReservation(request, tenant);
+        // CyclesEvidence: emitting + stamping cycles_evidence + idempotent caching all happen
+        // inside createReservation (the idempotent unit), covering reserve AND dry_run; the
+        // trace id is threaded through for the envelope's trace_id.
+        ReservationCreateResponse response = repository.createReservation(request, tenant,
+                resolveTraceId(httpRequest));
         try {
             Actor actor = buildActor(httpRequest);
             if (response.getDecision() == Enums.DecisionEnum.DENY) {
@@ -110,32 +106,6 @@ public class ReservationController extends BaseController{
                     resolveRequestId(httpRequest),
                     resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
-        // CyclesEvidence (cycles-evidence-v0.1) — IDEMPOTENT by construction.
-        // - dry_run: NO evidence. It neither persists a reservation nor changes any
-        //   budget, so there is nothing to attest or bind a receipt to.
-        // - idempotent replay: return the response verbatim. The repository served the
-        //   FULL original cached body (original balances + original cycles_evidence), so
-        //   we must NOT re-emit or re-stamp — that would break the "return the original
-        //   successful response" rule and point a new id at a stale body.
-        // - fresh reserve: emit a `reserve` SOURCE record + compute the evidence_id over
-        //   {request, response} AS IT IS HERE (before cycles_evidence is stamped, so the
-        //   attested payload never references its own id), stamp it, then cache the full
-        //   response so future replays of this idempotency_key return it byte-identically.
-        boolean dryRun = Boolean.TRUE.equals(request.getDryRun());
-        if (!dryRun && !response.isIdempotentReplay()) {
-            java.util.Map<String, Object> evidenceBody = new java.util.LinkedHashMap<>();
-            evidenceBody.put("request", request);
-            evidenceBody.put("response", response);
-            EvidenceEmitter.EvidenceRef evidenceRef = evidenceEmitter.emit("reserve",
-                    System.currentTimeMillis(), resolveTraceId(httpRequest), evidenceBody);
-            if (evidenceRef != null) {
-                response.setCyclesEvidence(CyclesEvidenceRef.builder()
-                        .evidenceId(evidenceRef.evidenceId())
-                        .cyclesEvidenceUrl(evidenceRef.cyclesEvidenceUrl())
-                        .build());
-            }
-            repository.cacheReserveResponse(response.getReservationId(), response);
-        }
         return ResponseEntity.ok(response);
     }
 

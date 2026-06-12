@@ -32,6 +32,9 @@ abstract class BaseRedisReservationRepositoryTest {
     @Mock protected ScopeDerivationService scopeService;
     @Mock protected LuaScriptRegistry luaScripts;
     @Mock protected CyclesMetrics metrics;
+    // Unconfigured by default: emit() returns null → no cycles_evidence stamped, so
+    // existing reservation tests are unaffected. Evidence-specific tests stub it.
+    @Mock protected io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;
     @InjectMocks protected RedisReservationRepository repository;
 
     protected final ObjectMapper objectMapper = new ObjectMapper();
