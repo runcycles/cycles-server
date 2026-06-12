@@ -5,6 +5,7 @@ import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.AuditRepository;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.EventEmitterService;
+import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import io.runcycles.protocol.model.event.*;
@@ -38,6 +39,12 @@ public class ReservationController extends BaseController{
 
     @Autowired
     private EventEmitterService eventEmitter;
+
+    // CyclesEvidence (cycles-evidence-v0.1): queue a signed-envelope SOURCE
+    // record for the event-tier worker. Fire-and-forget; never blocks the
+    // reservation response.
+    @Autowired
+    private EvidenceEmitter evidenceEmitter;
 
     // v0.1.25.8: writes admin-driven release audit entries to the
     // shared Redis store. Same repo the governance plane reads from
@@ -102,6 +109,10 @@ public class ReservationController extends BaseController{
                     resolveRequestId(httpRequest),
                     resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
+        // CyclesEvidence: queue a `reserve` envelope SOURCE record (covers both
+        // ALLOW and DENY — each is a `reserve` artifact carrying its decision).
+        evidenceEmitter.emit("reserve", System.currentTimeMillis(),
+                resolveTraceId(httpRequest), request, response);
         return ResponseEntity.ok(response);
     }
 
