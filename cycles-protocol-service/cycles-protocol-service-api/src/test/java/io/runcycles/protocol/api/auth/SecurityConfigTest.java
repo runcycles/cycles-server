@@ -20,7 +20,8 @@ class SecurityConfigTest {
                 "/favicon.ico",
                 "/.well-known/**",
                 "/actuator/health",
-                "/actuator/prometheus"
+                "/actuator/prometheus",
+                "/v1/evidence/**"
         );
     }
 

@@ -19,7 +19,11 @@ public class SecurityConfig {
             "/favicon.ico",
             "/.well-known/**",
             "/actuator/health",
-            "/actuator/prometheus"
+            "/actuator/prometheus",
+            // CyclesEvidence retrieval is public by design (cycles-protocol-v0
+            // getEvidence, security: []): the evidence_id is an unguessable
+            // content-hash capability and the envelope is content-addressed + signed.
+            "/v1/evidence/**"
     };
     @Bean
     SecurityFilterChain securityFilterChain(

@@ -56,6 +56,7 @@ class ReservationControllerTest {
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
     @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.repository.EvidenceStoreReader evidenceStoreReader;
 
     @BeforeEach
     void setAuth() {
