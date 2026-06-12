@@ -34,6 +34,12 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Fire-and-forget on a dedicated executor — emission never blocks or fails
  * the lifecycle response (mirrors {@link EventEmitterService}).
+ *
+ * <p>CONTRACT: {@code payloadBody} is serialized ASYNCHRONOUSLY, so callers must
+ * pass an effectively-immutable snapshot — do not mutate the request/response
+ * objects after calling {@code emit}. This holds for the Spring MVC lifecycle
+ * controllers (per-request DTOs are returned to the client and never mutated
+ * afterward); a caller that reuses/pools mutable payloads must serialize first.
  */
 @Service
 public class EvidenceEmitter implements DisposableBean {
