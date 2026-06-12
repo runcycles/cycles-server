@@ -134,7 +134,7 @@ public class ReservationController extends BaseController{
                         .cyclesEvidenceUrl(evidenceRef.cyclesEvidenceUrl())
                         .build());
             }
-            repository.cacheReserveResponse(tenant, request.getIdempotencyKey(), response);
+            repository.cacheReserveResponse(response.getReservationId(), response);
         }
         return ResponseEntity.ok(response);
     }

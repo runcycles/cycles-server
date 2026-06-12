@@ -344,7 +344,8 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                             .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "c".repeat(64))
                             .build())
                     .build();
-            when(jedis.get("idem:acme:reserve:idem-hit"))
+            // body is cached keyed by RESERVATION_ID (the Lua replay returns orig-res)
+            when(jedis.get("reserve:body:orig-res"))
                     .thenReturn(objectMapper.writeValueAsString(original));
 
             ReservationCreateRequest request = new ReservationCreateRequest();
@@ -364,7 +365,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
-        void shouldCacheFullReserveResponseUnderIdempotencyKey() throws Exception {
+        void shouldCacheFullReserveResponseByReservationId() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             ReservationCreateResponse response = ReservationCreateResponse.builder()
@@ -373,16 +374,16 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                     .affectedScopes(List.of("tenant:acme"))
                     .build();
 
-            repository.cacheReserveResponse("acme", "key-1", response);
+            repository.cacheReserveResponse("res-1", response);
 
-            verify(jedis).psetex(eq("idem:acme:reserve:key-1"), eq(86400000L),
+            verify(jedis).psetex(eq("reserve:body:res-1"), eq(86400000L),
                     contains("\"reservation_id\":\"res-1\""));
         }
 
         @Test
-        void shouldNotCacheReserveResponseWithoutIdempotencyKey() {
-            // no key → no replay possible → no cache write (and no Redis call)
-            repository.cacheReserveResponse("acme", null, ReservationCreateResponse.builder()
+        void shouldNotCacheReserveResponseWithoutReservationId() {
+            // no reservation_id (e.g. dry_run) → no replay possible → no cache write
+            repository.cacheReserveResponse(null, ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.ALLOW).build());
             verifyNoInteractions(jedisPool);
         }

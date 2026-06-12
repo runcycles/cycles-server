@@ -157,9 +157,9 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
                     .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
-            // fresh create caches the FULL response (with evidence) so a later idempotent
-            // replay returns it byte-identically
-            verify(repository).cacheReserveResponse(eq(TENANT), any(), any(ReservationCreateResponse.class));
+            // fresh create caches the FULL response (with evidence) keyed by reservation_id
+            // so a later idempotent replay returns it byte-identically
+            verify(repository).cacheReserveResponse(eq("res_123"), any(ReservationCreateResponse.class));
         }
 
         @Test
@@ -182,7 +182,7 @@ class ReservationControllerTest {
                     .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evidenceId))
                     .andExpect(jsonPath("$.cycles_evidence.cycles_evidence_url").value(url));
             verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).cacheReserveResponse(any(), any(), any());
+            verify(repository, never()).cacheReserveResponse(any(), any());
         }
 
         @Test
@@ -199,7 +199,7 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
             verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).cacheReserveResponse(any(), any(), any());
+            verify(repository, never()).cacheReserveResponse(any(), any());
         }
 
         @Test
@@ -215,7 +215,7 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
             verify(evidenceEmitter, never()).emit(any(), anyLong(), any(), any());
-            verify(repository, never()).cacheReserveResponse(any(), any(), any());
+            verify(repository, never()).cacheReserveResponse(any(), any());
         }
 
         @Test
@@ -228,7 +228,7 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
             // still caches the (evidence-less) response for idempotent replay
-            verify(repository).cacheReserveResponse(eq(TENANT), any(), any(ReservationCreateResponse.class));
+            verify(repository).cacheReserveResponse(eq("res_123"), any(ReservationCreateResponse.class));
         }
 
         @Test

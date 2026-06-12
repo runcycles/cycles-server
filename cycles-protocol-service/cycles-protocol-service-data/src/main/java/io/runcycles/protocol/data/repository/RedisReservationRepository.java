@@ -125,7 +125,7 @@ public class RedisReservationRepository {
                 // payload. Prefer the full original response cached at first create —
                 // byte-identical body (original balances + original cycles_evidence), so
                 // it matches the CyclesEvidence envelope the evidence_id points to.
-                String cachedOriginal = jedis.get(reserveResponseCacheKey(tenant, request.getIdempotencyKey()));
+                String cachedOriginal = jedis.get(reserveResponseCacheKey(existingId));
                 if (cachedOriginal != null) {
                     ReservationCreateResponse original =
                         objectMapper.readValue(cachedOriginal, ReservationCreateResponse.class);
@@ -190,33 +190,37 @@ public class RedisReservationRepository {
         }
     }
 
-    /** Idempotency cache key for the full original reserve response. */
-    private static String reserveResponseCacheKey(String tenant, String idempotencyKey) {
-        return "idem:" + tenant + ":reserve:" + idempotencyKey;
+    /** Cache key for the full original reserve response body. Keyed by RESERVATION_ID
+     *  (not idempotency_key) so it stays consistent with reserve.lua's idempotency
+     *  mapping: the Lua replay returns the CURRENT reservation_id and we read THAT
+     *  reservation's body. Keying by idempotency_key would go stale across an
+     *  idempotency-key expiry + re-reserve (the cache would still hold the prior
+     *  reservation's body). Distinct namespace from reserve.lua's {@code idem:*} keys. */
+    private static String reserveResponseCacheKey(String reservationId) {
+        return "reserve:body:" + reservationId;
     }
 
     /**
      * Cache the FULL original reserve response (with {@code cycles_evidence} already
-     * stamped) so an idempotent replay of the same {@code idempotency_key} returns the
+     * stamped), keyed by {@code reservation_id}, so an idempotent replay returns the
      * byte-identical original payload — satisfying the NORMATIVE reserve idempotency rule
      * (original balances + original evidence, matching the envelope the {@code evidence_id}
      * points to). Called once, by the controller, on a fresh non-dry-run create after
-     * evidence is stamped. No-op when there is no {@code idempotency_key} (no replay possible).
+     * evidence is stamped. No-op when there is no {@code reservation_id} (e.g. dry_run).
      *
      * <p>Fail-open: a write failure is logged, never thrown — it only degrades a later
      * replay to the rebuild fallback, never fails the committed reservation.
      */
-    public void cacheReserveResponse(String tenant, String idempotencyKey,
-                                     ReservationCreateResponse response) {
-        if (idempotencyKey == null || idempotencyKey.isEmpty()) {
+    public void cacheReserveResponse(String reservationId, ReservationCreateResponse response) {
+        if (reservationId == null || reservationId.isEmpty()) {
             return;
         }
         try (Jedis jedis = jedisPool.getResource()) {
-            jedis.psetex(reserveResponseCacheKey(tenant, idempotencyKey), 86400000L,
+            jedis.psetex(reserveResponseCacheKey(reservationId), 86400000L,
                     objectMapper.writeValueAsString(response));
         } catch (Exception e) {
-            LOG.warn("Failed to cache reserve response for idempotency_key {}: {}",
-                    idempotencyKey, e.getMessage());
+            LOG.warn("Failed to cache reserve response for reservation {}: {}",
+                    reservationId, e.getMessage());
         }
     }
 
