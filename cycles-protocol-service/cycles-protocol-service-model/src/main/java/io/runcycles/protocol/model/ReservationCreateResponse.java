@@ -27,12 +27,9 @@ public class ReservationCreateResponse {
     @JsonIgnore private Map<String, Long> preRemaining;
     /** Internal: per-scope pre-mutation is_over_limit for transition detection. Not serialized. */
     @JsonIgnore private Map<String, Boolean> preIsOverLimit;
-    /** Internal: true when this response is an idempotent replay of a prior reserve.
-     *  Drives idempotent CyclesEvidence handling (replay the original ref; never
-     *  recompute or re-emit). Not serialized. */
+    /** Internal: true when this response is an idempotent replay of a prior reserve
+     *  (the body — including any original cycles_evidence — is the cached original).
+     *  Tells the controller to return it verbatim: never re-emit or re-stamp evidence.
+     *  Not serialized. */
     @JsonIgnore private boolean idempotentReplay;
-    /** Internal: the CyclesEvidence id/url persisted at first create, replayed on
-     *  idempotency hits so the same idempotency_key returns the same evidence. Not serialized. */
-    @JsonIgnore private String storedEvidenceId;
-    @JsonIgnore private String storedEvidenceUrl;
 }
