@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Response;
+import redis.clients.jedis.params.SetParams;
 
 import java.util.*;
 
@@ -365,6 +366,47 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldWaitForCachedOriginalResponseBeforeFallbackOnIdempotencyHit() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            String luaResponse = objectMapper.writeValueAsString(Map.of("reservation_id", "orig-res"));
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(luaResponse);
+
+            ReservationCreateResponse original = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .reservationId("orig-res")
+                    .affectedScopes(List.of("tenant:acme"))
+                    .reserved(new Amount(Enums.UnitEnum.TOKENS, 1000L))
+                    .cyclesEvidence(CyclesEvidenceRef.builder()
+                            .evidenceId("c".repeat(64))
+                            .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "c".repeat(64))
+                            .build())
+                    .build();
+            when(jedis.get("reserve:body:orig-res"))
+                    .thenReturn(null, objectMapper.writeValueAsString(original));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-hit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getReservationId()).isEqualTo("orig-res");
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
+            verify(jedis, times(2)).get("reserve:body:orig-res");
+            org.mockito.InOrder order = inOrder(jedis);
+            order.verify(jedis).close();
+            order.verify(jedis).get("reserve:body:orig-res");
+            verify(jedis, never()).hgetAll("reservation:res_orig-res");
+        }
+
+        @Test
         void freshReserveStampsEvidenceAndCachesBodyWithIdempotencyTtl() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
@@ -650,6 +692,75 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldWaitForPendingDryRunIdempotencyResultAndReplayWithoutReemitting() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-pending");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+            String payloadHash = invokeComputePayloadHash(request);
+
+            ReservationCreateResponse cached = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .affectedScopes(defaultScopes())
+                    .scopePath("tenant:acme/app:myapp")
+                    .cyclesEvidence(CyclesEvidenceRef.builder()
+                            .evidenceId("e".repeat(64))
+                            .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "e".repeat(64))
+                            .build())
+                    .build();
+
+            Response<String> pendingResp = mock(Response.class);
+            when(pendingResp.get()).thenReturn("__dry_run_pending__:" + payloadHash);
+            when(pipeline.get("idem:acme:dry_run:dry-pending")).thenReturn(pendingResp);
+            when(jedis.get("idem:acme:dry_run:dry-pending"))
+                    .thenReturn(objectMapper.writeValueAsString(cached));
+            when(jedis.get("idem:acme:dry_run:dry-pending:hash")).thenReturn(payloadHash);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("e".repeat(64));
+            org.mockito.InOrder order = inOrder(jedis);
+            order.verify(jedis).close();
+            order.verify(jedis).get("idem:acme:dry_run:dry-pending");
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+            verify(pipeline, never()).hgetAll(startsWith("budget:"));
+            verify(pipeline, never()).psetex(eq("idem:acme:dry_run:dry-pending"), eq(86400000L), anyString());
+        }
+
+        @Test
+        void shouldReturnInternalErrorWhenPendingDryRunDoesNotPublishInShortWait() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-still-pending");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+            String payloadHash = invokeComputePayloadHash(request);
+
+            Response<String> pendingResp = mock(Response.class);
+            when(pendingResp.get()).thenReturn("__dry_run_pending__:" + payloadHash);
+            when(pipeline.get("idem:acme:dry_run:dry-still-pending")).thenReturn(pendingResp);
+            when(jedis.get("idem:acme:dry_run:dry-still-pending"))
+                    .thenReturn("__dry_run_pending__:" + payloadHash);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasFieldOrPropertyWithValue("httpStatus", 500);
+        }
+
+        @Test
         void shouldReturnAllowWithCapsOnDryRun() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
@@ -690,7 +801,65 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             repository.createReservation(request, "acme");
 
+            verify(jedis).set(eq("idem:acme:dry_run:dry-store"), startsWith("__dry_run_pending__:"),
+                    any(SetParams.class));
             verify(pipeline).psetex(eq("idem:acme:dry_run:dry-store"), eq(86400000L), anyString());
+        }
+
+        @Test
+        void shouldClearDryRunPendingClaimWhenCacheWriteFails() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            doNothing().doNothing().doThrow(new RuntimeException("cache down")).when(pipeline).sync();
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-cache-fail");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            verify(jedis).set(eq("idem:acme:dry_run:dry-cache-fail"), markerCaptor.capture(),
+                    any(SetParams.class));
+            verify(jedis).eval(contains("redis.call('GET'"),
+                    eq(List.of("idem:acme:dry_run:dry-cache-fail")),
+                    eq(List.of(markerCaptor.getValue())));
+        }
+
+        @Test
+        void shouldClearDryRunPendingClaimWhenEvaluationFails() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> invalidBudget = budgetMap(10000, 8000, 0, 2000);
+            invalidBudget.put("remaining", "not-a-number");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", invalidBudget);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-eval-fail");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasRootCauseInstanceOf(NumberFormatException.class);
+
+            org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+            verify(jedis).set(eq("idem:acme:dry_run:dry-eval-fail"), markerCaptor.capture(),
+                    any(SetParams.class));
+            verify(jedis).eval(contains("redis.call('GET'"),
+                    eq(List.of("idem:acme:dry_run:dry-eval-fail")),
+                    eq(List.of(markerCaptor.getValue())));
         }
     }
 

@@ -14,6 +14,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.Response;
+import redis.clients.jedis.params.SetParams;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -65,6 +66,7 @@ abstract class BaseRedisReservationRepositoryTest {
         Response<String> defaultGetResp = mock(Response.class);
         lenient().when(defaultGetResp.get()).thenReturn(null);
         lenient().when(pipeline.get(anyString())).thenReturn(defaultGetResp);
+        lenient().when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
     }
 
     /** Mock a budget key so it is visible via both jedis.hgetAll and pipeline.hgetAll */
