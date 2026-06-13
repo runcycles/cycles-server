@@ -302,6 +302,111 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             // Verify idempotency key was stored (pipelined write)
             verify(pipeline).psetex(eq("idem:acme:decide:decide-store"), eq(86400000L), anyString());
         }
+
+        @Test
+        void freshDecideStampsEvidenceAndCachesBody() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            String evId = "a".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evId;
+            when(evidenceEmitter.emit(eq("decide"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url));
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-ev");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme", "trace-d");
+
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+            // body cached (with evidence) under the decide idempotency key, 24h TTL
+            verify(pipeline).psetex(eq("idem:acme:decide:decide-ev"), eq(86400000L),
+                    contains("\"evidence_id\":\"" + evId + "\""));
+        }
+
+        @Test
+        void decideReplayReturnsCachedBodyVerbatimWithoutReemitting() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            // replay short-circuits before budget evaluation — no deriveScopes call
+            // cached original decide body (with evidence) present under the decide idem key
+            DecisionResponse original = DecisionResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .affectedScopes(defaultScopes())
+                    .cyclesEvidence(CyclesEvidenceRef.builder()
+                            .evidenceId("c".repeat(64))
+                            .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "c".repeat(64))
+                            .build())
+                    .build();
+            Response<String> cachedResp = mock(Response.class);
+            when(cachedResp.get()).thenReturn(objectMapper.writeValueAsString(original));
+            when(pipeline.get("idem:acme:decide:decide-replay")).thenReturn(cachedResp);
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-replay");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            DecisionResponse response = repository.decide(request, "acme", "trace-d");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+        }
+
+        @Test
+        void freshDecideReleasesConnectionBeforeEmittingEvidence() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            when(evidenceEmitter.emit(eq("decide"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                            "a".repeat(64), "https://cycles.example.com/v1/evidence/" + "a".repeat(64)));
+
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey("decide-order");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            repository.decide(request, "acme", "trace-d");
+
+            // pool-nesting guard: the eval connection is released before evidence emit
+            org.mockito.InOrder ordered = inOrder(jedis, evidenceEmitter);
+            ordered.verify(jedis).close();
+            ordered.verify(evidenceEmitter).emit(eq("decide"), anyLong(), any(), any());
+        }
+
+        @Test
+        void freshDecideClearsClaimWhenEvaluationFails() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            // claim succeeds (SET NX → OK via base mock), then evaluation blows up
+            when(scopeService.deriveScopes(any())).thenThrow(new IllegalStateException("boom"));
+
+            DecisionRequest request = DecisionRequest.builder()
+                    .idempotencyKey("decide-evalfail")
+                    .subject(defaultSubject())
+                    .action(defaultAction())
+                    .estimate(defaultEstimate())
+                    .build();
+
+            assertThatThrownBy(() -> repository.decide(request, "acme", "trace-d"))
+                    .isInstanceOf(RuntimeException.class);
+            // the pending claim is released via the compare-and-delete Lua, never re-emits
+            verify(jedis).eval(contains("redis.call('GET'"), anyList(), anyList());
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+        }
     }
 
     // ---- decide exception wrapping ----
@@ -311,10 +416,11 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
     class DecideExceptionWrapping {
 
         @Test
-        void shouldWrapGenericExceptionInDecide() {
+        void shouldPropagateRuntimeExceptionUnwrappedInDecide() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(scopeService.deriveScopes(any())).thenThrow(new IllegalStateException("Unexpected"));
+            IllegalStateException boom = new IllegalStateException("Unexpected");
+            when(scopeService.deriveScopes(any())).thenThrow(boom);
 
             DecisionRequest request = DecisionRequest.builder()
                 .idempotencyKey("decide-wrap")
@@ -323,8 +429,10 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
                 .estimate(defaultEstimate())
                 .build();
 
+            // The decide orchestrator rethrows RuntimeExceptions unchanged (no double-wrap):
+            // the caller sees the original IllegalStateException instance, not a wrapping RuntimeException.
             assertThatThrownBy(() -> repository.decide(request, "acme"))
-                .isInstanceOf(RuntimeException.class);
+                .isSameAs(boom);
         }
     }
 

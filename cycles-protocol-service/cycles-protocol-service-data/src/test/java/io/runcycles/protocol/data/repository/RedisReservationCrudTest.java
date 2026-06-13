@@ -864,6 +864,63 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             verify(jedis).eval(contains("redis.call('GET'"),
                     eq(List.of("idem:acme:dry_run:dry-eval-fail")),
                     eq(List.of(markerCaptor.getValue())));
+            // Pool-nesting guard: the eval-failure clear runs on the already-held evaluation
+            // connection, so a failing dry-run checks out exactly ONE pooled connection. If the
+            // clear self-acquired a second connection while the eval one is still held, this would
+            // be 2 — the starvation pattern this PR avoids elsewhere.
+            verify(jedisPool, times(1)).getResource();
+        }
+
+        @Test
+        void dryRunEvalFailureClearSwallowsClearErrorAndPropagatesOriginal() throws Exception {
+            // Fail-open: if releasing the claim ALSO fails (the compare-and-delete eval throws),
+            // the clear error is swallowed and the ORIGINAL evaluation error still propagates —
+            // a leaked claim self-expires via its PX TTL.
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            Map<String, String> invalidBudget = budgetMap(10000, 8000, 0, 2000);
+            invalidBudget.put("remaining", "not-a-number");
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", invalidBudget);
+            when(jedis.eval(contains("redis.call('GET'"), anyList(), anyList()))
+                    .thenThrow(new RuntimeException("clear failed"));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-eval-and-clear-fail");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasRootCauseInstanceOf(NumberFormatException.class);
+            verify(jedis).eval(contains("redis.call('GET'"), anyList(), anyList());
+        }
+
+        @Test
+        void dryRunClaimClearFailsOpenWhenPoolUnavailable() throws Exception {
+            // After a fresh dry-run is evaluated, if caching the body AND clearing the claim both
+            // fail because the pool is exhausted (self-acquired connections throw on checkout), the
+            // dry-run must still return its computed decision — releasing the claim is never allowed
+            // to fail the response.
+            when(jedisPool.getResource()).thenReturn(jedis).thenThrow(new RuntimeException("pool down"));
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-pool-down");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
         }
     }
 
