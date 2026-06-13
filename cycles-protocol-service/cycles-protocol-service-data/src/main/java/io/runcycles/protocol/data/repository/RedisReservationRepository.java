@@ -70,6 +70,11 @@ public class RedisReservationRepository {
      */
     static final int SORTED_HYDRATE_CAP = 2000;
     private static final long IDEMPOTENCY_CACHE_TTL_MS = 86_400_000L;
+    // commit/release are terminal: reserve/commit/release.lua set a 30-day TTL on the
+    // finalized reservation hash (audit trail), so the commit/release idempotent replay is
+    // valid for 30 days. The evidence body cache must match so it never expires before the
+    // reservation hash that drives the Lua replay.
+    private static final long TERMINAL_BODY_CACHE_TTL_MS = 2_592_000_000L;
     private static final int RESERVE_BODY_CACHE_WAIT_ATTEMPTS = 4;
     private static final int DRY_RUN_CACHE_WAIT_ATTEMPTS = 4;
     private static final long IDEMPOTENCY_CACHE_WAIT_SLEEP_MS = 25L;
@@ -204,9 +209,15 @@ public class RedisReservationRepository {
                 // the WHOLE response so an idempotent replay returns it verbatim. Cache for the
                 // SAME TTL as reserve.lua's idempotency mapping (max(ttl_ms+grace_ms, 24h)) so the
                 // body never expires before the idempotency key.
-                stampAndEmitEvidence(created, request, traceId);
+                // Release the Lua connection FIRST: evidence emit (push) and the body cache each
+                // acquire their own short-lived connection, so we never hold two pool connections
+                // at once (which would starve the pool under concurrent fresh ops).
                 long graceMs = request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000;
-                cacheReserveResponse(jedis, reservationId, created, Math.max(effectiveTtl + graceMs, 86400000L));
+                long bodyTtlMs = Math.max(effectiveTtl + graceMs, 86400000L);
+                jedis.close();
+                jedis = null;
+                stampAndEmitEvidence(created, request, traceId);
+                cacheReserveResponse(reservationId, created, bodyTtlMs);
                 return created;
             } finally {
                 if (jedis != null) {
@@ -302,12 +313,12 @@ public class RedisReservationRepository {
      * <p>Fail-open: a write failure is logged, never thrown — it only degrades a later
      * replay to the rebuild fallback, never fails the committed reservation.
      */
-    private void cacheReserveResponse(Jedis jedis, String reservationId,
+    private void cacheReserveResponse(String reservationId,
                                       ReservationCreateResponse response, long ttlMs) {
         if (reservationId == null || reservationId.isEmpty()) {
             return;
         }
-        try {
+        try (Jedis jedis = jedisPool.getResource()) {
             jedis.psetex(reserveResponseCacheKey(reservationId), ttlMs,
                     objectMapper.writeValueAsString(response));
         } catch (Exception e) {
@@ -326,6 +337,46 @@ public class RedisReservationRepository {
             objectMapper.readValue(cachedOriginal, ReservationCreateResponse.class);
         original.setIdempotentReplay(true);
         return original;
+    }
+
+    // ---- commit / release CyclesEvidence (mirrors the reserve evidence flow) ----
+
+    private static String lifecycleBodyCacheKey(String artifactType, String reservationId) {
+        return artifactType + ":body:" + reservationId;
+    }
+
+    /**
+     * Emit a lifecycle CyclesEvidence source record and return the ref (or {@code null}
+     * when the server identity is unconfigured). The {@code payloadBody} is the
+     * artifact-specific body (commit/release carry {@code {reservation_id, request, response}});
+     * it is built BEFORE {@code cycles_evidence} is stamped onto the response, so the attested
+     * payload never references its own id.
+     */
+    private EvidenceEmitter.EvidenceRef emitLifecycleEvidence(String artifactType, String traceId,
+                                                              Object payloadBody) {
+        return evidenceEmitter.emit(artifactType, System.currentTimeMillis(), traceId, payloadBody);
+    }
+
+    /** Cache a finalized lifecycle response body (with evidence stamped) for verbatim replay,
+     *  keyed by {@code <artifact>:body:<reservation_id>}, 30-day TTL matching the terminal
+     *  reservation hash. Fail-open. */
+    private void cacheLifecycleBody(String artifactType, String reservationId, Object response) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.psetex(lifecycleBodyCacheKey(artifactType, reservationId),
+                    TERMINAL_BODY_CACHE_TTL_MS, objectMapper.writeValueAsString(response));
+        } catch (Exception e) {
+            LOG.warn("Failed to cache {} response body for reservation {}: {}",
+                    artifactType, reservationId, e.getMessage());
+        }
+    }
+
+    /** Read a cached lifecycle response body (per-poll connections, bounded wait), or
+     *  {@code null} if absent. */
+    private <T> T readCachedLifecycleBody(String artifactType, String reservationId, Class<T> type)
+            throws Exception {
+        String cached = readCacheValueWithWait(
+            lifecycleBodyCacheKey(artifactType, reservationId), RESERVE_BODY_CACHE_WAIT_ATTEMPTS);
+        return cached == null ? null : objectMapper.readValue(cached, type);
     }
 
     private ReservationCreateResponse rebuildReserveReplay(String existingId) throws Exception {
@@ -667,10 +718,18 @@ public class RedisReservationRepository {
         }
     }
 
+    /** Back-compat overload (no trace context) — used by tests and any non-HTTP caller. */
     public CommitResponse commitReservation(String reservationId, CommitRequest request, String tenant) {
+        return commitReservation(reservationId, request, tenant, null);
+    }
+
+    public CommitResponse commitReservation(String reservationId, CommitRequest request, String tenant,
+                                            String traceId) {
         LOG.debug("Committing reservation: {}", reservationId);
 
-        try (Jedis jedis = jedisPool.getResource()) {
+        Jedis jedis = null;
+        try {
+            jedis = jedisPool.getResource();
             List<String> args = Arrays.asList(
                 reservationId,
                 String.valueOf(request.getActual().getAmount()),
@@ -715,7 +774,7 @@ public class RedisReservationRepository {
             if (debtIncurredAmount > 0) {
                 metrics.recordOverdraftIncurred(tenant);
             }
-            return CommitResponse.builder()
+            CommitResponse committed = CommitResponse.builder()
                 .status(Enums.CommitStatus.COMMITTED)
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
@@ -728,6 +787,43 @@ public class RedisReservationRepository {
                 .preRemaining(parsePreRemaining(response))
                 .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
+
+            // Idempotent replay (Lua signals `replay`): return the ORIGINAL cached body
+            // (with its original cycles_evidence) verbatim; never re-emit. The internal
+            // event-emission fields are intentionally absent on the cached body, and the
+            // controller skips event emission on a replay.
+            if (Boolean.TRUE.equals(response.get("replay"))) {
+                committed.setIdempotentReplay(true);
+                jedis.close();
+                jedis = null;
+                CommitResponse cached = readCachedLifecycleBody("commit", reservationId, CommitResponse.class);
+                if (cached != null) {
+                    cached.setIdempotentReplay(true);
+                    return cached;
+                }
+                return committed; // fallback (cache absent): no evidence replayed
+            }
+
+            // Fresh commit: emit `commit` evidence over {reservation_id, request, response}
+            // (response AS-IS, before cycles_evidence is stamped), stamp the ref, then cache
+            // the full body for verbatim replay (30-day TTL, matching the terminal hash).
+            // Release the Lua connection first so emit (push) and the body cache each use their
+            // own short-lived connection — never two pool connections held at once.
+            jedis.close();
+            jedis = null;
+            Map<String, Object> evidenceBody = new LinkedHashMap<>();
+            evidenceBody.put("reservation_id", reservationId);
+            evidenceBody.put("request", request);
+            evidenceBody.put("response", committed);
+            EvidenceEmitter.EvidenceRef ref = emitLifecycleEvidence("commit", traceId, evidenceBody);
+            if (ref != null) {
+                committed.setCyclesEvidence(CyclesEvidenceRef.builder()
+                        .evidenceId(ref.evidenceId())
+                        .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
+                        .build());
+            }
+            cacheLifecycleBody("commit", reservationId, committed);
+            return committed;
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
             metrics.recordCommit(tenant, "DENY", e.getErrorCode().name(), "UNKNOWN");
@@ -736,14 +832,26 @@ public class RedisReservationRepository {
             LOG.error("Failed to commit reservation", e);
             metrics.recordCommit(tenant, "DENY", "INTERNAL_ERROR", "UNKNOWN");
             throw new RuntimeException(e);
+        } finally {
+            if (jedis != null) {
+                jedis.close();
+            }
         }
     }
 
+    /** Back-compat overload (no trace context) — used by tests and any non-HTTP caller. */
     public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
                                                String tenant, String actorType) {
+        return releaseReservation(reservationId, request, tenant, actorType, null);
+    }
+
+    public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
+                                               String tenant, String actorType, String traceId) {
         LOG.debug("Releasing reservation: {}", reservationId);
 
-        try (Jedis jedis = jedisPool.getResource()) {
+        Jedis jedis = null;
+        try {
+            jedis = jedisPool.getResource();
             List<String> args = Arrays.asList(
                 reservationId,
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
@@ -777,11 +885,43 @@ public class RedisReservationRepository {
             List<Balance> balances = parseLuaBalances(response, unitForBalances);
 
             metrics.recordRelease(tenant, actorType, "RELEASED", "OK");
-            return ReleaseResponse.builder()
+            ReleaseResponse releasedResponse = ReleaseResponse.builder()
                 .status(Enums.ReleaseStatus.RELEASED)
                 .released(releasedAmount)
                 .balances(balances)
                 .build();
+
+            // Idempotent replay: return the original cached body verbatim; never re-emit.
+            if (Boolean.TRUE.equals(response.get("replay"))) {
+                releasedResponse.setIdempotentReplay(true);
+                jedis.close();
+                jedis = null;
+                ReleaseResponse cached = readCachedLifecycleBody("release", reservationId, ReleaseResponse.class);
+                if (cached != null) {
+                    cached.setIdempotentReplay(true);
+                    return cached;
+                }
+                return releasedResponse; // fallback (cache absent): no evidence replayed
+            }
+
+            // Fresh release: emit `release` evidence over {reservation_id, request, response}
+            // (before cycles_evidence is stamped), stamp the ref, cache the body for replay.
+            // Release the Lua connection first (see commit) to avoid nested pool acquisition.
+            jedis.close();
+            jedis = null;
+            Map<String, Object> evidenceBody = new LinkedHashMap<>();
+            evidenceBody.put("reservation_id", reservationId);
+            evidenceBody.put("request", request);
+            evidenceBody.put("response", releasedResponse);
+            EvidenceEmitter.EvidenceRef ref = emitLifecycleEvidence("release", traceId, evidenceBody);
+            if (ref != null) {
+                releasedResponse.setCyclesEvidence(CyclesEvidenceRef.builder()
+                        .evidenceId(ref.evidenceId())
+                        .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
+                        .build());
+            }
+            cacheLifecycleBody("release", reservationId, releasedResponse);
+            return releasedResponse;
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to release reservation:reservationId={},req={}",reservationId,request,e);
             metrics.recordRelease(tenant, actorType, "DENY", e.getErrorCode().name());
@@ -790,6 +930,10 @@ public class RedisReservationRepository {
             LOG.error("Failed to release reservation:reservationId={},req={}",reservationId,request,e);
             metrics.recordRelease(tenant, actorType, "DENY", "INTERNAL_ERROR");
             throw new RuntimeException(e);
+        } finally {
+            if (jedis != null) {
+                jedis.close();
+            }
         }
     }
 

@@ -14,4 +14,8 @@ public class ReleaseResponse {
     @NotNull @JsonProperty("status") private Enums.ReleaseStatus status;
     @NotNull @Valid @JsonProperty("released") private Amount released;
     @Valid @JsonProperty("balances") private List<Balance> balances;
+    @Valid @JsonProperty("cycles_evidence") private CyclesEvidenceRef cyclesEvidence;
+    /** Internal: true when this is an idempotent replay (return the cached body verbatim;
+     *  never re-emit/re-stamp evidence). Not serialized. */
+    @JsonIgnore private boolean idempotentReplay;
 }

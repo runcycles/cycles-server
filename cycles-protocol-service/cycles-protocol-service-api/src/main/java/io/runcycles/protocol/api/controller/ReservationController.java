@@ -131,8 +131,13 @@ public class ReservationController extends BaseController{
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        CommitResponse response = repository.commitReservation(reservationId, request, tenant);
+        CommitResponse response = repository.commitReservation(reservationId, request, tenant,
+                resolveTraceId(httpRequest));
+        // Idempotent replay: the original commit already emitted its events; do not re-emit.
         try {
+            if (response.isIdempotentReplay()) {
+                return ResponseEntity.ok(response);
+            }
             Actor actor = buildActor(httpRequest);
             // Spec: emit commit_overage when committed actual > estimated amount
             // Use request.actual (not response.charged, which may be capped by ALLOW_IF_AVAILABLE)
@@ -181,7 +186,8 @@ public class ReservationController extends BaseController{
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
         String actorType = isAdminAuth() ? "admin_on_behalf_of" : "tenant";
-        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType);
+        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType,
+                resolveTraceId(httpRequest));
 
         // v0.1.25.8: on admin-driven release, write an audit-log entry
         // to the shared Redis store. Entry surfaces in the governance
@@ -199,7 +205,9 @@ public class ReservationController extends BaseController{
         // CR/LF before recording to prevent log-line forgery via
         // newline injection in any consumer that naively concatenates
         // audit entries (e.g. operator-facing grep output).
-        if (isAdminAuth()) {
+        // Skip on an idempotent replay: the original admin release already wrote the audit
+        // entry; re-logging it would make the trail show a second admin release action.
+        if (isAdminAuth() && !response.isIdempotentReplay()) {
             String safeReason = request.getReason() != null
                 ? request.getReason().replaceAll("[\\r\\n]", " ")
                 : null;
