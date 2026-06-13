@@ -46,9 +46,12 @@ public class DecisionController extends BaseController {
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
         authorizeTenant(request.getSubject().getTenant());
         String tenant = extractAuthTenantId();
-        DecisionResponse response = repository.decide(request, tenant);
+        // CyclesEvidence: the `decide` artifact is emitted + stamped + cached inside decide()
+        // (the idempotent unit); thread the trace id for the envelope's trace_id.
+        DecisionResponse response = repository.decide(request, tenant, resolveTraceId(httpRequest));
         try {
-            if (response.getDecision() == Enums.DecisionEnum.DENY) {
+            // Idempotent replay: the original decision already emitted its event; don't re-emit.
+            if (response.getDecision() == Enums.DecisionEnum.DENY && !response.isIdempotentReplay()) {
                 String scope = response.getAffectedScopes() != null && !response.getAffectedScopes().isEmpty()
                         ? response.getAffectedScopes().get(0) : null;
                 Actor actor = buildActor(httpRequest);

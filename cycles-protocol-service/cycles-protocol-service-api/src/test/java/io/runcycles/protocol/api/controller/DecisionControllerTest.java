@@ -75,13 +75,31 @@ class DecisionControllerTest {
                 .decision(Enums.DecisionEnum.ALLOW)
                 .affectedScopes(List.of("tenant:acme-corp"))
                 .build();
-        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
 
         mockMvc.perform(post("/v1/decide")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(decideJson(TENANT)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.decision").value("ALLOW"));
+    }
+
+    @Test
+    void shouldSurfaceCyclesEvidenceOnDecide() throws Exception {
+        String evId = "a".repeat(64);
+        DecisionResponse resp = DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.ALLOW)
+                .affectedScopes(List.of("tenant:acme-corp"))
+                .cyclesEvidence(CyclesEvidenceRef.builder().evidenceId(evId)
+                        .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + evId).build())
+                .build();
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evId));
     }
 
     @Test
@@ -112,7 +130,7 @@ class DecisionControllerTest {
                 .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
                 .affectedScopes(List.of("tenant:" + TENANT))
                 .build();
-        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
 
         mockMvc.perform(post("/v1/decide")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -138,7 +156,7 @@ class DecisionControllerTest {
                 .decision(Enums.DecisionEnum.ALLOW)
                 .affectedScopes(List.of("tenant:" + TENANT))
                 .build();
-        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
 
         mockMvc.perform(post("/v1/decide")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -156,7 +174,7 @@ class DecisionControllerTest {
                 .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
                 .affectedScopes(List.of("tenant:" + TENANT))
                 .build();
-        when(repository.decide(any(), eq(TENANT))).thenReturn(resp);
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
         doThrow(new RuntimeException("event emit failed")).when(eventEmitter).emit(
                 any(EventType.class), any(), any(), any(), any(), any(), any(), any());
 

@@ -16,4 +16,8 @@ public class DecisionResponse {
     @Valid @JsonProperty("caps") private Caps caps;
     @Min(0) @JsonProperty("retry_after_ms") private Integer retryAfterMs;
     @JsonProperty("affected_scopes") private List<String> affectedScopes;
+    @Valid @JsonProperty("cycles_evidence") private CyclesEvidenceRef cyclesEvidence;
+    /** Internal: true when this is an idempotent replay (return the cached body verbatim;
+     *  never re-emit/re-stamp evidence). Not serialized. */
+    @JsonIgnore private boolean idempotentReplay;
 }

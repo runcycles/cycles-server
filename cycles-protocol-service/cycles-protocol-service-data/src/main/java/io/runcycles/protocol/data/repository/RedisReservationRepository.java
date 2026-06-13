@@ -76,10 +76,12 @@ public class RedisReservationRepository {
     // reservation hash that drives the Lua replay.
     private static final long TERMINAL_BODY_CACHE_TTL_MS = 2_592_000_000L;
     private static final int RESERVE_BODY_CACHE_WAIT_ATTEMPTS = 4;
-    private static final int DRY_RUN_CACHE_WAIT_ATTEMPTS = 4;
+    // Shared by the non-persisting idempotent-evaluation path (dry_run + decide): a fresh
+    // evaluator atomically claims `idem:<tenant>:<kind>:<key>` with a pending marker, others
+    // wait for the cached result. Marker prefix is per-kind (`__<kind>_pending__:`).
+    private static final int IDEMPOTENT_EVAL_WAIT_ATTEMPTS = 4;
     private static final long IDEMPOTENCY_CACHE_WAIT_SLEEP_MS = 25L;
-    private static final long DRY_RUN_PENDING_TTL_MS = 60_000L;
-    private static final String DRY_RUN_PENDING_PREFIX = "__dry_run_pending__:";
+    private static final long IDEMPOTENT_EVAL_PENDING_TTL_MS = 60_000L;
     private static final String COMPARE_AND_DELETE_SCRIPT =
         "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
             "return redis.call('DEL', KEYS[1]) else return 0 end";
@@ -244,8 +246,60 @@ public class RedisReservationRepository {
         return "reserve:body:" + reservationId;
     }
 
-    private static String dryRunIdempotencyKey(String tenant, String idempotencyKey) {
-        return "idem:" + tenant + ":dry_run:" + idempotencyKey;
+    // ---- Shared non-persisting idempotent-evaluation machinery (dry_run + decide) ----
+
+    private static String idempotencyCacheKey(String kind, String tenant, String idempotencyKey) {
+        return "idem:" + tenant + ":" + kind + ":" + idempotencyKey;
+    }
+
+    private static String pendingPrefix(String kind) {
+        return "__" + kind + "_pending__:";
+    }
+
+    /** Outcome of trying to claim a fresh evaluation slot for an idempotency_key. */
+    private record IdemClaim(String cachedBody, String claimKey, String claimMarker, boolean pending) {
+        static IdemClaim replay(String cachedBody) { return new IdemClaim(cachedBody, null, null, false); }
+        static IdemClaim claimed(String claimKey, String marker) { return new IdemClaim(null, claimKey, marker, false); }
+        static IdemClaim waiting() { return new IdemClaim(null, null, null, true); }
+        static IdemClaim noKey() { return new IdemClaim(null, null, null, false); }
+    }
+
+    /**
+     * Atomically resolve the idempotency state for a non-persisting evaluation (dry_run/decide):
+     * a cached non-pending body → {@code replay}; a pending marker → {@code pending} (caller waits);
+     * otherwise {@code SET NX} a pending claim → {@code claimed} (caller evaluates) or, if another
+     * request won the race, {@code pending}. No {@code idempotency_key} → {@code noKey} (fresh, no claim).
+     */
+    private IdemClaim acquireIdempotencyClaim(Jedis jedis, String kind, String tenant,
+                                              String idempotencyKey, String payloadHash) {
+        if (idempotencyKey == null || idempotencyKey.isEmpty()) {
+            return IdemClaim.noKey();
+        }
+        String idemKey = idempotencyCacheKey(kind, tenant, idempotencyKey);
+        Pipeline idemPipe = jedis.pipelined();
+        Response<String> cachedResp = idemPipe.get(idemKey);
+        Response<String> hashResp = idemPipe.get(idemKey + ":hash");
+        idemPipe.sync();
+        String cached = cachedResp.get();
+        if (cached != null) {
+            if (isPending(kind, cached)) {
+                validatePendingMarker(kind, cached, payloadHash);
+                return IdemClaim.waiting();
+            }
+            validateCachedHash(hashResp.get(), payloadHash);
+            return IdemClaim.replay(cached);
+        }
+        String marker = pendingMarker(kind, payloadHash);
+        String claim = jedis.set(idemKey, marker,
+            SetParams.setParams().nx().px(IDEMPOTENT_EVAL_PENDING_TTL_MS));
+        return "OK".equalsIgnoreCase(claim) ? IdemClaim.claimed(idemKey, marker) : IdemClaim.waiting();
+    }
+
+    private void validateCachedHash(String storedHash, String payloadHash) {
+        if (payloadHash != null && !payloadHash.isEmpty()
+                && storedHash != null && !storedHash.equals(payloadHash)) {
+            throw CyclesProtocolException.idempotencyMismatch();
+        }
     }
 
     private ReservationCreateResponse createDryRunReservation(ReservationCreateRequest request,
@@ -259,8 +313,10 @@ public class RedisReservationRepository {
         }
 
         if (dryRun.pending()) {
-            ReservationCreateResponse replay = waitForDryRunReplay(dryRun.claimKey(), dryRun.payloadHash());
-            if (replay != null) {
+            String body = waitForIdempotentReplayBody("dry_run", dryRun.claimKey(), dryRun.payloadHash());
+            if (body != null) {
+                ReservationCreateResponse replay = objectMapper.readValue(body, ReservationCreateResponse.class);
+                replay.setIdempotentReplay(true);
                 return replay;
             }
             throw idempotencyStillPending();
@@ -269,12 +325,12 @@ public class RedisReservationRepository {
         ReservationCreateResponse dryRunResponse = dryRun.response();
         if (!dryRunResponse.isIdempotentReplay()) {
             stampAndEmitEvidence(dryRunResponse, request, traceId);
-            try (Jedis jedis = jedisPool.getResource()) {
-                boolean cached = cacheDryRunResponse(jedis, tenant, request.getIdempotencyKey(),
-                    computePayloadHash(request), dryRunResponse);
-                if (!cached) {
-                    clearDryRunPendingClaim(jedis, dryRun.claimKey(), dryRun.claimMarker());
-                }
+            // cacheIdempotentBody/clearIdempotencyClaim self-acquire fail-open connections,
+            // so a pool failure here can't fail the response or leak the claim past its TTL.
+            boolean cached = cacheIdempotentBody("dry_run", tenant, request.getIdempotencyKey(),
+                computePayloadHash(request), dryRunResponse);
+            if (!cached) {
+                clearIdempotencyClaim(dryRun.claimKey(), dryRun.claimMarker());
             }
         }
         return dryRunResponse;
@@ -413,31 +469,19 @@ public class RedisReservationRepository {
         String dryRunClaimKey = null;
         String dryRunClaimMarker = null;
         try {
-            if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
-                String idemKey = dryRunIdempotencyKey(tenant, idempotencyKey);
-                // Pipeline both GETs in a single round-trip
-                Pipeline idemPipe = jedis.pipelined();
-                Response<String> cachedResp = idemPipe.get(idemKey);
-                Response<String> hashResp = idemPipe.get(idemKey + ":hash");
-                idemPipe.sync();
-                String cached = cachedResp.get();
-                if (cached != null) {
-                    ReservationCreateResponse replay = parseDryRunReplay(cached, hashResp.get(), payloadHash);
-                    if (replay != null) {
-                        return DryRunResult.replay(replay);
-                    }
-                    return DryRunResult.pending(idemKey, payloadHash);
-                }
-
-                dryRunClaimMarker = dryRunPendingMarker(payloadHash);
-                String claim = jedis.set(idemKey, dryRunClaimMarker,
-                    SetParams.setParams().nx().px(DRY_RUN_PENDING_TTL_MS));
-                if ("OK".equalsIgnoreCase(claim)) {
-                    dryRunClaimKey = idemKey;
-                } else {
-                    return DryRunResult.pending(idemKey, payloadHash);
-                }
+            IdemClaim claim = acquireIdempotencyClaim(jedis, "dry_run", tenant, idempotencyKey, payloadHash);
+            if (claim.cachedBody() != null) {
+                ReservationCreateResponse replay =
+                    objectMapper.readValue(claim.cachedBody(), ReservationCreateResponse.class);
+                replay.setIdempotentReplay(true);
+                return DryRunResult.replay(replay);
             }
+            if (claim.pending()) {
+                return DryRunResult.pending(
+                    idempotencyCacheKey("dry_run", tenant, idempotencyKey), payloadHash);
+            }
+            dryRunClaimKey = claim.claimKey();
+            dryRunClaimMarker = claim.claimMarker();
 
             // Pipeline all budget fetches (validation + balance collection + caps) in one round-trip
             Pipeline pipeline = jedis.pipelined();
@@ -553,8 +597,8 @@ public class RedisReservationRepository {
             }
 
             // Caching + evidence for ALL fresh dry_run outcomes (ALLOW and the early DENYs) is
-            // handled uniformly by the caller (createReservation) via cacheDryRunResponse, so the
-            // cached body carries the stamped cycles_evidence and every outcome is idempotent.
+            // handled uniformly by the caller (createDryRunReservation) via cacheIdempotentBody,
+            // so the cached body carries the stamped cycles_evidence and every outcome is idempotent.
             return DryRunResult.fresh(ReservationCreateResponse.builder()
                 .decision(dryRunDecision)
                 .affectedScopes(affectedScopes)
@@ -564,24 +608,22 @@ public class RedisReservationRepository {
                 .balances(balances)
                 .build(), dryRunClaimKey, dryRunClaimMarker);
         } catch (Exception e) {
-            clearDryRunPendingClaim(jedis, dryRunClaimKey, dryRunClaimMarker);
+            clearIdempotencyClaim(dryRunClaimKey, dryRunClaimMarker);
             throw e;
         }
     }
 
-    /**
-     * Cache a fresh dry_run response (with {@code cycles_evidence} stamped) + its payload
-     * hash under {@code idem:<tenant>:dry_run:<key>} (24h), so a replay returns the original
-     * stamped body and a key-reuse with a different payload is rejected. No-op without an
-     * {@code idempotency_key}. Fail-open: a write failure only degrades a later replay.
-     */
-    private boolean cacheDryRunResponse(Jedis jedis, String tenant, String idempotencyKey,
-                                        String payloadHash, ReservationCreateResponse response) {
+    /** Cache a fresh non-persisting evaluation body (evidence already stamped) + payload hash
+     *  under {@code idem:<tenant>:<kind>:<key>} (24h). Acquires its own short-lived connection
+     *  and is fully fail-open: returns {@code false} on ANY failure (incl. pool exhaustion), so
+     *  the caller can clear the pending claim. No-op (true) without an idempotency_key. */
+    private boolean cacheIdempotentBody(String kind, String tenant, String idempotencyKey,
+                                        String payloadHash, Object response) {
         if (idempotencyKey == null || idempotencyKey.isEmpty()) {
             return true;
         }
-        try {
-            String idemKey = dryRunIdempotencyKey(tenant, idempotencyKey);
+        try (Jedis jedis = jedisPool.getResource()) {
+            String idemKey = idempotencyCacheKey(kind, tenant, idempotencyKey);
             Pipeline pipe = jedis.pipelined();
             if (payloadHash != null && !payloadHash.isEmpty()) {
                 pipe.psetex(idemKey + ":hash", IDEMPOTENCY_CACHE_TTL_MS, payloadHash);
@@ -590,14 +632,17 @@ public class RedisReservationRepository {
             pipe.sync();
             return true;
         } catch (Exception e) {
-            LOG.warn("Failed to cache dry_run response for idempotency_key {}: {}",
-                    idempotencyKey, e.getMessage());
+            LOG.warn("Failed to cache {} response for idempotency_key {}: {}",
+                    kind, idempotencyKey, e.getMessage());
             return false;
         }
     }
 
-    private ReservationCreateResponse waitForDryRunReplay(String idemKey, String payloadHash) throws Exception {
-        for (int attempt = 0; attempt <= DRY_RUN_CACHE_WAIT_ATTEMPTS; attempt++) {
+    /** Poll (per-poll connection, bounded wait) for the winning evaluator's cached body —
+     *  returns the non-pending cached JSON (caller deserializes) or {@code null} on timeout. */
+    private String waitForIdempotentReplayBody(String kind, String idemKey, String payloadHash)
+            throws Exception {
+        for (int attempt = 0; attempt <= IDEMPOTENT_EVAL_WAIT_ATTEMPTS; attempt++) {
             if (attempt > 0 && !sleepBeforeIdempotencyRetry()) {
                 return null;
             }
@@ -606,69 +651,51 @@ public class RedisReservationRepository {
                 if (cached == null) {
                     continue;
                 }
-                if (isDryRunPending(cached)) {
-                    validateDryRunPendingMarker(cached, payloadHash);
+                if (isPending(kind, cached)) {
+                    validatePendingMarker(kind, cached, payloadHash);
                     continue;
                 }
-                return parseDryRunReplay(cached, jedis.get(idemKey + ":hash"), payloadHash);
+                validateCachedHash(jedis.get(idemKey + ":hash"), payloadHash);
+                return cached;
             }
         }
         return null;
     }
 
-    private ReservationCreateResponse parseDryRunReplay(String cached, String storedHash,
-                                                        String payloadHash) throws Exception {
-        if (cached == null) {
-            return null;
-        }
-        if (isDryRunPending(cached)) {
-            validateDryRunPendingMarker(cached, payloadHash);
-            return null;
-        }
-        // Spec MUST: detect payload mismatch on idempotent replay.
-        if (payloadHash != null && !payloadHash.isEmpty()
-                && storedHash != null && !storedHash.equals(payloadHash)) {
-            throw CyclesProtocolException.idempotencyMismatch();
-        }
-        // Replay the ORIGINAL cached dry_run body verbatim (it carries the original
-        // cycles_evidence stamped at first evaluation); never re-emit.
-        ReservationCreateResponse replay =
-            objectMapper.readValue(cached, ReservationCreateResponse.class);
-        replay.setIdempotentReplay(true);
-        return replay;
+    private boolean isPending(String kind, String cached) {
+        return cached.startsWith(pendingPrefix(kind));
     }
 
-    private boolean isDryRunPending(String cached) {
-        return cached.startsWith(DRY_RUN_PENDING_PREFIX);
-    }
-
-    private String dryRunPendingMarker(String payloadHash) {
+    private String pendingMarker(String kind, String payloadHash) {
         String hash = payloadHash != null ? payloadHash : "";
-        return DRY_RUN_PENDING_PREFIX + hash + ":" + UUID.randomUUID();
+        return pendingPrefix(kind) + hash + ":" + UUID.randomUUID();
     }
 
-    private void validateDryRunPendingMarker(String cached, String payloadHash) {
-        String pendingHash = dryRunPendingPayloadHash(cached);
+    private void validatePendingMarker(String kind, String cached, String payloadHash) {
+        String pendingHash = pendingPayloadHash(kind, cached);
         if (!pendingHash.isEmpty() && payloadHash != null && !payloadHash.isEmpty()
                 && !pendingHash.equals(payloadHash)) {
             throw CyclesProtocolException.idempotencyMismatch();
         }
     }
 
-    private String dryRunPendingPayloadHash(String cached) {
-        String markerBody = cached.substring(DRY_RUN_PENDING_PREFIX.length());
+    private String pendingPayloadHash(String kind, String cached) {
+        String markerBody = cached.substring(pendingPrefix(kind).length());
         int ownerSeparator = markerBody.indexOf(':');
         return ownerSeparator >= 0 ? markerBody.substring(0, ownerSeparator) : markerBody;
     }
 
-    private void clearDryRunPendingClaim(Jedis jedis, String idemKey, String marker) {
+    /** Best-effort compare-and-delete of a pending claim. Acquires its own connection and is
+     *  fully fail-open (incl. pool exhaustion) — releasing the claim is never allowed to fail
+     *  the request; a leaked claim self-expires via its PX TTL. */
+    private void clearIdempotencyClaim(String idemKey, String marker) {
         if (idemKey == null || marker == null) {
             return;
         }
-        try {
+        try (Jedis jedis = jedisPool.getResource()) {
             jedis.eval(COMPARE_AND_DELETE_SCRIPT, List.of(idemKey), List.of(marker));
         } catch (Exception clearError) {
-            LOG.warn("Failed to clear pending dry_run idempotency claim {}: {}",
+            LOG.warn("Failed to clear pending idempotency claim {}: {}",
                 idemKey, clearError.getMessage());
         }
     }
@@ -1492,39 +1519,86 @@ public class RedisReservationRepository {
         }
     }
 
+    /** Back-compat overload (no trace context) — used by tests and any non-HTTP caller. */
     public DecisionResponse decide(DecisionRequest request, String tenant) {
-        LOG.debug("Evaluating decision for tenant: {}", tenant);
+        return decide(request, tenant, null);
+    }
 
-        try (Jedis jedis = jedisPool.getResource()) {
-            // Idempotency: replay if same (tenant, key) seen before
-            String idempotencyKey = request.getIdempotencyKey();
-            String payloadHash = computePayloadHash(request);
-            if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
-                String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
-                // Pipeline both GETs in a single round-trip
-                Pipeline idemPipe = jedis.pipelined();
-                Response<String> cachedResp = idemPipe.get(idemKey);
-                Response<String> hashResp = idemPipe.get(idemKey + ":hash");
-                idemPipe.sync();
-                String cached = cachedResp.get();
-                if (cached != null) {
-                    // Spec MUST: detect payload mismatch on idempotent replay
-                    if (!payloadHash.isEmpty()) {
-                        String storedHash = hashResp.get();
-                        if (storedHash != null && !storedHash.equals(payloadHash)) {
-                            throw CyclesProtocolException.idempotencyMismatch();
-                        }
-                    }
-                    return objectMapper.readValue(cached, DecisionResponse.class);
+    public DecisionResponse decide(DecisionRequest request, String tenant, String traceId) {
+        LOG.debug("Evaluating decision for tenant: {}", tenant);
+        String idempotencyKey = request.getIdempotencyKey();
+        String payloadHash = computePayloadHash(request);
+
+        // Idempotency: atomic claim (shared machinery with dry_run) so concurrent same-key decides
+        // converge to ONE evaluation + ONE `decide` evidence envelope.
+        try {
+            IdemClaim claim;
+            try (Jedis jedis = jedisPool.getResource()) {
+                claim = acquireIdempotencyClaim(jedis, "decide", tenant, idempotencyKey, payloadHash);
+            }
+            if (claim.cachedBody() != null) {
+                DecisionResponse replay = objectMapper.readValue(claim.cachedBody(), DecisionResponse.class);
+                replay.setIdempotentReplay(true);
+                return replay;
+            }
+            if (claim.pending()) {
+                // Another request holds the claim: wait briefly for its result, else 500-retry.
+                // Same bounded-wait contract as dry_run (concurrent same-key callers converge to
+                // one evaluation); a loser that times out retries with the same idempotency_key.
+                String body = waitForIdempotentReplayBody("decide",
+                    idempotencyCacheKey("decide", tenant, idempotencyKey), payloadHash);
+                if (body != null) {
+                    DecisionResponse replay = objectMapper.readValue(body, DecisionResponse.class);
+                    replay.setIdempotentReplay(true);
+                    return replay;
                 }
+                throw idempotencyStillPending();
             }
 
-            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
-            long estimateAmount = request.getEstimate().getAmount();
-            String unit = request.getEstimate().getUnit().name();
+            // Fresh decision: evaluate in its own connection; clear the claim if evaluation fails.
+            DecisionResponse response;
+            try (Jedis jedis = jedisPool.getResource()) {
+                response = evaluateDecisionBudget(jedis, request);
+            } catch (Exception evalError) {
+                clearIdempotencyClaim(claim.claimKey(), claim.claimMarker());
+                throw evalError;
+            }
 
-            DecisionResponse response = null;
-            String deepestScope = affectedScopes.get(affectedScopes.size() - 1);
+            // `decide` CyclesEvidence over {request, response} (response AS-IS, before cycles_evidence
+            // is stamped). Emit + cache use their own short-lived connections (no pool nesting), and
+            // the cache/clear helpers self-acquire fail-open connections.
+            Map<String, Object> evidenceBody = new LinkedHashMap<>();
+            evidenceBody.put("request", request);
+            evidenceBody.put("response", response);
+            EvidenceEmitter.EvidenceRef ref = evidenceEmitter.emit("decide",
+                System.currentTimeMillis(), traceId, evidenceBody);
+            if (ref != null) {
+                response.setCyclesEvidence(CyclesEvidenceRef.builder()
+                    .evidenceId(ref.evidenceId())
+                    .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
+                    .build());
+            }
+            if (!cacheIdempotentBody("decide", tenant, idempotencyKey, payloadHash, response)) {
+                clearIdempotencyClaim(claim.claimKey(), claim.claimMarker());
+            }
+            return response;
+        } catch (CyclesProtocolException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw e;   // already unchecked (incl. the eval-catch rethrow) — don't double-wrap
+        } catch (Exception e) {
+            LOG.error("Failed to evaluate decision", e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    private DecisionResponse evaluateDecisionBudget(Jedis jedis, DecisionRequest request) throws Exception {
+        List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
+        long estimateAmount = request.getEstimate().getAmount();
+        String unit = request.getEstimate().getUnit().name();
+
+        DecisionResponse response = null;
+        String deepestScope = affectedScopes.get(affectedScopes.size() - 1);
 
             // Pipeline all budget fetches + caps in one round-trip
             Pipeline pipeline = jedis.pipelined();
@@ -1625,24 +1699,7 @@ public class RedisReservationRepository {
                 }
             }
 
-            // Store idempotency result (24 h TTL) - pipeline both writes
-            if (idempotencyKey != null && !idempotencyKey.isEmpty()) {
-                String idemKey = "idem:" + tenant + ":decide:" + idempotencyKey;
-                Pipeline idemWritePipe = jedis.pipelined();
-                idemWritePipe.psetex(idemKey, 86400000L, objectMapper.writeValueAsString(response));
-                if (!payloadHash.isEmpty()) {
-                    idemWritePipe.psetex(idemKey + ":hash", 86400000L, payloadHash);
-                }
-                idemWritePipe.sync();
-            }
-
-            return response;
-        } catch (CyclesProtocolException e) {
-            throw e;
-        } catch (Exception e) {
-            LOG.error("Failed to evaluate decision", e);
-            throw new RuntimeException(e);
-        }
+        return response;
     }
 
     public EventCreateResponse createEvent(EventCreateRequest request, String tenant) {
