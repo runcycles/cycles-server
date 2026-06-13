@@ -182,6 +182,31 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
         }
 
         @Test
+        void freshCommitReleasesLuaConnectionBeforeEmittingEvidence() throws Exception {
+            // Guards the pool-nesting fix: the Lua connection MUST be closed before
+            // evidenceEmitter.emit (which checks out its own connection), so we never hold
+            // two pool connections at once.
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 3000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-order");
+
+            repository.commitReservation("res-co", request, "tenant-a", "trace-c");
+
+            org.mockito.InOrder ordered = inOrder(jedis, evidenceEmitter);
+            ordered.verify(jedis).close();
+            ordered.verify(evidenceEmitter).emit(eq("commit"), anyLong(), any(), any());
+        }
+
+        @Test
         void commitReplayReturnsCachedBodyVerbatimWithoutReemitting() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
@@ -326,6 +351,24 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
             verify(jedis).psetex(eq("release:body:res-r"), eq(2_592_000_000L),
                     contains("\"evidence_id\":\"" + evId + "\""));
+        }
+
+        @Test
+        void freshReleaseReleasesLuaConnectionBeforeEmittingEvidence() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+
+            repository.releaseReservation("res-ro",
+                    ReleaseRequest.builder().idempotencyKey("rel-order").build(), "tenant-a", "tenant", "trace-r");
+
+            org.mockito.InOrder ordered = inOrder(jedis, evidenceEmitter);
+            ordered.verify(jedis).close();
+            ordered.verify(evidenceEmitter).emit(eq("release"), anyLong(), any(), any());
         }
 
         @Test

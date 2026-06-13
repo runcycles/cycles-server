@@ -437,6 +437,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             // full body cached keyed by reservation_id (a generated UUID), TTL >= 24h floor
             verify(jedis).psetex(startsWith("reserve:body:"), longThat(ttl -> ttl >= 86400000L),
                     contains("\"evidence_id\":\"" + evId + "\""));
+            // pool-nesting guard: the Lua connection is released before evidence emit
+            org.mockito.InOrder ordered = inOrder(jedis, evidenceEmitter);
+            ordered.verify(jedis).close();
+            ordered.verify(evidenceEmitter).emit(eq("reserve"), anyLong(), any(), any());
         }
 
         @Test
