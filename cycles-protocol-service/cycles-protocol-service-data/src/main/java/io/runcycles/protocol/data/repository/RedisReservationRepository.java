@@ -608,7 +608,10 @@ public class RedisReservationRepository {
                 .balances(balances)
                 .build(), dryRunClaimKey, dryRunClaimMarker);
         } catch (Exception e) {
-            clearIdempotencyClaim(dryRunClaimKey, dryRunClaimMarker);
+            // Clear the claim on the connection we already hold — `jedis` is owned by the caller's
+            // try-with-resources and is still open here, so the self-acquiring overload would nest
+            // a second pool checkout (peak 2/req) under concurrent failing dry-runs.
+            clearIdempotencyClaim(jedis, dryRunClaimKey, dryRunClaimMarker);
             throw e;
         }
     }
@@ -687,12 +690,33 @@ public class RedisReservationRepository {
 
     /** Best-effort compare-and-delete of a pending claim. Acquires its own connection and is
      *  fully fail-open (incl. pool exhaustion) — releasing the claim is never allowed to fail
-     *  the request; a leaked claim self-expires via its PX TTL. */
+     *  the request; a leaked claim self-expires via its PX TTL. Use this overload only when NO
+     *  evaluation connection is currently held (e.g. after the eval try-with-resources closed);
+     *  callers still inside their connection's scope must use the {@code Jedis}-passing overload
+     *  to avoid nested pool acquisition. */
     private void clearIdempotencyClaim(String idemKey, String marker) {
+        // The null-key guard lives in the Jedis-passing overload (which this delegates to); a
+        // fresh-path caller always holds a non-null claim, so we never check out a connection here
+        // for a no-op clear.
+        try (Jedis jedis = jedisPool.getResource()) {
+            clearIdempotencyClaim(jedis, idemKey, marker);
+        } catch (Exception clearError) {
+            LOG.warn("Failed to clear pending idempotency claim {}: {}",
+                idemKey, clearError.getMessage());
+        }
+    }
+
+    /** Compare-and-delete a pending claim on an ALREADY-HELD connection. For callers that are
+     *  still inside their evaluation connection's scope (e.g. {@link #evaluateDryRun}'s failure
+     *  catch) and MUST NOT check out a second pooled connection — checking one out here while the
+     *  eval connection is still held would recreate the nested-acquisition pool-starvation pattern
+     *  this class avoids elsewhere. Fail-open: a clear failure is logged, never propagated; a
+     *  leaked claim self-expires via its PX TTL. */
+    private void clearIdempotencyClaim(Jedis jedis, String idemKey, String marker) {
         if (idemKey == null || marker == null) {
             return;
         }
-        try (Jedis jedis = jedisPool.getResource()) {
+        try {
             jedis.eval(COMPARE_AND_DELETE_SCRIPT, List.of(idemKey), List.of(marker));
         } catch (Exception clearError) {
             LOG.warn("Failed to clear pending idempotency claim {}: {}",

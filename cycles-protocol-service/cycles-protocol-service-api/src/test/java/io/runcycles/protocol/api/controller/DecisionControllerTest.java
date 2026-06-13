@@ -151,6 +151,28 @@ class DecisionControllerTest {
     }
 
     @Test
+    void denyResponse_idempotentReplay_doesNotReEmitDeniedEvent() throws Exception {
+        // An idempotent replay returns the original DENY verbatim; the original request already
+        // emitted RESERVATION_DENIED, so the controller must NOT re-emit on the replay.
+        DecisionResponse resp = DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .reasonCode(Enums.ReasonCode.DEBT_OUTSTANDING)
+                .affectedScopes(List.of("tenant:" + TENANT))
+                .idempotentReplay(true)
+                .build();
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("DENY"));
+
+        verify(eventEmitter, never()).emit(
+                any(EventType.class), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void allowResponse_doesNotEmitDeniedEvent() throws Exception {
         DecisionResponse resp = DecisionResponse.builder()
                 .decision(Enums.DecisionEnum.ALLOW)
