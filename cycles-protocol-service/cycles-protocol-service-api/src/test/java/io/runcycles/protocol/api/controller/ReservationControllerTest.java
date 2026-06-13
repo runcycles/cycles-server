@@ -1109,6 +1109,28 @@ class ReservationControllerTest {
                 .contains("[INCIDENT_FORCE_RELEASE]");
         }
 
+        @Test @DisplayName("admin release idempotent replay does NOT write a second audit entry")
+        void adminReleaseReplayDoesNotReAudit() throws Exception {
+            Amount released = new Amount();
+            released.setUnit(Enums.UnitEnum.TOKENS);
+            released.setAmount(100L);
+            ReleaseResponse resp = new ReleaseResponse();
+            resp.setStatus(Enums.ReleaseStatus.RELEASED);
+            resp.setReleased(released);
+            resp.setIdempotentReplay(true); // a retry of an already-released reservation
+            when(repository.findReservationTenantById("res-audit")).thenReturn("tenant-target");
+            when(repository.releaseReservation(eq("res-audit"), any(), any(), any(), any())).thenReturn(resp);
+            String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] stuck reservation\"}";
+
+            mockMvc.perform(post("/v1/reservations/res-audit/release")
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+
+            // the original release already audited; a replay must not double-log
+            verify(auditRepository, org.mockito.Mockito.never()).log(any());
+        }
+
         @Test @DisplayName("tenant-auth release does NOT write an audit entry (audit is admin-only)")
         void tenantReleaseDoesNotWriteAudit() throws Exception {
             // Reset to tenant auth (parent @BeforeEach already did, but

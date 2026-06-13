@@ -209,9 +209,15 @@ public class RedisReservationRepository {
                 // the WHOLE response so an idempotent replay returns it verbatim. Cache for the
                 // SAME TTL as reserve.lua's idempotency mapping (max(ttl_ms+grace_ms, 24h)) so the
                 // body never expires before the idempotency key.
-                stampAndEmitEvidence(created, request, traceId);
+                // Release the Lua connection FIRST: evidence emit (push) and the body cache each
+                // acquire their own short-lived connection, so we never hold two pool connections
+                // at once (which would starve the pool under concurrent fresh ops).
                 long graceMs = request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000;
-                cacheReserveResponse(jedis, reservationId, created, Math.max(effectiveTtl + graceMs, 86400000L));
+                long bodyTtlMs = Math.max(effectiveTtl + graceMs, 86400000L);
+                jedis.close();
+                jedis = null;
+                stampAndEmitEvidence(created, request, traceId);
+                cacheReserveResponse(reservationId, created, bodyTtlMs);
                 return created;
             } finally {
                 if (jedis != null) {
@@ -307,12 +313,12 @@ public class RedisReservationRepository {
      * <p>Fail-open: a write failure is logged, never thrown — it only degrades a later
      * replay to the rebuild fallback, never fails the committed reservation.
      */
-    private void cacheReserveResponse(Jedis jedis, String reservationId,
+    private void cacheReserveResponse(String reservationId,
                                       ReservationCreateResponse response, long ttlMs) {
         if (reservationId == null || reservationId.isEmpty()) {
             return;
         }
-        try {
+        try (Jedis jedis = jedisPool.getResource()) {
             jedis.psetex(reserveResponseCacheKey(reservationId), ttlMs,
                     objectMapper.writeValueAsString(response));
         } catch (Exception e) {
@@ -354,9 +360,8 @@ public class RedisReservationRepository {
     /** Cache a finalized lifecycle response body (with evidence stamped) for verbatim replay,
      *  keyed by {@code <artifact>:body:<reservation_id>}, 30-day TTL matching the terminal
      *  reservation hash. Fail-open. */
-    private void cacheLifecycleBody(Jedis jedis, String artifactType, String reservationId,
-                                    Object response) {
-        try {
+    private void cacheLifecycleBody(String artifactType, String reservationId, Object response) {
+        try (Jedis jedis = jedisPool.getResource()) {
             jedis.psetex(lifecycleBodyCacheKey(artifactType, reservationId),
                     TERMINAL_BODY_CACHE_TTL_MS, objectMapper.writeValueAsString(response));
         } catch (Exception e) {
@@ -802,6 +807,10 @@ public class RedisReservationRepository {
             // Fresh commit: emit `commit` evidence over {reservation_id, request, response}
             // (response AS-IS, before cycles_evidence is stamped), stamp the ref, then cache
             // the full body for verbatim replay (30-day TTL, matching the terminal hash).
+            // Release the Lua connection first so emit (push) and the body cache each use their
+            // own short-lived connection — never two pool connections held at once.
+            jedis.close();
+            jedis = null;
             Map<String, Object> evidenceBody = new LinkedHashMap<>();
             evidenceBody.put("reservation_id", reservationId);
             evidenceBody.put("request", request);
@@ -813,7 +822,7 @@ public class RedisReservationRepository {
                         .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
                         .build());
             }
-            cacheLifecycleBody(jedis, "commit", reservationId, committed);
+            cacheLifecycleBody("commit", reservationId, committed);
             return committed;
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to commit reservation", e);
@@ -897,6 +906,9 @@ public class RedisReservationRepository {
 
             // Fresh release: emit `release` evidence over {reservation_id, request, response}
             // (before cycles_evidence is stamped), stamp the ref, cache the body for replay.
+            // Release the Lua connection first (see commit) to avoid nested pool acquisition.
+            jedis.close();
+            jedis = null;
             Map<String, Object> evidenceBody = new LinkedHashMap<>();
             evidenceBody.put("reservation_id", reservationId);
             evidenceBody.put("request", request);
@@ -908,7 +920,7 @@ public class RedisReservationRepository {
                         .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
                         .build());
             }
-            cacheLifecycleBody(jedis, "release", reservationId, releasedResponse);
+            cacheLifecycleBody("release", reservationId, releasedResponse);
             return releasedResponse;
         } catch (CyclesProtocolException e){
             LOG.error("Failed logic to release reservation:reservationId={},req={}",reservationId,request,e);

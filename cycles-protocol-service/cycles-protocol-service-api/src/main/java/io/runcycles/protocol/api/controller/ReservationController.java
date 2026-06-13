@@ -205,7 +205,9 @@ public class ReservationController extends BaseController{
         // CR/LF before recording to prevent log-line forgery via
         // newline injection in any consumer that naively concatenates
         // audit entries (e.g. operator-facing grep output).
-        if (isAdminAuth()) {
+        // Skip on an idempotent replay: the original admin release already wrote the audit
+        // entry; re-logging it would make the trail show a second admin release action.
+        if (isAdminAuth() && !response.isIdempotentReplay()) {
             String safeReason = request.getReason() != null
                 ? request.getReason().replaceAll("[\\r\\n]", " ")
                 : null;
