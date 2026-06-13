@@ -131,8 +131,13 @@ public class ReservationController extends BaseController{
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
-        CommitResponse response = repository.commitReservation(reservationId, request, tenant);
+        CommitResponse response = repository.commitReservation(reservationId, request, tenant,
+                resolveTraceId(httpRequest));
+        // Idempotent replay: the original commit already emitted its events; do not re-emit.
         try {
+            if (response.isIdempotentReplay()) {
+                return ResponseEntity.ok(response);
+            }
             Actor actor = buildActor(httpRequest);
             // Spec: emit commit_overage when committed actual > estimated amount
             // Use request.actual (not response.charged, which may be capped by ALLOW_IF_AVAILABLE)
@@ -181,7 +186,8 @@ public class ReservationController extends BaseController{
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
         String actorType = isAdminAuth() ? "admin_on_behalf_of" : "tenant";
-        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType);
+        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType,
+                resolveTraceId(httpRequest));
 
         // v0.1.25.8: on admin-driven release, write an audit-log entry
         // to the shared Redis store. Entry surfaces in the governance

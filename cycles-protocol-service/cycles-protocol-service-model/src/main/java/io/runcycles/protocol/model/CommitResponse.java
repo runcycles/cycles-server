@@ -16,6 +16,10 @@ public class CommitResponse {
     @NotNull @Valid @JsonProperty("charged") private Amount charged;
     @Valid @JsonProperty("released") private Amount released;
     @Valid @JsonProperty("balances") private List<Balance> balances;
+    @Valid @JsonProperty("cycles_evidence") private CyclesEvidenceRef cyclesEvidence;
+    /** Internal: true when this is an idempotent replay (return the cached body verbatim;
+     *  never re-emit/re-stamp evidence). Not serialized. */
+    @JsonIgnore private boolean idempotentReplay;
     /** Internal: original reservation estimate for overage detection. Not serialized. */
     @JsonIgnore @Builder.Default private Long estimateAmount = null;
     /** Internal: scope path from reservation for event emission. Not serialized. */

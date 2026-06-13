@@ -68,6 +68,7 @@ if state == "COMMITTED" then
         return cjson.encode({
             reservation_id = reservation_id,
             state = "COMMITTED",
+            replay = true,
             charged = tonumber(idem_vals[1] or 0),
             debt_incurred = tonumber(idem_vals[2] or 0),
             estimate_amount = tonumber(idem_vals[3] or 0),

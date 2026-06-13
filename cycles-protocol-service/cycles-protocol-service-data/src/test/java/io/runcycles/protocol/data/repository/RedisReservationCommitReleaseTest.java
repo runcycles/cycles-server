@@ -152,6 +152,70 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             assertThat(response.getReleased()).isNotNull();
             assertThat(response.getReleased().getAmount()).isEqualTo(2000L);
         }
+
+        @Test
+        void freshCommitStampsEvidenceAndCachesBody() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 3000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+            String evId = "a".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evId;
+            when(evidenceEmitter.emit(eq("commit"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url));
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-fresh");
+
+            CommitResponse response = repository.commitReservation("res-c", request, "tenant-a", "trace-c");
+
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+            assertThat(response.getCyclesEvidence().getCyclesEvidenceUrl()).isEqualTo(url);
+            // body cached by reservation_id, 30-day terminal TTL
+            verify(jedis).psetex(eq("commit:body:res-c"), eq(2_592_000_000L),
+                    contains("\"evidence_id\":\"" + evId + "\""));
+        }
+
+        @Test
+        void commitReplayReturnsCachedBodyVerbatimWithoutReemitting() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-cr");
+            luaMap.put("state", "COMMITTED");
+            luaMap.put("replay", true);
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 3000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+            // the original committed body was cached at first commit
+            CommitResponse original = CommitResponse.builder()
+                    .status(Enums.CommitStatus.COMMITTED)
+                    .charged(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L))
+                    .cyclesEvidence(CyclesEvidenceRef.builder()
+                            .evidenceId("c".repeat(64))
+                            .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "c".repeat(64))
+                            .build())
+                    .build();
+            when(jedis.get("commit:body:res-cr")).thenReturn(objectMapper.writeValueAsString(original));
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-replay");
+
+            CommitResponse response = repository.commitReservation("res-cr", request, "tenant-a", "trace-c");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+            verify(jedis, never()).psetex(eq("commit:body:res-cr"), anyLong(), anyString());
+        }
     }
 
     // ---- releaseReservation ----
@@ -240,6 +304,59 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             assertThat(response.getStatus()).isEqualTo(Enums.ReleaseStatus.RELEASED);
             assertThat(response.getReleased().getAmount()).isEqualTo(5000L);
             assertThat(response.getReleased().getUnit()).isEqualTo(Enums.UnitEnum.USD_MICROCENTS);
+        }
+
+        @Test
+        void freshReleaseStampsEvidenceAndCachesBody() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+            String evId = "b".repeat(64);
+            String url = "https://cycles.example.com/v1/evidence/" + evId;
+            when(evidenceEmitter.emit(eq("release"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url));
+
+            ReleaseResponse response = repository.releaseReservation("res-r",
+                    ReleaseRequest.builder().idempotencyKey("rel-fresh").build(), "tenant-a", "tenant", "trace-r");
+
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+            verify(jedis).psetex(eq("release:body:res-r"), eq(2_592_000_000L),
+                    contains("\"evidence_id\":\"" + evId + "\""));
+        }
+
+        @Test
+        void releaseReplayReturnsCachedBodyVerbatimWithoutReemitting() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-rr");
+            luaMap.put("state", "RELEASED");
+            luaMap.put("replay", true);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+            ReleaseResponse original = ReleaseResponse.builder()
+                    .status(Enums.ReleaseStatus.RELEASED)
+                    .released(new Amount(Enums.UnitEnum.USD_MICROCENTS, 5000L))
+                    .cyclesEvidence(CyclesEvidenceRef.builder()
+                            .evidenceId("d".repeat(64))
+                            .cyclesEvidenceUrl("https://cycles.example.com/v1/evidence/" + "d".repeat(64))
+                            .build())
+                    .build();
+            when(jedis.get("release:body:res-rr")).thenReturn(objectMapper.writeValueAsString(original));
+
+            ReleaseResponse response = repository.releaseReservation("res-rr",
+                    ReleaseRequest.builder().idempotencyKey("rel-replay").build(), "tenant-a", "tenant", "trace-r");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("d".repeat(64));
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+            verify(jedis, never()).psetex(eq("release:body:res-rr"), anyLong(), anyString());
         }
     }
 

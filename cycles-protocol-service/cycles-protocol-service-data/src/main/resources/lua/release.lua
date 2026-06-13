@@ -50,6 +50,7 @@ if state == "RELEASED" then
         return cjson.encode({
             reservation_id = reservation_id,
             state = "RELEASED",
+            replay = true,
             estimate_amount = tonumber(idem_vals[1]),
             estimate_unit = idem_vals[2],
             balances = replay_balances
