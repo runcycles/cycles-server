@@ -400,6 +400,9 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
             verify(jedis, times(2)).get("reserve:body:orig-res");
+            org.mockito.InOrder order = inOrder(jedis);
+            order.verify(jedis).close();
+            order.verify(jedis).get("reserve:body:orig-res");
             verify(jedis, never()).hgetAll("reservation:res_orig-res");
         }
 
@@ -723,9 +726,38 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("e".repeat(64));
+            org.mockito.InOrder order = inOrder(jedis);
+            order.verify(jedis).close();
+            order.verify(jedis).get("idem:acme:dry_run:dry-pending");
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(pipeline, never()).hgetAll(startsWith("budget:"));
             verify(pipeline, never()).psetex(eq("idem:acme:dry_run:dry-pending"), eq(86400000L), anyString());
+        }
+
+        @Test
+        void shouldReturnInternalErrorWhenPendingDryRunDoesNotPublishInShortWait() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-still-pending");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+            String payloadHash = invokeComputePayloadHash(request);
+
+            Response<String> pendingResp = mock(Response.class);
+            when(pendingResp.get()).thenReturn("__dry_run_pending__:" + payloadHash);
+            when(pipeline.get("idem:acme:dry_run:dry-still-pending")).thenReturn(pendingResp);
+            when(jedis.get("idem:acme:dry_run:dry-still-pending"))
+                    .thenReturn("__dry_run_pending__:" + payloadHash);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasFieldOrPropertyWithValue("httpStatus", 500);
         }
 
         @Test

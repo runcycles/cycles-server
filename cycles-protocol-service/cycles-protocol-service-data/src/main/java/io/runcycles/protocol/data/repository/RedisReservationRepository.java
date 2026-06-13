@@ -70,8 +70,8 @@ public class RedisReservationRepository {
      */
     static final int SORTED_HYDRATE_CAP = 2000;
     private static final long IDEMPOTENCY_CACHE_TTL_MS = 86_400_000L;
-    private static final int RESERVE_BODY_CACHE_WAIT_ATTEMPTS = 40;
-    private static final int DRY_RUN_CACHE_WAIT_ATTEMPTS = 40;
+    private static final int RESERVE_BODY_CACHE_WAIT_ATTEMPTS = 4;
+    private static final int DRY_RUN_CACHE_WAIT_ATTEMPTS = 4;
     private static final long IDEMPOTENCY_CACHE_WAIT_SLEEP_MS = 25L;
     private static final long DRY_RUN_PENDING_TTL_MS = 60_000L;
     private static final String DRY_RUN_PENDING_PREFIX = "__dry_run_pending__:";
@@ -100,131 +100,119 @@ public class RedisReservationRepository {
         LOG.debug("Creating reservation for tenant: {}", tenant);
         String overagePolicyTag = request.getOveragePolicy() != null ? request.getOveragePolicy().name() : "DEFAULT";
 
-        try (Jedis jedis = jedisPool.getResource()) {
-            Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
-            List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
-            String scopePath = affectedScopes.get(affectedScopes.size() - 1);
-            String overagePolicy = resolveOveragePolicy(request.getOveragePolicy(), tenantConfig);
-            long effectiveTtl = resolveReservationTtl(request.getTtlMs(), tenantConfig);
-            int maxExtensions = resolveMaxExtensions(tenantConfig);
-
+        try {
             // dry_run: evaluate budget without persisting a reservation. Its ALLOW/DENY
             // outcome IS captured as `reserve` evidence (cycles-evidence-v0.1) — a dry_run
             // DENY is the canonical signed "would this be allowed?" attestation. On a fresh
             // evaluation, stamp evidence + cache the full body (keyed by the dry_run idem key)
             // so a replay returns the ORIGINAL stamped payload; a replay is returned verbatim.
             if (Boolean.TRUE.equals(request.getDryRun())) {
-                DryRunResult dryRun = evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
-                ReservationCreateResponse dryRunResponse = dryRun.response();
-                if (!dryRunResponse.isIdempotentReplay()) {
-                    stampAndEmitEvidence(dryRunResponse, request, traceId);
-                    boolean cached = cacheDryRunResponse(jedis, tenant, request.getIdempotencyKey(),
-                        computePayloadHash(request), dryRunResponse);
-                    if (!cached) {
-                        clearDryRunPendingClaim(jedis, dryRun.claimKey(), dryRun.claimMarker());
+                List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
+                String scopePath = affectedScopes.get(affectedScopes.size() - 1);
+                return createDryRunReservation(request, tenant, traceId, affectedScopes, scopePath);
+            }
+
+            Jedis jedis = null;
+            try {
+                jedis = jedisPool.getResource();
+                Map<String, Object> tenantConfig = getTenantConfig(jedis, tenant);
+                List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
+                String scopePath = affectedScopes.get(affectedScopes.size() - 1);
+                String overagePolicy = resolveOveragePolicy(request.getOveragePolicy(), tenantConfig);
+                long effectiveTtl = resolveReservationTtl(request.getTtlMs(), tenantConfig);
+                int maxExtensions = resolveMaxExtensions(tenantConfig);
+
+                String reservationId = UUID.randomUUID().toString();
+
+                List<String> args = new ArrayList<>();
+                args.add(reservationId);
+                args.add(objectMapper.writeValueAsString(request.getSubject()));
+                args.add(objectMapper.writeValueAsString(request.getAction()));
+                args.add(String.valueOf(request.getEstimate().getAmount()));
+                args.add(request.getEstimate().getUnit().name());
+                args.add(String.valueOf(effectiveTtl));
+                args.add(String.valueOf(request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000));
+                args.add(request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "");
+                args.add(scopePath);
+                args.add(tenant);
+                args.add(overagePolicy);
+                // ARGV[12] = metadata_json, ARGV[13] = payload_hash, ARGV[14] = max_extensions,
+                // ARGV[15] = units_csv; scopes start at ARGV[16]
+                args.add(request.getMetadata() != null
+                    ? objectMapper.writeValueAsString(request.getMetadata()) : "");
+                args.add(computePayloadHash(request));
+                args.add(String.valueOf(maxExtensions));
+                args.add(UNIT_CSV);
+                args.addAll(affectedScopes);
+
+                Object result = luaScripts.eval(jedis, "reserve", reserveScript, args.toArray(new String[0]));
+                Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
+                LOG.debug("Reserve response: {}", response);
+                if (response.containsKey("error")) {
+                    handleScriptError(response);
+                }
+
+                // Idempotency hit: Lua returns existing reservation_id without expires_at.
+                if (!response.containsKey("expires_at")) {
+                    String existingId = (String) response.get("reservation_id");
+                    metrics.recordReserve(tenant, Enums.DecisionEnum.ALLOW.name(), "IDEMPOTENT_REPLAY", overagePolicyTag);
+                    jedis.close();
+                    jedis = null;
+
+                    // Spec (NORMATIVE): replay MUST return the ORIGINAL successful response
+                    // payload. Prefer the full original response cached at first create —
+                    // byte-identical body (original balances + original cycles_evidence), so
+                    // it matches the CyclesEvidence envelope the evidence_id points to.
+                    ReservationCreateResponse original = readCachedReserveResponse(existingId);
+                    if (original != null) {
+                        return original;
                     }
+                    // Fallback (cache expired/absent, e.g. a reservation created before the
+                    // full-response cache existed): rebuild from the stored reservation. Balances
+                    // reflect current state and no cycles_evidence is replayed — a bounded
+                    // degradation only when the original body is no longer available.
+                    return rebuildReserveReplay(existingId);
                 }
-                return dryRunResponse;
-            }
 
-            String reservationId = UUID.randomUUID().toString();
+                // Parse balances from Lua response (read atomically with mutation)
+                List<Balance> balances = parseLuaBalances(response, request.getEstimate().getUnit());
 
-            List<String> args = new ArrayList<>();
-            args.add(reservationId);
-            args.add(objectMapper.writeValueAsString(request.getSubject()));
-            args.add(objectMapper.writeValueAsString(request.getAction()));
-            args.add(String.valueOf(request.getEstimate().getAmount()));
-            args.add(request.getEstimate().getUnit().name());
-            args.add(String.valueOf(effectiveTtl));
-            args.add(String.valueOf(request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000));
-            args.add(request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "");
-            args.add(scopePath);
-            args.add(tenant);
-            args.add(overagePolicy);
-            // ARGV[12] = metadata_json, ARGV[13] = payload_hash, ARGV[14] = max_extensions,
-            // ARGV[15] = units_csv; scopes start at ARGV[16]
-            args.add(request.getMetadata() != null
-                ? objectMapper.writeValueAsString(request.getMetadata()) : "");
-            args.add(computePayloadHash(request));
-            args.add(String.valueOf(maxExtensions));
-            args.add(UNIT_CSV);
-            args.addAll(affectedScopes);
-
-            Object result = luaScripts.eval(jedis, "reserve", reserveScript, args.toArray(new String[0]));
-            Map<String, Object> response = objectMapper.readValue(result.toString(), Map.class);
-            LOG.debug("Reserve response: {}", response);
-            if (response.containsKey("error")) {
-                handleScriptError(response);
-            }
-
-            // Idempotency hit: Lua returns existing reservation_id without expires_at.
-            if (!response.containsKey("expires_at")) {
-                String existingId = (String) response.get("reservation_id");
-                metrics.recordReserve(tenant, Enums.DecisionEnum.ALLOW.name(), "IDEMPOTENT_REPLAY", overagePolicyTag);
-                // Spec (NORMATIVE): replay MUST return the ORIGINAL successful response
-                // payload. Prefer the full original response cached at first create —
-                // byte-identical body (original balances + original cycles_evidence), so
-                // it matches the CyclesEvidence envelope the evidence_id points to.
-                ReservationCreateResponse original = readCachedReserveResponse(jedis, existingId);
-                if (original != null) {
-                    return original;
+                // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
+                Enums.DecisionEnum decision = Enums.DecisionEnum.ALLOW;
+                Caps caps = null;
+                String deepestBudgetKey = "budget:" + scopePath + ":" + request.getEstimate().getUnit().name();
+                String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
+                if (capsJson != null && !capsJson.isEmpty()) {
+                    caps = objectMapper.readValue(capsJson, Caps.class);
+                    decision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
                 }
-                // Fallback (cache expired/absent, e.g. a reservation created before the
-                // full-response cache existed): rebuild from the stored reservation. Balances
-                // reflect current state and no cycles_evidence is replayed — a bounded
-                // degradation only when the original body is no longer available.
-                Map<String, String> existingFields = jedis.hgetAll("reservation:res_" + existingId);
-                if (existingFields == null || existingFields.isEmpty()) {
-                    throw CyclesProtocolException.notFound(existingId);
-                }
-                ReservationSummary existing = buildReservationSummary(existingFields);
-                List<Balance> idempotencyBalances = fetchBalancesForScopes(jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
-                return ReservationCreateResponse.builder()
-                    .decision(Enums.DecisionEnum.ALLOW)
-                    .reservationId(existingId)
-                    .affectedScopes(existing.getAffectedScopes())
-                    .scopePath(existing.getScopePath())
-                    .reserved(existing.getReserved())
-                    .expiresAtMs(existing.getExpiresAtMs())
-                    .balances(idempotencyBalances)
-                    .idempotentReplay(true)
+
+                metrics.recordReserve(tenant, decision.name(), "OK", overagePolicyTag);
+                ReservationCreateResponse created = ReservationCreateResponse.builder()
+                    .decision(decision)
+                    .reservationId(reservationId)
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .reserved(request.getEstimate())
+                    .expiresAtMs(((Number) response.get("expires_at")).longValue())
+                    .caps(caps)
+                    .balances(balances)
+                    .preRemaining(parsePreRemaining(response))
+                    .preIsOverLimit(parsePreIsOverLimit(response))
                     .build();
+                // Fresh reserve: emit + stamp evidence (over the pre-evidence body), then cache
+                // the WHOLE response so an idempotent replay returns it verbatim. Cache for the
+                // SAME TTL as reserve.lua's idempotency mapping (max(ttl_ms+grace_ms, 24h)) so the
+                // body never expires before the idempotency key.
+                stampAndEmitEvidence(created, request, traceId);
+                long graceMs = request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000;
+                cacheReserveResponse(jedis, reservationId, created, Math.max(effectiveTtl + graceMs, 86400000L));
+                return created;
+            } finally {
+                if (jedis != null) {
+                    jedis.close();
+                }
             }
-
-            // Parse balances from Lua response (read atomically with mutation)
-            List<Balance> balances = parseLuaBalances(response, request.getEstimate().getUnit());
-
-            // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
-            Enums.DecisionEnum decision = Enums.DecisionEnum.ALLOW;
-            Caps caps = null;
-            String deepestBudgetKey = "budget:" + scopePath + ":" + request.getEstimate().getUnit().name();
-            String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
-            if (capsJson != null && !capsJson.isEmpty()) {
-                caps = objectMapper.readValue(capsJson, Caps.class);
-                decision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
-            }
-
-            metrics.recordReserve(tenant, decision.name(), "OK", overagePolicyTag);
-            ReservationCreateResponse created = ReservationCreateResponse.builder()
-                .decision(decision)
-                .reservationId(reservationId)
-                .affectedScopes(affectedScopes)
-                .scopePath(scopePath)
-                .reserved(request.getEstimate())
-                .expiresAtMs(((Number) response.get("expires_at")).longValue())
-                .caps(caps)
-                .balances(balances)
-                .preRemaining(parsePreRemaining(response))
-                .preIsOverLimit(parsePreIsOverLimit(response))
-                .build();
-            // Fresh reserve: emit + stamp evidence (over the pre-evidence body), then cache
-            // the WHOLE response so an idempotent replay returns it verbatim. Cache for the
-            // SAME TTL as reserve.lua's idempotency mapping (max(ttl_ms+grace_ms, 24h)) so the
-            // body never expires before the idempotency key.
-            stampAndEmitEvidence(created, request, traceId);
-            long graceMs = request.getGracePeriodMs() != null ? request.getGracePeriodMs() : 5000;
-            cacheReserveResponse(jedis, reservationId, created, Math.max(effectiveTtl + graceMs, 86400000L));
-            return created;
         } catch (CyclesProtocolException e) {
             metrics.recordReserve(tenant, "DENY", e.getErrorCode().name(), overagePolicyTag);
             throw e;
@@ -247,6 +235,38 @@ public class RedisReservationRepository {
 
     private static String dryRunIdempotencyKey(String tenant, String idempotencyKey) {
         return "idem:" + tenant + ":dry_run:" + idempotencyKey;
+    }
+
+    private ReservationCreateResponse createDryRunReservation(ReservationCreateRequest request,
+                                                              String tenant,
+                                                              String traceId,
+                                                              List<String> affectedScopes,
+                                                              String scopePath) throws Exception {
+        DryRunResult dryRun;
+        try (Jedis jedis = jedisPool.getResource()) {
+            dryRun = evaluateDryRun(jedis, request, affectedScopes, scopePath, tenant);
+        }
+
+        if (dryRun.pending()) {
+            ReservationCreateResponse replay = waitForDryRunReplay(dryRun.claimKey(), dryRun.payloadHash());
+            if (replay != null) {
+                return replay;
+            }
+            throw idempotencyStillPending();
+        }
+
+        ReservationCreateResponse dryRunResponse = dryRun.response();
+        if (!dryRunResponse.isIdempotentReplay()) {
+            stampAndEmitEvidence(dryRunResponse, request, traceId);
+            try (Jedis jedis = jedisPool.getResource()) {
+                boolean cached = cacheDryRunResponse(jedis, tenant, request.getIdempotencyKey(),
+                    computePayloadHash(request), dryRunResponse);
+                if (!cached) {
+                    clearDryRunPendingClaim(jedis, dryRun.claimKey(), dryRun.claimMarker());
+                }
+            }
+        }
+        return dryRunResponse;
     }
 
     /**
@@ -296,9 +316,9 @@ public class RedisReservationRepository {
         }
     }
 
-    private ReservationCreateResponse readCachedReserveResponse(Jedis jedis, String reservationId) throws Exception {
+    private ReservationCreateResponse readCachedReserveResponse(String reservationId) throws Exception {
         String cachedOriginal = readCacheValueWithWait(
-            jedis, reserveResponseCacheKey(reservationId), RESERVE_BODY_CACHE_WAIT_ATTEMPTS);
+            reserveResponseCacheKey(reservationId), RESERVE_BODY_CACHE_WAIT_ATTEMPTS);
         if (cachedOriginal == null) {
             return null;
         }
@@ -306,6 +326,28 @@ public class RedisReservationRepository {
             objectMapper.readValue(cachedOriginal, ReservationCreateResponse.class);
         original.setIdempotentReplay(true);
         return original;
+    }
+
+    private ReservationCreateResponse rebuildReserveReplay(String existingId) throws Exception {
+        try (Jedis jedis = jedisPool.getResource()) {
+            Map<String, String> existingFields = jedis.hgetAll("reservation:res_" + existingId);
+            if (existingFields == null || existingFields.isEmpty()) {
+                throw CyclesProtocolException.notFound(existingId);
+            }
+            ReservationSummary existing = buildReservationSummary(existingFields);
+            List<Balance> idempotencyBalances = fetchBalancesForScopes(
+                jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
+            return ReservationCreateResponse.builder()
+                .decision(Enums.DecisionEnum.ALLOW)
+                .reservationId(existingId)
+                .affectedScopes(existing.getAffectedScopes())
+                .scopePath(existing.getScopePath())
+                .reserved(existing.getReserved())
+                .expiresAtMs(existing.getExpiresAtMs())
+                .balances(idempotencyBalances)
+                .idempotentReplay(true)
+                .build();
+        }
     }
 
     private DryRunResult evaluateDryRun(Jedis jedis, ReservationCreateRequest request,
@@ -333,11 +375,7 @@ public class RedisReservationRepository {
                     if (replay != null) {
                         return DryRunResult.replay(replay);
                     }
-                    replay = waitForDryRunReplay(jedis, idemKey, payloadHash);
-                    if (replay != null) {
-                        return DryRunResult.replay(replay);
-                    }
-                    throw idempotencyInProgress();
+                    return DryRunResult.pending(idemKey, payloadHash);
                 }
 
                 dryRunClaimMarker = dryRunPendingMarker(payloadHash);
@@ -346,11 +384,7 @@ public class RedisReservationRepository {
                 if ("OK".equalsIgnoreCase(claim)) {
                     dryRunClaimKey = idemKey;
                 } else {
-                    ReservationCreateResponse replay = waitForDryRunReplay(jedis, idemKey, payloadHash);
-                    if (replay != null) {
-                        return DryRunResult.replay(replay);
-                    }
-                    throw idempotencyInProgress();
+                    return DryRunResult.pending(idemKey, payloadHash);
                 }
             }
 
@@ -511,21 +545,22 @@ public class RedisReservationRepository {
         }
     }
 
-    private ReservationCreateResponse waitForDryRunReplay(Jedis jedis, String idemKey,
-                                                          String payloadHash) throws Exception {
+    private ReservationCreateResponse waitForDryRunReplay(String idemKey, String payloadHash) throws Exception {
         for (int attempt = 0; attempt <= DRY_RUN_CACHE_WAIT_ATTEMPTS; attempt++) {
             if (attempt > 0 && !sleepBeforeIdempotencyRetry()) {
                 return null;
             }
-            String cached = jedis.get(idemKey);
-            if (cached == null) {
-                continue;
+            try (Jedis jedis = jedisPool.getResource()) {
+                String cached = jedis.get(idemKey);
+                if (cached == null) {
+                    continue;
+                }
+                if (isDryRunPending(cached)) {
+                    validateDryRunPendingMarker(cached, payloadHash);
+                    continue;
+                }
+                return parseDryRunReplay(cached, jedis.get(idemKey + ":hash"), payloadHash);
             }
-            if (isDryRunPending(cached)) {
-                validateDryRunPendingMarker(cached, payloadHash);
-                continue;
-            }
-            return parseDryRunReplay(cached, jedis.get(idemKey + ":hash"), payloadHash);
         }
         return null;
     }
@@ -587,19 +622,21 @@ public class RedisReservationRepository {
         }
     }
 
-    private CyclesProtocolException idempotencyInProgress() {
+    private CyclesProtocolException idempotencyStillPending() {
         return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
-            "Idempotency result is still being prepared; retry with the same idempotency_key", 409);
+            "Idempotency result is still being prepared; retry with the same idempotency_key", 500);
     }
 
-    private String readCacheValueWithWait(Jedis jedis, String key, int attempts) {
+    private String readCacheValueWithWait(String key, int attempts) {
         for (int attempt = 0; attempt <= attempts; attempt++) {
             if (attempt > 0 && !sleepBeforeIdempotencyRetry()) {
                 return null;
             }
-            String cached = jedis.get(key);
-            if (cached != null) {
-                return cached;
+            try (Jedis jedis = jedisPool.getResource()) {
+                String cached = jedis.get(key);
+                if (cached != null) {
+                    return cached;
+                }
             }
         }
         return null;
@@ -615,13 +652,18 @@ public class RedisReservationRepository {
         }
     }
 
-    private record DryRunResult(ReservationCreateResponse response, String claimKey, String claimMarker) {
+    private record DryRunResult(ReservationCreateResponse response, String claimKey, String claimMarker,
+                                String payloadHash, boolean pending) {
         static DryRunResult replay(ReservationCreateResponse response) {
-            return new DryRunResult(response, null, null);
+            return new DryRunResult(response, null, null, null, false);
         }
 
         static DryRunResult fresh(ReservationCreateResponse response, String claimKey, String claimMarker) {
-            return new DryRunResult(response, claimKey, claimMarker);
+            return new DryRunResult(response, claimKey, claimMarker, null, false);
+        }
+
+        static DryRunResult pending(String claimKey, String payloadHash) {
+            return new DryRunResult(null, claimKey, null, payloadHash, true);
         }
     }
 
