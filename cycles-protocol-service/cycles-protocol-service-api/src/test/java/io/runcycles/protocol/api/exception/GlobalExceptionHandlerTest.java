@@ -3,6 +3,7 @@ package io.runcycles.protocol.api.exception;
 import io.runcycles.protocol.api.filter.RequestIdFilter;
 import io.runcycles.protocol.api.filter.TraceContextFilter;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
+import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.model.Enums;
 import io.runcycles.protocol.model.ErrorResponse;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,25 +15,46 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.core.MethodParameter;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @DisplayName("GlobalExceptionHandler")
 class GlobalExceptionHandlerTest {
 
     private GlobalExceptionHandler handler;
     private MockHttpServletRequest request;
+    private EvidenceEmitter evidenceEmitter;
 
     private static final String TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 
     @BeforeEach
     void setUp() {
-        handler = new GlobalExceptionHandler();
+        evidenceEmitter = mock(EvidenceEmitter.class);
+        handler = new GlobalExceptionHandler(evidenceEmitter);
         request = new MockHttpServletRequest();
         request.setAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-test-123");
         request.setAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE, TRACE_ID);
+    }
+
+    /** Mark the request as having matched a given route, as Spring's handler
+     *  mapping does before the controller runs — required for error evidence. */
+    private void withRoute(String method, String pattern, Map<String, String> uriVars) {
+        request.setMethod(method);
+        request.setAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE, pattern);
+        if (uriVars != null) {
+            request.setAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE, uriVars);
+        }
     }
 
     @Test
@@ -202,5 +224,115 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(404);
         // Should generate a UUID fallback when request is null
         assertThat(response.getBody().getRequestId()).isNotBlank();
+    }
+
+    // ---- error CyclesEvidence (v0.1.25.5) ----
+
+    @Test
+    @DisplayName("non-dry reserve denial emits `error` evidence and stamps cycles_evidence")
+    void reserveDenialEmitsAndStampsErrorEvidence() {
+        withRoute("POST", "/v1/reservations", null);
+        String evId = "a".repeat(64);
+        when(evidenceEmitter.emit(eq("error"), anyLong(), eq(TRACE_ID), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef(evId,
+                        "https://cycles.example.com/v1/evidence/" + evId));
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getCyclesEvidence()).isNotNull();
+        assertThat(response.getBody().getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+        // Evidence is emitted over endpoint + http_status + response (no reservation_id on reserve).
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), eq(TRACE_ID), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations")
+                .containsEntry("http_status", 409)
+                .doesNotContainKey("reservation_id")
+                .containsKey("response");
+    }
+
+    @Test
+    @DisplayName("commit denial hoists reservation_id into the error evidence payload")
+    void commitDenialHoistsReservationId() {
+        withRoute("POST", "/v1/reservations/{reservation_id}/commit",
+                Map.of("reservation_id", "res_abc123"));
+        when(evidenceEmitter.emit(eq("error"), anyLong(), anyString(), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef("b".repeat(64), "u"));
+
+        handler.handleCyclesException(
+                CyclesProtocolException.overdraftLimitExceeded("tenant:acme"), request);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), anyString(), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations/{reservation_id}/commit")
+                .containsEntry("reservation_id", "res_abc123");
+    }
+
+    @Test
+    @DisplayName("emitter unconfigured (null ref) leaves cycles_evidence absent but still returns the error")
+    void denialWithUnconfiguredEmitterOmitsRef() {
+        withRoute("POST", "/v1/reservations", null);
+        when(evidenceEmitter.emit(eq("error"), anyLong(), any(), any())).thenReturn(null);
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getCyclesEvidence()).isNull();
+    }
+
+    @Test
+    @DisplayName("pre-evaluation errors (validation/auth/not-found) emit no error evidence")
+    void preEvaluationErrorsDoNotEmit() {
+        withRoute("POST", "/v1/reservations", null);
+
+        handler.handleCyclesException(CyclesProtocolException.notFound("res_x"), request);
+
+        verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+    }
+
+    @Test
+    @DisplayName("budget denial on a non-evidence route (no matched pattern) emits nothing")
+    void denialWithoutMatchedRouteDoesNotEmit() {
+        // No BEST_MATCHING_PATTERN attribute set (e.g. error raised before routing).
+        request.setMethod("POST");
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        assertThat(response.getBody().getCyclesEvidence()).isNull();
+        verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+    }
+
+    @Test
+    @DisplayName("budget denial on the extend route (not a core evidence endpoint) emits nothing")
+    void denialOnExtendRouteDoesNotEmit() {
+        withRoute("POST", "/v1/reservations/{reservation_id}/extend",
+                Map.of("reservation_id", "res_abc123"));
+
+        handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+    }
+
+    @Test
+    @DisplayName("commit/release denial without a reservation_id path var skips emission (would be spec-invalid)")
+    void commitDenialWithoutReservationIdDoesNotEmit() {
+        // matched the commit route but the URI template var is absent (defensive edge)
+        withRoute("POST", "/v1/reservations/{reservation_id}/commit", null);
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getCyclesEvidence()).isNull();
+        verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
     }
 }
