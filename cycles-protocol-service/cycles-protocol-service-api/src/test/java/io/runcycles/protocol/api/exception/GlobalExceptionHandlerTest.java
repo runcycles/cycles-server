@@ -323,6 +323,52 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    @DisplayName("commit denial on an already-finalized reservation emits error evidence with reservation_id")
+    void commitFinalizedDenialEmitsWithReservationId() {
+        withRoute("POST", "/v1/reservations/{reservation_id}/commit",
+                Map.of("reservation_id", "res_fin"));
+        when(evidenceEmitter.emit(eq("error"), anyLong(), anyString(), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef("c".repeat(64), "u"));
+
+        ResponseEntity<ErrorResponse> response = handler.handleCyclesException(
+                CyclesProtocolException.reservationFinalized("res_fin"), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getCyclesEvidence()).isNotNull();
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), anyString(), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations/{reservation_id}/commit")
+                .containsEntry("http_status", 409)
+                .containsEntry("reservation_id", "res_fin");
+    }
+
+    @Test
+    @DisplayName("release denial on an expired reservation (410) emits error evidence with reservation_id")
+    void releaseExpiredDenialEmitsWithReservationId() {
+        withRoute("POST", "/v1/reservations/{reservation_id}/release",
+                Map.of("reservation_id", "res_exp"));
+        when(evidenceEmitter.emit(eq("error"), anyLong(), anyString(), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef("d".repeat(64), "u"));
+
+        ResponseEntity<ErrorResponse> response = handler.handleCyclesException(
+                CyclesProtocolException.reservationExpired(), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(410);
+        assertThat(response.getBody().getCyclesEvidence()).isNotNull();
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), anyString(), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations/{reservation_id}/release")
+                .containsEntry("http_status", 410)
+                .containsEntry("reservation_id", "res_exp");
+    }
+
+    @Test
     @DisplayName("commit/release denial without a reservation_id path var skips emission (would be spec-invalid)")
     void commitDenialWithoutReservationIdDoesNotEmit() {
         // matched the commit route but the URI template var is absent (defensive edge)

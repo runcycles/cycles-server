@@ -34,12 +34,22 @@ public class GlobalExceptionHandler {
 
     /**
      * Budget/lifecycle DENIAL codes that warrant an {@code error} CyclesEvidence
-     * envelope (cycles-protocol v0.1.25.5 / cycles-evidence-v0.1). These are
-     * decisions the server made on the request — the highest-signal evidence an
-     * APS receipt binds to (non-dry reserve denials surface as 409
-     * {@code BUDGET_EXCEEDED}, not a 200 DENY). Pre-evaluation failures
-     * (validation, auth, malformed body, idempotency mismatch) are deliberately
-     * excluded — no decision was made, so there is nothing to attest.
+     * envelope (cycles-protocol v0.1.25.5 / cycles-evidence-v0.1). The principle:
+     * a code belongs here iff it is a DECISION the server reached while evaluating
+     * the request on one of the four core endpoints — the highest-signal evidence
+     * an APS receipt binds to. Two families:
+     *   - budget denials (reserve/decide/commit): non-dry insufficient budget
+     *     surfaces as 409 {@code BUDGET_EXCEEDED} — the canonical wire shape, not
+     *     a 200 DENY — plus the frozen/closed/overdraft/debt/unit variants;
+     *   - reservation terminal-state denials (commit/release): settling a
+     *     reservation that is already finalized ({@code RESERVATION_FINALIZED},
+     *     409) or expired ({@code RESERVATION_EXPIRED}, 410). reservation_id is
+     *     hoisted for these so evidence-only readers can reconstruct the
+     *     authorization -> settlement-denial chain.
+     * Pre-evaluation failures (validation, auth, malformed body, not-found,
+     * idempotency mismatch) are deliberately excluded — no decision was reached,
+     * so there is nothing to attest (matches the spec's `cycles_evidence`
+     * "absent for errors raised before evidence could be emitted").
      */
     private static final Set<Enums.ErrorCode> EVIDENCE_DENIAL_CODES = EnumSet.of(
         Enums.ErrorCode.BUDGET_EXCEEDED,
@@ -47,7 +57,9 @@ public class GlobalExceptionHandler {
         Enums.ErrorCode.BUDGET_CLOSED,
         Enums.ErrorCode.OVERDRAFT_LIMIT_EXCEEDED,
         Enums.ErrorCode.DEBT_OUTSTANDING,
-        Enums.ErrorCode.UNIT_MISMATCH);
+        Enums.ErrorCode.UNIT_MISMATCH,
+        Enums.ErrorCode.RESERVATION_FINALIZED,
+        Enums.ErrorCode.RESERVATION_EXPIRED);
 
     /** Endpoint patterns (METHOD + best-matching route) that map 1:1 to the
      *  evidence {@code error} payload's {@code endpoint} enum. Denials on any
