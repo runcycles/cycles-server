@@ -41,6 +41,9 @@ public class DecisionController extends BaseController {
             @Valid @RequestBody DecisionRequest request,
             HttpServletRequest httpRequest) {
         LOG.info("POST /v1/decide - tenant: {}", request.getSubject().getTenant());
+        // Stash the parsed request so a budget-denial `error` envelope can carry it (audit trail).
+        httpRequest.setAttribute(
+                io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context

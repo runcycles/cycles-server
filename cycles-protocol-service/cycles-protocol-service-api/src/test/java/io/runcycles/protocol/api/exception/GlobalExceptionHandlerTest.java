@@ -369,6 +369,40 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    @DisplayName("when the controller stashed the request DTO, it is included in the error evidence payload")
+    void reserveDenialIncludesStashedRequestBody() {
+        withRoute("POST", "/v1/reservations", null);
+        Object requestDto = Map.of("idempotency_key", "k1", "estimate", Map.of("unit", "TOKENS", "amount", 100));
+        request.setAttribute(GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, requestDto);
+        when(evidenceEmitter.emit(eq("error"), anyLong(), any(), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef("a".repeat(64), "u"));
+
+        handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), any(), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue()).containsEntry("request", requestDto);
+    }
+
+    @Test
+    @DisplayName("absent request DTO (e.g. pre-binding) omits request from the error evidence payload")
+    void reserveDenialOmitsRequestWhenNotStashed() {
+        withRoute("POST", "/v1/reservations", null);
+        when(evidenceEmitter.emit(eq("error"), anyLong(), any(), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef("a".repeat(64), "u"));
+
+        handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), any(), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue()).doesNotContainKey("request");
+    }
+
+    @Test
     @DisplayName("commit/release denial without a reservation_id path var skips emission (would be spec-invalid)")
     void commitDenialWithoutReservationIdDoesNotEmit() {
         // matched the commit route but the URI template var is absent (defensive edge)

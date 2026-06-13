@@ -55,6 +55,9 @@ public class ReservationController extends BaseController{
             @Valid @RequestBody ReservationCreateRequest request,
             HttpServletRequest httpRequest) {
         LOG.info("POST /v1/reservations - tenant: {}", request.getSubject().getTenant());
+        // Stash the parsed request so a budget-denial `error` envelope can carry it (audit trail).
+        httpRequest.setAttribute(
+                io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
@@ -128,6 +131,9 @@ public class ReservationController extends BaseController{
             @Valid @RequestBody CommitRequest request,
             HttpServletRequest httpRequest) {
         LOG.info("POST /v1/reservations/{}/commit", reservationId);
+        // Stash the parsed request so a lifecycle-denial `error` envelope can carry it (audit trail).
+        httpRequest.setAttribute(
+                io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
@@ -182,6 +188,9 @@ public class ReservationController extends BaseController{
             @Valid @RequestBody ReleaseRequest request,
             HttpServletRequest httpRequest) {
         LOG.info("POST /v1/reservations/{}/release", reservationId);
+        // Stash the parsed request so a lifecycle-denial `error` envelope can carry it (audit trail).
+        httpRequest.setAttribute(
+                io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
         authorizeTenant(tenant);
