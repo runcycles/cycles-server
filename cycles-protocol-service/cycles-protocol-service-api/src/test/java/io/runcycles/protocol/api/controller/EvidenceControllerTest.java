@@ -41,6 +41,7 @@ class EvidenceControllerTest {
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
     @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
     @MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
+    @MockitoBean private io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;
 
     @Test
     void returns200WithVerbatimEnvelopeAndImmutableCache() throws Exception {
