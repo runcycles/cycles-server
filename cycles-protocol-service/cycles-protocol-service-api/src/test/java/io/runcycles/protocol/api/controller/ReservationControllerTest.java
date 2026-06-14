@@ -134,6 +134,36 @@ class ReservationControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.decision").value("DENY"))
                     .andExpect(jsonPath("$.reason_code").value("BUDGET_EXCEEDED"));
+
+            // FRESH (non-replay) denial DOES emit RESERVATION_DENIED — the counterpart
+            // to shouldNotReemitEventsOnIdempotentReplay below.
+            verify(eventEmitter).emit(
+                    eq(io.runcycles.protocol.model.event.EventType.RESERVATION_DENIED),
+                    any(), any(), any(), any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("idempotent reserve replay does NOT re-emit deny or balance events")
+        void shouldNotReemitEventsOnIdempotentReplay() throws Exception {
+            // A replay returns the original (here dry-run) DENY verbatim with
+            // idempotentReplay=true; the original create already emitted
+            // RESERVATION_DENIED + budget-state transition events, so the controller
+            // must not re-emit them (mirrors decide / commit / release).
+            ReservationCreateResponse replay = denyResponse();
+            replay.setIdempotentReplay(true);
+            when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(replay);
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 1000)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.decision").value("DENY"));
+
+            verify(eventEmitter, never()).emit(
+                    eq(io.runcycles.protocol.model.event.EventType.RESERVATION_DENIED),
+                    any(), any(), any(), any(), any(), any(), any());
+            verify(eventEmitter, never()).emitBalanceEvents(
+                    any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         }
 
         @Test
