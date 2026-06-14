@@ -70,6 +70,15 @@ public class GlobalExceptionHandler {
         "POST /v1/reservations/{reservation_id}/commit",
         "POST /v1/reservations/{reservation_id}/release");
 
+    /**
+     * Request attribute under which the four core controllers stash their parsed
+     * {@code @RequestBody} DTO, so this handler can include it as the OPTIONAL
+     * {@code request} field of the {@code error} evidence payload (cycles-evidence-v0.1
+     * SHOULD include it for a full audit trail). Set after binding succeeds, so it is
+     * present for any post-binding denial and absent for pre-binding failures.
+     */
+    public static final String EVIDENCE_REQUEST_ATTRIBUTE = "io.runcycles.protocol.evidence.request";
+
     private final EvidenceEmitter evidenceEmitter;
 
     @Autowired
@@ -138,6 +147,14 @@ public class GlobalExceptionHandler {
         evidenceBody.put("http_status", ex.getHttpStatus());
         if (reservationId != null) {
             evidenceBody.put("reservation_id", reservationId);
+        }
+        // request is OPTIONAL but SHOULD be included for a full audit trail (cycles-evidence-v0.1
+        // ErrorPayload). The originating controller stashes its parsed @RequestBody DTO as a request
+        // attribute; include it when present (absent for pre-binding failures or non-instrumented
+        // routes). A redaction policy MAY drop it in a future revision.
+        Object requestBody = request.getAttribute(EVIDENCE_REQUEST_ATTRIBUTE);
+        if (requestBody != null) {
+            evidenceBody.put("request", requestBody);
         }
         evidenceBody.put("response", body);
 

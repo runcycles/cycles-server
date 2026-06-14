@@ -258,6 +258,36 @@ class ReservationControllerTest {
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.error").value("BUDGET_EXCEEDED"));
         }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("non-dry reserve denial emits `error` evidence (incl. stashed request) and surfaces cycles_evidence end-to-end")
+        void budgetExceededEmitsErrorEvidenceWithRequestThroughController() throws Exception {
+            when(repository.createReservation(any(), eq(TENANT), any()))
+                    .thenThrow(CyclesProtocolException.budgetExceeded("tenant:acme-corp"));
+            String evId = "a".repeat(64);
+            when(evidenceEmitter.emit(eq("error"), org.mockito.ArgumentMatchers.anyLong(),
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                            evId, "https://cycles.example.com/v1/evidence/" + evId));
+
+            mockMvc.perform(post("/v1/reservations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reservationJson(TENANT, 99_999_999)))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error").value("BUDGET_EXCEEDED"))
+                    .andExpect(jsonPath("$.cycles_evidence.evidence_id").value(evId));
+
+            // Locks the controller -> handler attribute path: the parsed request DTO is stashed and
+            // included in the error payload alongside the endpoint discriminator.
+            @SuppressWarnings("unchecked")
+            org.mockito.ArgumentCaptor<java.util.Map<String, Object>> bodyCaptor =
+                    org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+            verify(evidenceEmitter).emit(eq("error"), org.mockito.ArgumentMatchers.anyLong(),
+                    org.mockito.ArgumentMatchers.any(), bodyCaptor.capture());
+            org.assertj.core.api.Assertions.assertThat(bodyCaptor.getValue())
+                    .containsEntry("endpoint", "POST /v1/reservations")
+                    .containsKey("request");
+        }
     }
 
     // ---- GET /v1/reservations/{id} ----
