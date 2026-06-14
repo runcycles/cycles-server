@@ -27,9 +27,27 @@ class EvidenceIdComputerTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final EvidenceIdComputer computer = new EvidenceIdComputer(mapper);
 
+    // The FULL golden set the event-tier worker + APS verifier use — all five
+    // artifact types (decide / reserve / commit / release / error). Proves
+    // cycles-server's synchronous evidence_id matches the worker for every
+    // payload shape (reservation_id hoisting on commit/release, endpoint +
+    // http_status on error), so the worker's id cross-check never dead-letters
+    // on producer/worker drift for any artifact.
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {
-            "02-reserve-allow", "04-reserve-allow-with-caps", "08-reserve-allow-no-trace-id"
+            "01-decide-allow",
+            "02-reserve-allow",
+            "03-reserve-dry-run-deny",
+            "04-reserve-allow-with-caps",
+            "05-commit-success",
+            "06-release-success",
+            "07-release-with-reason",
+            "08-reserve-allow-no-trace-id",
+            "09-decide-risk-points-allow",
+            "10-reserve-credits-allow",
+            "11-reserve-live-budget-exceeded",
+            "12-decide-live-forbidden",
+            "13-commit-with-metrics"
     })
     void matchesGoldenFixtureEvidenceId(String fixture) throws Exception {
         ObjectNode env = loadFixture(fixture);
