@@ -108,7 +108,7 @@ Webhook receivers
 
 ## API Endpoints
 
-All endpoints require `X-Cycles-API-Key` header authentication.
+All endpoints require `X-Cycles-API-Key` header authentication — **except `GET /v1/evidence/{id}`**, a public capability URL (the unguessable `evidence_id` is the bearer secret; see [CyclesEvidence](#cyclesevidence)).
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -121,6 +121,13 @@ All endpoints require `X-Cycles-API-Key` header authentication.
 | `/v1/reservations/{id}/extend` | POST | Extend reservation TTL |
 | `/v1/events` | POST | Direct debit without prior reservation (returns 201) |
 | `/v1/balances` | GET | Query budget balances for scopes |
+| `/v1/evidence/{id}` | GET | Fetch a signed [CyclesEvidence](#cyclesevidence) envelope by id (public capability URL — no API key) |
+
+### CyclesEvidence
+
+Every budget decision can be backed by a tamper-evident, signed audit envelope. On `decide` / `reserve` / `commit` / `release` — and on budget/lifecycle **denials** (e.g. a 409 `BUDGET_EXCEEDED` `error`) — the response carries an optional `cycles_evidence` ref (`{ evidence_id, cycles_evidence_url }`). `cycles-server` computes the content-addressed `evidence_id` synchronously and returns it on the wire; the `cycles-server-events` tier asynchronously Ed25519-signs the envelope and stores it, served back verbatim at the public `GET /v1/evidence/{id}` capability URL. A consumer (e.g. an APS gateway) records the `evidence_id` to bind its own receipt to the decision, then fetches + verifies the envelope offline — no live ledger access needed.
+
+Evidence is **off until configured**: set the shared identity env vars (below). The private signing key lives only in `cycles-server-events` — see its [identity enablement runbook](https://github.com/runcycles/cycles-server-events/blob/main/docs/evidence-identity-enablement.md). Wire shape: `cycles-protocol-v0.yaml` (`CyclesEvidenceRef`, `getEvidence`) + the [`cycles-evidence-v0.1`](https://github.com/runcycles/cycles-protocol/blob/main/drafts/cycles-evidence-v0.1.yaml) envelope draft.
 
 ## Build
 
@@ -195,6 +202,7 @@ The cycles-server itself doesn't need to know it's behind a proxy. Standard `X-F
 - `REDIS_PASSWORD` — never run Redis without one in production
 - `ADMIN_API_KEY` — the bootstrap admin key for the admin server (32+ random bytes recommended)
 - `WEBHOOK_SECRET_ENCRYPTION_KEY` — encrypts webhook subscriber secrets at rest in Redis (32 bytes, base64)
+- `EVIDENCE_SERVER_ID` + `EVIDENCE_SIGNING_SIGNER_DID` — (optional) the public [CyclesEvidence](#cyclesevidence) identity; set both to enable evidence, **byte-identical to the `cycles-server-events` values**. `cycles-server` holds only the public half — the private signing key lives in `cycles-server-events`. Leave unset to run without evidence. See the [enablement runbook](https://github.com/runcycles/cycles-server-events/blob/main/docs/evidence-identity-enablement.md).
 
 See [Configuration](#configuration) below for the full env-var matrix.
 
