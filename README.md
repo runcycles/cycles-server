@@ -108,7 +108,7 @@ Webhook receivers
 
 ## API Endpoints
 
-All endpoints require `X-Cycles-API-Key` header authentication.
+All endpoints require `X-Cycles-API-Key` header authentication — **except `GET /v1/evidence/{id}`**, a public capability URL (the unguessable `evidence_id` is the bearer secret; see [CyclesEvidence](#cyclesevidence)).
 
 | Endpoint | Method | Description |
 |---|---|---|
