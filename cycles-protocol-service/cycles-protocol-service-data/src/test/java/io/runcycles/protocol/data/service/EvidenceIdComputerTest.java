@@ -27,12 +27,22 @@ class EvidenceIdComputerTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final EvidenceIdComputer computer = new EvidenceIdComputer(mapper);
 
-    // The FULL golden set the event-tier worker + APS verifier use — all five
-    // artifact types (decide / reserve / commit / release / error). Proves
-    // cycles-server's synchronous evidence_id matches the worker for every
-    // payload shape (reservation_id hoisting on commit/release, endpoint +
-    // http_status on error), so the worker's id cross-check never dead-letters
-    // on producer/worker drift for any artifact.
+    // The FULL shared golden set the event-tier worker + APS verifier are
+    // generated against — all five artifact SHAPES (decide / reserve / commit /
+    // release / error, incl. reservation_id hoisting on commit/release and
+    // endpoint + http_status on error). This asserts cycles-server's synchronous
+    // evidence_id computation reproduces the canonical id for EVERY shape, i.e.
+    // the JCS+sha256 recipe is byte-correct across the whole envelope domain — so
+    // WHENEVER cycles-server emits a given shape, its id matches the worker's and
+    // the worker's cross-check never dead-letters on drift.
+    //
+    // NOTE: this is recipe parity over the canonical/verifier domain, NOT the set
+    // of shapes cycles-server emits. cycles-server's EMISSION policy is narrower
+    // (see GlobalExceptionHandler.EVIDENCE_DENIAL_CODES): the error envelope it
+    // actually emits is the budget/lifecycle-denial kind (11-reserve-live-budget-exceeded);
+    // 12-decide-live-forbidden is a verifier-relevant FORBIDDEN error envelope
+    // cycles-server does NOT emit (pre-evaluation auth failure), included here only
+    // to prove the computer handles that shape too.
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {
             "01-decide-allow",
