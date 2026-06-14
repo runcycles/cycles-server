@@ -69,45 +69,51 @@ public class ReservationController extends BaseController{
         ReservationCreateResponse response = repository.createReservation(request, tenant,
                 resolveTraceId(httpRequest));
         try {
-            Actor actor = buildActor(httpRequest);
-            if (response.getDecision() == Enums.DecisionEnum.DENY) {
-                // Derive remaining from balances if available
-                Long remaining = null;
-                if (response.getBalances() != null && !response.getBalances().isEmpty()) {
-                    remaining = response.getBalances().stream()
-                            .filter(b -> b.getRemaining() != null && b.getRemaining().getAmount() != null)
-                            .mapToLong(b -> b.getRemaining().getAmount())
-                            .min().orElse(0L);
+            // Idempotent replay: the original create already emitted its events (the
+            // RESERVATION_DENIED deny event and any budget-state transition events);
+            // re-emitting on a replay would double-count. Mirrors decide / commit /
+            // release, which already skip side-effect events on replay.
+            if (!response.isIdempotentReplay()) {
+                Actor actor = buildActor(httpRequest);
+                if (response.getDecision() == Enums.DecisionEnum.DENY) {
+                    // Derive remaining from balances if available
+                    Long remaining = null;
+                    if (response.getBalances() != null && !response.getBalances().isEmpty()) {
+                        remaining = response.getBalances().stream()
+                                .filter(b -> b.getRemaining() != null && b.getRemaining().getAmount() != null)
+                                .mapToLong(b -> b.getRemaining().getAmount())
+                                .min().orElse(0L);
+                    }
+                    Map<String, Object> actionMap = objectMapper.convertValue(request.getAction(),
+                            new com.fasterxml.jackson.core.type.TypeReference<>() {});
+                    Map<String, Object> subjectMap = objectMapper.convertValue(request.getSubject(),
+                            new com.fasterxml.jackson.core.type.TypeReference<>() {});
+                    eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, response.getScopePath(),
+                            actor,
+                            EventDataReservationDenied.builder()
+                                    .scope(response.getScopePath())
+                                    .unit(request.getEstimate() != null
+                                            ? request.getEstimate().getUnit().name() : null)
+                                    .reasonCode(response.getReasonCode() != null
+                                            ? response.getReasonCode().name() : null)
+                                    .requestedAmount(request.getEstimate() != null
+                                            ? request.getEstimate().getAmount() : null)
+                                    .remaining(remaining)
+                                    .action(actionMap)
+                                    .subject(subjectMap)
+                                    .build(),
+                            null,
+                            resolveRequestId(httpRequest),
+                            resolveTraceContext(httpRequest));
                 }
-                Map<String, Object> actionMap = objectMapper.convertValue(request.getAction(),
-                        new com.fasterxml.jackson.core.type.TypeReference<>() {});
-                Map<String, Object> subjectMap = objectMapper.convertValue(request.getSubject(),
-                        new com.fasterxml.jackson.core.type.TypeReference<>() {});
-                eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, response.getScopePath(),
-                        actor,
-                        EventDataReservationDenied.builder()
-                                .scope(response.getScopePath())
-                                .unit(request.getEstimate() != null
-                                        ? request.getEstimate().getUnit().name() : null)
-                                .reasonCode(response.getReasonCode() != null
-                                        ? response.getReasonCode().name() : null)
-                                .requestedAmount(request.getEstimate() != null
-                                        ? request.getEstimate().getAmount() : null)
-                                .remaining(remaining)
-                                .action(actionMap)
-                                .subject(subjectMap)
-                                .build(),
+                // Emit budget state events from post-operation balances (transition-based)
+                eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
+                        null, null, null,
+                        response.getPreRemaining(), response.getPreIsOverLimit(),
                         null,
                         resolveRequestId(httpRequest),
                         resolveTraceContext(httpRequest));
             }
-            // Emit budget state events from post-operation balances (transition-based)
-            eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
-                    null, null, null,
-                    response.getPreRemaining(), response.getPreIsOverLimit(),
-                    null,
-                    resolveRequestId(httpRequest),
-                    resolveTraceContext(httpRequest));
         } catch (Exception e) { /* non-blocking */ }
         return ResponseEntity.ok(response);
     }
