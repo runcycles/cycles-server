@@ -62,6 +62,55 @@ class EvidenceEmitterTest {
     }
 
     @Test
+    void stripsNullValuedPropertiesFromTheEvidencePayload() throws Exception {
+        // The evidence mirrors are additionalProperties:false with non-nullable typed
+        // fields, so an unset request field serialized as null (e.g. ttl_ms / metadata)
+        // would make the envelope fail mirror validation. Null-strip it.
+        java.util.Map<String, Object> request = new java.util.HashMap<>();
+        request.put("idempotency_key", "k1");
+        request.put("ttl_ms", null);
+        request.put("overage_policy", null);
+        request.put("metadata", null);
+        java.util.Map<String, Object> payload = new java.util.HashMap<>();
+        payload.put("request", request);
+        payload.put("response", Map.of("decision", "ALLOW"));
+
+        emitter.emit("reserve", 100L, "trace-x", payload);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(repository).push(captor.capture());
+        JsonNode req = mapper.readTree(captor.getValue()).path("payload").path("request");
+        assertThat(req.path("idempotency_key").asText()).isEqualTo("k1");
+        assertThat(req.has("ttl_ms")).isFalse();
+        assertThat(req.has("overage_policy")).isFalse();
+        assertThat(req.has("metadata")).isFalse();
+        assertThat(captor.getValue()).doesNotContain(":null");
+    }
+
+    @Test
+    void evidenceIdIsComputedOverTheNullStrippedPayload() throws Exception {
+        // The id stamped on the record and the bytes the worker recomputes over must
+        // derive from the SAME null-stripped payload, or the worker dead-letters on drift.
+        configureIdentity();
+        java.util.Map<String, Object> request = new java.util.HashMap<>();
+        request.put("idempotency_key", "k1");
+        request.put("ttl_ms", null);
+        java.util.Map<String, Object> payload = new java.util.HashMap<>();
+        payload.put("request", request);
+        payload.put("response", Map.of("decision", "ALLOW"));
+
+        emitter.emit("reserve", 100L, "trace-x", payload);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(repository).push(captor.capture());
+        JsonNode rec = mapper.readTree(captor.getValue());
+        // recompute the id over the stored (null-stripped) payload body the worker reads
+        String recomputed = new EvidenceIdComputer(mapper).compute(
+                "reserve", SERVER_ID, SIGNER_DID, 100L, "trace-x", rec.path("payload"));
+        assertThat(rec.path("evidence_id").asText()).hasSize(64).isEqualTo(recomputed);
+    }
+
+    @Test
     void omitsTraceIdWhenBlank() throws Exception {
         emitter.emit("commit", 123L, "  ", Map.of("request", Map.of("a", 1), "response", Map.of("b", 2)));
 

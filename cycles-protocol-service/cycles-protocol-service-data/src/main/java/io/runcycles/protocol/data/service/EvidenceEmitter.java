@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.EvidenceQueueRepository;
@@ -65,6 +66,35 @@ public class EvidenceEmitter {
     @Autowired
     private EvidenceIdComputer evidenceIdComputer;
 
+    /**
+     * Evidence-only serializer that OMITS null-valued properties. The evidence
+     * mirror schemas (cycles-evidence-v0.1) declare every field with a concrete
+     * type and {@code additionalProperties: false} — none are nullable — so a
+     * serialized {@code null} (e.g. a reserve request's unset {@code ttl_ms},
+     * {@code overage_policy}, {@code metadata}; a commit's {@code metrics}; a
+     * release's {@code reason}) would make the signed envelope fail mirror
+     * validation. The request/response DTOs cannot carry {@code @JsonInclude}
+     * themselves (the SAME DTOs are serialized by the shared mapper for
+     * idempotency payload hashes, reserve.lua args, and cached response bodies —
+     * changing their byte shape would break those), so null-stripping is applied
+     * HERE, to the evidence payload only, via a private NON_NULL copy of the
+     * shared mapper. The shared mapper is untouched.
+     */
+    private volatile ObjectMapper evidencePayloadMapper;
+
+    /** Lazily derive the NON_NULL serializer from the shared mapper on first use
+     *  (the shared bean is injected after construction; no Spring lifecycle hook
+     *  needed, and it works identically under a plain unit-test wiring). */
+    private ObjectMapper evidencePayloadMapper() {
+        ObjectMapper m = evidencePayloadMapper;
+        if (m == null) {
+            m = objectMapper.copy()
+                    .setSerializationInclusion(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL);
+            evidencePayloadMapper = m;
+        }
+        return m;
+    }
+
     /** Public issuing-server URI stamped as {@code server_id}; also the base of
      *  {@code cycles_evidence_url}. Must match the event-tier worker's value. */
     @Value("${cycles.evidence.server-id:}")
@@ -96,13 +126,18 @@ public class EvidenceEmitter {
      */
     public EvidenceRef emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
         try {
+            // Null-strip the payload ONCE into a tree, and use that same tree for
+            // BOTH the content-id computation and the queued record, so the id the
+            // worker recomputes over the stored payload matches byte-for-byte.
+            JsonNode cleanPayload = evidencePayloadMapper().valueToTree(payloadBody);
+
             Map<String, Object> record = new LinkedHashMap<>();
             record.put("artifact_type", artifactType);
             record.put("issued_at_ms", issuedAtMs);
             if (traceId != null && !traceId.isBlank()) {
                 record.put("trace_id", traceId);
             }
-            record.put("payload", payloadBody);
+            record.put("payload", cleanPayload);
 
             EvidenceRef ref = null;
             if (identityConfigured()) {
@@ -112,7 +147,7 @@ public class EvidenceEmitter {
                 // the ref on the response only AFTER this returns), so the
                 // attested payload stays free of a self-reference.
                 String evidenceId = evidenceIdComputer.compute(
-                        artifactType, serverId, signerDid, issuedAtMs, traceId, payloadBody);
+                        artifactType, serverId, signerDid, issuedAtMs, traceId, cleanPayload);
                 record.put("evidence_id", evidenceId);
                 ref = new EvidenceRef(evidenceId, evidenceUrl(evidenceId));
             }
