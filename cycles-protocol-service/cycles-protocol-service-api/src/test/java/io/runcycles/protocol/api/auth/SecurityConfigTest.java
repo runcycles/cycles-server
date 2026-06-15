@@ -21,7 +21,8 @@ class SecurityConfigTest {
                 "/.well-known/**",
                 "/actuator/health",
                 "/actuator/prometheus",
-                "/v1/evidence/**"
+                "/v1/evidence/**",
+                "/v1/.well-known/**"
         );
     }
 

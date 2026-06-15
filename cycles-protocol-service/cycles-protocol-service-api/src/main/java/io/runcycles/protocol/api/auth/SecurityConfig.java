@@ -23,7 +23,12 @@ public class SecurityConfig {
             // CyclesEvidence retrieval is public by design (cycles-protocol-v0
             // getEvidence, security: []): the evidence_id is an unguessable
             // content-hash capability and the envelope is content-addressed + signed.
-            "/v1/evidence/**"
+            "/v1/evidence/**",
+            // The signer JWK Set is public (cycles-protocol-v0 getEvidenceJwks,
+            // security: []): public keys only — the private signing key is never
+            // served — and the set is itself the trust anchor consumers resolve.
+            // API-base-relative (under /v1), per the spec's authority-scope rule.
+            "/v1/.well-known/**"
     };
     @Bean
     SecurityFilterChain securityFilterChain(
