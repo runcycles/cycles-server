@@ -9,9 +9,11 @@ updates:
       # Defer until a planned migration; remove this entry when ready.
       - dependency-name: "org.springframework.boot:spring-boot-starter-parent"
         versions: ["4.x"]
+        update-types: ["version-update:semver-major"]
       # springdoc 3.x targets Spring Boot 4 — pair with the migration above.
       - dependency-name: "org.springdoc:springdoc-openapi-starter-webmvc-ui"
         versions: ["3.x"]
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
