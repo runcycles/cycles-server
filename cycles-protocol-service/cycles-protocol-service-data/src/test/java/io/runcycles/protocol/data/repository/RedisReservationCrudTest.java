@@ -151,6 +151,38 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldParseCommittedMetadata() {
+            // commit.lua persists the COMMIT request's metadata as
+            // committed_metadata_json; getReservation must surface it as
+            // committed_metadata (cycles-server#197), distinct from reserve metadata.
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("res-cmeta", "COMMITTED");
+            fields.put("metadata_json", "{\"phase\":\"reserve\"}");
+            fields.put("committed_metadata_json", "{\"request_id\":\"req-abc-123\"}");
+            when(jedis.hgetAll("reservation:res_res-cmeta")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("res-cmeta");
+
+            assertThat(detail.getCommittedMetadata()).isNotNull();
+            assertThat(detail.getCommittedMetadata()).containsEntry("request_id", "req-abc-123");
+            // reserve-time metadata stays distinct
+            assertThat(detail.getMetadata()).containsEntry("phase", "reserve");
+        }
+
+        @Test
+        void shouldOmitCommittedMetadataWhenAbsent() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, String> fields = reservationFields("res-nocmeta", "ACTIVE");
+            when(jedis.hgetAll("reservation:res_res-nocmeta")).thenReturn(fields);
+
+            ReservationDetail detail = repository.getReservationById("res-nocmeta");
+
+            assertThat(detail.getCommittedMetadata()).isNull();
+        }
+
+        @Test
         void shouldThrowOnCorruptedData() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
