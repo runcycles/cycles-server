@@ -116,11 +116,14 @@ public class JwksController {
             for (JsonNode n : arr) {
                 JsonNode nbfNode = n.path("nbf_ms");
                 JsonNode expNode = n.path("exp_ms");
-                // Both window bounds MUST be explicit integral epoch-ms. A missing
-                // or non-integral nbf_ms is NOT coerced to 0 (epoch) — that would
-                // silently widen the validity window; drop the entry instead.
-                if (!nbfNode.isIntegralNumber() || !expNode.isIntegralNumber()) {
-                    LOG.warn("retired key '{}' has a missing/non-integral nbf_ms or exp_ms; skipping",
+                // Both window bounds MUST be explicit integral epoch-ms that fit in a
+                // long. A missing or non-integral nbf_ms is NOT coerced to 0 (epoch) —
+                // that would silently widen the validity window; and isIntegralNumber()
+                // alone accepts out-of-long-range integers that asLong() would wrap
+                // (e.g. 2^63 → Long.MIN_VALUE), so require canConvertToLong() too.
+                if (!nbfNode.isIntegralNumber() || !nbfNode.canConvertToLong()
+                        || !expNode.isIntegralNumber() || !expNode.canConvertToLong()) {
+                    LOG.warn("retired key '{}' has a missing/non-integral/out-of-range nbf_ms or exp_ms; skipping",
                             n.path("kid").asText(""));
                     continue;
                 }

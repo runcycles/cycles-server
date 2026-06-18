@@ -159,6 +159,18 @@ class JwksControllerTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void retiredKeyWithOutOfRangeExp_isSkipped() {
+        // exp_ms beyond Long range is integral to Jackson but asLong() would wrap it
+        // (2^63 -> Long.MIN_VALUE); it must be rejected, not silently wrapped.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32)
+                + "\",\"kid\":\"huge\",\"nbf_ms\":0,\"exp_ms\":9223372036854775808}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void nonArrayRetiredKeysJson_isIgnored() {
         // Valid JSON but not an array → ignored, active key still published.
         JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{\"oops\":true}");
