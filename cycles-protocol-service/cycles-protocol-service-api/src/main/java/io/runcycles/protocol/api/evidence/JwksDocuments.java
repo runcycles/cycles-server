@@ -70,17 +70,19 @@ public final class JwksDocuments {
      * skipped defensively (a bad history entry never breaks publication of the
      * active key): malformed hex; a missing {@code expMs} (a retired key needs a
      * closed window); an empty/inverted window ({@code expMs <= nbfMs}, since
-     * {@code cycles_exp_ms} is EXCLUSIVE); the SAME key material as an
-     * already-published key (the active key's open-ended window or an earlier
-     * retired key) with an OVERLAPPING window — raw-hex selection by key bytes
+     * {@code cycles_exp_ms} is EXCLUSIVE); the SAME key material as an earlier
+     * retired key with an OVERLAPPING window — raw-hex selection by key bytes
      * plus {@code issued_at_ms} would be ambiguous, though disjoint windows for
-     * one key are fine; or a {@code kid} colliding with the active key or an
+     * a reused key are fine; or a {@code kid} colliding with the active key or an
      * earlier retired key (a duplicate {@code kid} is never emitted — set-wide
      * kid uniqueness is required).
      *
      * @param signerDid the active key ({@code cycles.evidence.signing.signer-did})
      * @param kid       active key id, or blank to derive a stable default
-     * @param nbfMs     active {@code cycles_nbf_ms} (epoch ms, inclusive)
+     * @param nbfMs     active {@code cycles_nbf_ms} (epoch ms, inclusive); if it
+     *                  was left below the latest retired key's {@code exp_ms} the
+     *                  published active window is advanced to that boundary, so the
+     *                  active key is never valid for pre-rotation {@code issued_at_ms}
      * @param retired   retired keys to retain in the set (may be empty/null)
      */
     public static Optional<Map<String, Object>> jwkSet(
@@ -91,20 +93,31 @@ public final class JwksDocuments {
         String activeDid = signerDid.trim();
         String activeKid = (kid == null || kid.isBlank()) ? defaultKid(activeDid) : kid.trim();
 
+        // Safety floor (fail-safe, not just a warning): the active key MUST NOT be
+        // published as valid before the latest retired key's window ends, or the
+        // current key could sign a backdated envelope (issued_at_ms before the
+        // rotation) that still resolves as authentic. If the configured nbf-ms was
+        // left below that boundary, advance the published active window up to it.
+        // Floor on EVERY declared bounded retired window — even one whose key
+        // material is malformed (so it won't be published): a typo in rotation
+        // history must not reopen the pre-rotation backdating hole on the active key.
+        long latestRetiredExp = (retired == null ? List.<RetiredKey>of() : retired).stream()
+                .filter(r -> r != null && r.expMs() != null && r.expMs() > r.nbfMs())
+                .mapToLong(RetiredKey::expMs)
+                .max()
+                .orElse(Long.MIN_VALUE);
+        long activeNbf = Math.max(nbfMs, latestRetiredExp);
+
         List<Map<String, Object>> keys = new ArrayList<>();
         Set<String> kids = new LinkedHashSet<>();
-        // Emitted [nbf, exp) windows per key material (lowercased hex), so the
-        // same key republished with an OVERLAPPING window is never emitted twice
-        // (raw-hex selection is key-bytes + issued_at_ms, which would be ambiguous).
+        // Emitted [nbf, exp) windows per key material (lowercased hex), so the same
+        // key republished with an OVERLAPPING window is never emitted twice — raw-hex
+        // selection is key-bytes + issued_at_ms, which would otherwise be ambiguous.
+        // The active key needs no entry: the nbf clamp above puts its window at/after
+        // every retired exp, so it is always disjoint from a same-material retired key.
         Map<String, List<long[]>> windowsByMaterial = new HashMap<>();
-        keys.add(buildJwk(activeDid, activeKid, nbfMs, null, "active"));
+        keys.add(buildJwk(activeDid, activeKid, activeNbf, null, "active"));
         kids.add(activeKid);
-        // The active key occupies [nbfMs, +inf); seed it so a retired entry of the
-        // same material publishes only when its window is DISJOINT from the active
-        // one (overlap would be ambiguous) — the same rule applied between retired
-        // entries, so a key reused across non-overlapping periods is preserved.
-        windowsByMaterial.computeIfAbsent(activeDid.toLowerCase(), k -> new ArrayList<>())
-                .add(new long[]{nbfMs, Long.MAX_VALUE});
 
         if (retired != null) {
             for (RetiredKey r : retired) {

@@ -145,14 +145,16 @@ class JwksDocumentsTest {
     }
 
     @Test
-    void retiredKey_sameMaterialAsActiveKey_overlappingWindow_isSkipped() {
-        // The active key's window is [0, inf); a retired entry of the same bytes
-        // with an overlapping window would be ambiguous — drop it (case-insensitive).
+    void retiredKey_sameMaterialAsActiveKey_publishesAfterNbfClamp() {
+        // Active nbf 0 with a same-material retired [0,100): clamping the active
+        // window to 100 makes the retired window disjoint, so the reused key's
+        // history is preserved (both publish) rather than dropped (case-insensitive).
         List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
                 RAW_HEX, "active", 0L,
                 List.of(new JwksDocuments.RetiredKey(RAW_HEX.toUpperCase(), "dup-material", 0L, 100L))));
-        assertThat(keys).hasSize(1);
-        assertThat(keys.get(0)).containsEntry("status", "active");
+        assertThat(keys).hasSize(2);
+        assertThat(keys.get(0)).containsEntry("status", "active").containsEntry("cycles_nbf_ms", 100L);
+        assertThat(keys.get(1)).containsEntry("kid", "dup-material").containsEntry("status", "retired");
     }
 
     @Test
@@ -188,6 +190,39 @@ class JwksDocumentsTest {
                         new JwksDocuments.RetiredKey(RETIRED_HEX, "early", 0L, 100L),
                         new JwksDocuments.RetiredKey(RETIRED_HEX, "later", 100L, 200L))));
         assertThat(keys).hasSize(3);
+    }
+
+    @Test
+    void activeNbf_belowLatestRetiredExp_isAdvancedToThatBoundary() {
+        // Configured active nbf 0 with a retired window ending at 100 would leave the
+        // active key valid since epoch; the published active window is clamped to 100.
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 0L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "old", 0L, 100L))));
+        assertThat(keys.get(0)).containsEntry("status", "active").containsEntry("cycles_nbf_ms", 100L);
+        assertThat(keys.get(1)).containsEntry("kid", "old");
+    }
+
+    @Test
+    void activeNbf_clampedEvenWhenRetiredKeyMaterialIsMalformed() {
+        // A retired entry with bad hex isn't published, but its declared exp still
+        // floors the active key — a typo in rotation history must not reopen the
+        // pre-rotation backdating hole.
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 0L,
+                List.of(new JwksDocuments.RetiredKey("not-hex", "bad", 0L, 100L))));
+        assertThat(keys).hasSize(1); // malformed key not published
+        assertThat(keys.get(0)).containsEntry("status", "active").containsEntry("cycles_nbf_ms", 100L);
+    }
+
+    @Test
+    void activeNbf_atOrAboveLatestRetiredExp_isUnchanged() {
+        // Correctly-configured rotation (active nbf = rotation time = retired exp) is
+        // not modified.
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 100L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "old", 0L, 100L))));
+        assertThat(keys.get(0)).containsEntry("cycles_nbf_ms", 100L);
     }
 
     @Test
