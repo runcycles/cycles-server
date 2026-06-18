@@ -1,44 +1,165 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
-**Date:** 2026-06-18 (v0.1.25.34 — expose commit-time metadata on `getReservation`. `commit.lua` already persists the COMMIT request's metadata as `committed_metadata_json`, but `getReservationById` only projected the reserve-time `metadata_json`, so commit metadata was write-only — accepted and stored but never returned (cycles-server#197). `ReservationDetail` gains a `committed_metadata` field and the read path now parses `committed_metadata_json` into it; the reserve-time `metadata` field is unchanged. Per cycles-protocol v0.1.25.7 (runcycles/cycles-protocol#114). `RedisReservationCrudTest` +2 (read-path projection: parsed, kept distinct from reserve metadata, omitted when absent) and `ReservationLifecycleIntegrationTest` +2 (end-to-end commit-with-metadata round-trip through real Redis + `commit.lua`; NON_NULL wire omission); full `mvn verify` green, 95% coverage gate met.), 2026-06-18 (v0.1.25.33 — retired-key rotation history in the published CyclesEvidence JWK Set, the v0.2 signer-key-resolution follow-up to v0.1.25.32. A new `cycles.evidence.signing.retired-keys` property (env `EVIDENCE_SIGNING_RETIRED_KEYS`) takes a JSON array of `{signer_did, kid, nbf_ms, exp_ms}`; `JwksController` parses it fail-safe so bad config never stops the active key publishing, and `JwksDocuments.jwkSet` appends each retired key as a bounded `[cycles_nbf_ms, cycles_exp_ms)` JWK with `status: retired`, letting a verifier resolve the key that was valid at an envelope's `issued_at_ms` rather than only the current one. Retired entries are skipped when invalid: malformed hex, an absent, non-integral, or out-of-long-range window bound, an empty or inverted window, an overlapping window for already-published retired key material, or a duplicate `kid`; a key whose material matches the active key publishes once the clamp below makes its window disjoint (so reused-key history is preserved). On rotation the active key's `nbf-ms` should be set to the rotation time; if it's left lower, the published active window is clamped up to the latest retired key's `exp_ms` (fail-safe, with a warning) so the current key can't resolve as valid for pre-rotation evidence. No spec or wire change — `CyclesEvidenceJwks` already allowed multiple keys with windows and a retired status. `JwksDocumentsTest` +13 and `JwksControllerTest` +7; full `mvn verify` green, 95% coverage gate met.),
-2026-06-15 (getEvidenceJwks live-serving integration test — `JwksEndpointIntegrationTest` (full `@SpringBootTest` with real Tomcat, the Spring Security filter chain active, and Testcontainers Redis) proves the JWK Set endpoint serves over real HTTP with no API key, i.e. the `/v1/.well-known/**` public-path exemption holds end-to-end through the filter chain — something the filters-disabled `JwksControllerTest` `@WebMvcTest` can't show. With the signing identity configured, a no-header GET returns 200 and a JWK whose `x` decodes to the configured `signer_did` bytes, with the right `kid`/`cycles_nbf_ms`/`status` and a public, non-immutable cache; a bogus key still returns 200. 2 tests, test-only — the implementation shipped in v0.1.25.32 / #194.),
-2026-06-15 (v0.1.25.32 — CyclesEvidence signer-key resolution, publication half: `getEvidenceJwks` (`GET /v1/.well-known/cycles-jwks.json`, per cycles-protocol v0.1.25.6 / runcycles/cycles-protocol#113). When `cycles.evidence.signing.signer-did` is a raw 64-hex key, the public `JwksController` serves a one-key JWK Set built by the pure `JwksDocuments.jwkSet` — an active Ed25519 OKP JWK whose `x` is the same 32 bytes `EnvelopeSigner` signs with, so a verifier resolving the set authenticates the emitted signatures — with a short public, non-immutable cache. It 404s when no raw-hex key is configured (evidence off, or a `did:cycles` signer that carries no key bytes); consumers then stay on the raw-hex `expected_signer` pinning path. `/v1/.well-known/**` is public (public keys only) and API-base-relative under `/v1` per the spec's authority-scope rule. `JwksDocumentsTest` (10) and `JwksControllerTest` (4); `mvn verify` 906 tests green.),
-2026-06-14 (v0.1.25.31 — review fix [Medium]: `POST /v1/reservations` re-emitted side-effect events on an idempotent replay. `create` emitted the `RESERVATION_DENIED` event and balance-transition events unconditionally, while `decide`, `commit`, and `release` already skip them on a replay, so a replayed create double-counted them. Fixed by wrapping create's emission block in `if (!response.isIdempotentReplay())` to match the other endpoints. `ReservationControllerTest` +1. No wire/spec change. Numbered .31 because .30 is held by the open byte-parity PR #187 — merge that first.),
-2026-06-14 (v0.1.25.30 — byte-parity hardening: extend `EvidenceIdComputerTest` from the 3 reserve fixtures to the full 13-fixture set covering all five artifact types, the same fixtures the event-tier canonicalizer and the APS verifier use. This proves cycles-server's synchronous `evidence_id` computation reproduces the canonical id for every envelope shape, so a given shape's id always matches the worker and the cross-check never dead-letters on drift. Test-only: `@ValueSource` 3→13, `EvidenceIdComputerTest` 5→15 tests; `mvn verify` green.),
-2026-06-13 (v0.1.25.29 — include the optional `request` body in `error` CyclesEvidence (review Minor): the four core controllers stash their parsed request DTO in a request attribute, and `GlobalExceptionHandler` includes it in the `error` payload when present, completing the `{endpoint, http_status, [reservation_id], [request], response}` shape. Review fix (codex, High): request/response DTOs can serialize null-valued properties, but the evidence mirror schemas are `additionalProperties:false` with non-nullable fields, so a serialized null failed mirror validation — affecting the already-merged reserve/commit/release evidence too. Fixed centrally in `EvidenceEmitter` with a NON_NULL mapper that null-strips the payload once, used for both the `evidence_id` and the queued record; the shared mapper and DTOs are left unchanged so idempotency hashes and cached bodies stay byte-stable. `GlobalExceptionHandlerTest` +2, `ReservationControllerTest` +1, `EvidenceEmitterTest` +2; `mvn verify` green.),
-2026-06-13 (v0.1.25.28 — CyclesEvidence fan-out to the `error` artifact, completing the lifecycle binding loop (decide/reserve/commit/release/error), per cycles-protocol v0.1.25.5 / #109. `GlobalExceptionHandler` emits an `error` source record over `{endpoint, http_status, response}` (plus a hoisted `reservation_id` for commit/release) and stamps the ref onto `ErrorResponse`, but only for budget and terminal-state denials raised on the four core endpoints — a code qualifies iff it is a server decision on a core endpoint. Pre-evaluation failures (validation, auth, not-found, idempotency mismatch) and non-core routes emit nothing, matching the spec's rule that `cycles_evidence` is absent for errors raised before evidence could be emitted. The ref is stamped after the id is computed, so the attested response stays non-self-referential, and emission is fail-open. `GlobalExceptionHandlerTest` +9; the five controller tests gain a mocked emitter; `mvn verify` green.),
-2026-06-13 (v0.1.25.27 — CyclesEvidence fan-out to decide plus a generalized non-persisting idempotency path, per cycles-protocol v0.1.25.4 / #108. `decide` now emits evidence over `{request, response}` and surfaces `cycles_evidence`. The dry_run atomic-claim-and-wait machinery is refactored into a shared `kind`-parameterized path serving both dry_run and decide, with keys derived from `kind` so dry_run stays byte-identical; concurrent same-key decides converge to one evaluation and one envelope. Review fixes (codex): the orchestrator rethrows runtime exceptions unwrapped; the claim cache/clear helpers self-acquire a short-lived connection and fail open; decide replays don't re-emit the deny event; and a pool-nesting bug on the dry_run failure path is fixed with an already-held-connection clear overload. `RedisReservationDecideEventTest` +4, `RedisReservationCrudTest` +2, `DecisionControllerTest` +2; `mvn verify` green.),
-2026-06-13 (v0.1.25.26 — CyclesEvidence fan-out to commit and release, per cycles-protocol v0.1.25.3 / #107, extending the reserve pattern across the budget lifecycle. `commit.lua`/`release.lua` flag their replay branch; on a fresh terminal op Java emits a `commit`/`release` record over `{reservation_id, request, response}`, stamps the ref, and caches the full body with a 30-day TTL matching the terminal reservation hash, replaying it verbatim on idempotent retry. Review fixes (#183): all three fresh paths (reserve/commit/release) release the Lua connection before evidence emit and body-cache so peak pool use stays at one connection, and the admin-release audit write is guarded against replay. `RedisReservationCommitReleaseTest` +4, `ReservationControllerTest` +2, plus `InOrder` regression guards; `mvn verify` green.),
-2026-06-13 (v0.1.25.25 — CyclesEvidence idempotency-race hardening (#181). Closes two races: a reserve replay landing between reserve.lua's mapping write and the body-cache write now polls the body cache (≤4×25ms) before falling back to rebuilt balances; and concurrent fresh dry_runs with the same key now elect one evaluator via an atomic `SET NX` pending-claim while the losers wait, preventing duplicate evidence emission. The wait loops acquire a fresh connection per poll rather than holding the request connection across a sleep, and a waiter that still finds nothing returns a transient 500 that resolves on retry. The pending claim is released via an atomic compare-and-delete and cleared on cache-write or evaluation failure. `RedisReservationCrudTest` +5; `mvn verify` green incl. the thundering-herd test.),
-2026-06-12 (v0.1.25.24 — CyclesEvidence centralized into the reservation-creation flow (review, two High findings). Evidence is now emitted, stamped, and cached inside `createReservation` — the idempotent unit — rather than in the controller, with `EvidenceEmitter` injected into the repository and `trace_id` threaded through a new overload. The body-cache TTL now matches reserve.lua's idempotency mapping (`max(ttl+grace, 24h)`) instead of a fixed 24h that expired early for long-lived reservations. dry_run now emits `reserve` evidence for all outcomes per spec authority (a dry-run DENY is the canonical signed "would this be allowed?" attestation), reversing the .23 suppression, and caches the body so DENY replays are idempotent. `mvn verify` 402 data + 179 api green incl. the thundering-herd test.),
-2026-06-12 (v0.1.25.23 — CyclesEvidence idempotent-replay-body fix (review, two High findings). A fresh non-dry create now stamps `cycles_evidence` and caches the whole response keyed by `reserve:body:<reservation_id>` (not the idempotency key, so it can't go stale across an idem-key expiry); the Lua idempotency-hit path replays that body verbatim, falling back to rebuild-from-hash only when the cache is absent. This replaces the .22 ref-only approach, whose rebuilt balances drifted from the envelope the `evidence_id` pointed to — violating the normative "return the original successful response" rule — and also fixes the pre-existing balance-drift-on-replay bug. dry_run no longer emits or surfaces evidence, since it persists nothing and changes no budget. `ReservationControllerTest` reworked, `RedisReservationCrudTest` +3; 402 data + 181 api tests green.),
-2026-06-12 (v0.1.25.22 — synchronous `evidence_id` and `cycles_evidence` on the reserve response, closing the APS binding loop. `EvidenceIdComputer` reproduces the cycles-evidence/v0.1 content-hash recipe (RFC 8785 JCS + sha256 over the envelope with `evidence_id`/`signature` emptied) byte-for-byte, proven against the reserve golden fixtures. When the public identity is configured, `EvidenceEmitter` computes the id synchronously, stamps it on the source record for the worker's cross-check, and returns the ref; `ReservationController` stamps `cycles_evidence` on the response after the id is computed so the attested body stays non-self-referential. A fresh reserve computes and emits once and persists the ref on the reservation hash; an idempotent replay returns it verbatim and never recomputes, since replay balances would drift to a different id. Per cycles-protocol v0.1.25.1–.2. `EvidenceIdComputer` x5, `EvidenceEmitter` +5, `ReservationControllerTest` +4.),
-2026-06-12 (CyclesEvidence serving endpoint — `getEvidence` (`GET /v1/evidence/{evidence_id}`, per cycles-protocol revision 2026-06-12 / #104). `EvidenceController` reads the shared store via `EvidenceStoreReader` and serves the signed envelope verbatim with a public, immutable cache; 404 when absent, 400 on a non-64-hex id. `/v1/evidence/**` is public (a capability URL, no API key). `EvidenceControllerTest`, `EvidenceStoreReaderTest`, and a mocked reader added to the four controller tests; no change to existing endpoints.),
-2026-06-12 (CyclesEvidence source emission, reserve endpoint — the producer half of the dedicated-channel emitter. `EvidenceQueueRepository` LPUSHes a source record to `evidence:pending` and `EvidenceEmitter` stamps `artifact_type`, `issued_at_ms`, `trace_id`, and the artifact-specific payload (the worker adds `server_id`/`signer_did`). The enqueue is synchronous — the record is pushed to the same Redis as the committed ledger write before the response returns, so a committed op can't return without its evidence queued — and fail-open: a push failure is logged and metered but never fails the response, with signing left to the event tier. Wired into `create` for both ALLOW and DENY. 4 tests; `ReservationControllerTest` gains a mocked emitter. No wire/spec change.),
-2026-05-22 (v0.1.25.21 — `expires_from`/`expires_to` and `finalized_from`/`finalized_to` ISO-8601 time-window filters on `GET /v1/reservations` per `cycles-protocol-v0.yaml` revision 2026-05-22 (runcycles/cycles-protocol#98); closes runcycles/cycles-server#162. Four new query params mirroring the v0.1.25.20 `from`/`to` shape: `expires_*` binds to `expires_at_ms` (required field, every row), `finalized_*` binds to `finalized_at_ms` (populated only on COMMITTED/RELEASED; ACTIVE and EXPIRED normatively excluded). Three windows compose with AND. `finalized_at_ms` added as an optional field on `ReservationSummary` so clients filtering with `finalized_*` can see the timestamp without a follow-up `getReservation` — strict-schema-compatible because the field is `@JsonInclude(NON_NULL)`. `FilterHasher` extends with four more `Long` args (10 → 14) using independent gated emission per pair — preserves byte-exact back-compat for v0.1.25.18 cursors (golden `2f397ea0e8fb53b7`) AND v0.1.25.20 cursors with from/to set (golden `ad7204d521cfd133`). `RedisReservationRepository.listReservations` signature 14 → 18 args. Two new predicate helpers (`expiresAtInWindow`, `finalizedAtInWindow`) applied in both legacy SCAN-cursor and sorted paths. Validation: each new pair `from > to` → 400; malformed values → 400 with distinct per-param message; blank strings treated as unset. 557 tests pass (384 data + 173 api), +19 vs v0.1.25.20.),,
-2026-05-21 (v0.1.25.20 — `from` / `to` ISO-8601 time-window filter on `GET /v1/reservations` per cycles-protocol revision 2026-05-21; closes runcycles/cycles-server#159. Two new query params on `listReservations`, both `string`/`format: date-time`, both inclusive bounds on `created_at_ms`, both bind to `created_at_ms` regardless of `sort_by`. Implemented in both the legacy SCAN-cursor and sorted paths. `FilterHasher.hash(...)` now folds `fromMs`/`toMs` into the canonical hash so sorted-path cursors invalidate on window change (the legacy Redis-SCAN cursor is not window-validated, matching how it already treats every other filter). Validation: malformed values → 400, `from > to` → 400 before any repository call, blank strings treated as unset, missing/unparseable `created_at` rows defensively excluded when either bound supplied. Pure additive wire change — all v0.1.25.x clients that don't send the params continue to work byte-for-byte. 538 tests pass (375 data + 163 api).),
-2026-05-21 (v0.1.25.19 — supply-chain CVE patch; re-pin `tomcat.version=10.1.55` in `cycles-protocol-service/pom.xml` to close 7 new CVEs flagged by Trivy against `tomcat-embed-core 10.1.54` (CRITICAL: CVE-2026-43512, CVE-2026-43515, CVE-2026-41293; HIGH: CVE-2026-43513, CVE-2026-42498, CVE-2026-41284; LOW: CVE-2026-43514 — all fixed in 10.1.55 / 11.0.22). Mirrors the v0.1.25.16 pattern; the override was dropped in v0.1.25.18 when SB 3.5.14's BOM caught up to 10.1.54, now re-added one patch higher because Trivy DB updates between 2026-05-11 (last green main run) and 2026-05-21 surfaced a new wave on the same artifact. Removable once Spring Boot ships with 10.1.55+ as its managed version. `commons-lang3.version=3.18.0` retained (CVE-2025-48924 still unfixed in SB 3.5.14's managed 3.17.0). No production code or test changes; all 537 protocol-service tests pass.),
-2026-04-26 (v0.1.25.18 — dependency hygiene matching `cycles-server-events` v0.1.25.12: bump `spring-boot-starter-parent` 3.5.13 → 3.5.14 (patch with upstream security hardening — constant-time comparison for remote DevTools secret, `RandomValuePropertySource` SecureRandom, hostname verification applied consistently for Cassandra/RabbitMQ SSL, plus symlink-handling fixes); **drop `<tomcat.version>10.1.54</tomcat.version>` override** since Spring Boot 3.5.14's BOM now manages 10.1.54 directly (verified against `spring-boot-dependencies-3.5.14.pom`); commons-lang3 3.18.0 override retained — Spring Boot 3.5.14's BOM still manages 3.17.0. **Jedis 7.4.1 → 6.2.0** to align all three services on the same Redis client major (events at 6.2.0 since v0.1.25.12, admin at 6.2.0 in v0.1.25.41); all call sites use stable APIs (`Jedis`, `JedisPool`, `Pipeline`, `Response`, `ScanParams`, `ScanResult`, `JedisNoScriptException`) — no 7.x-only API usage. No code changes; all 152 tests pass.),
-2026-04-19 (v0.1.25.17 — supply-chain CVE fix follow-up; pin `commons-lang3.version=3.18.0` to close CVE-2025-48924 (Trivy HIGH) on the `commons-lang3-3.17.0` jar that ships in the fat-jar image via `swagger-core-jakarta` (OpenAPI UI). Spring Boot 3.5.13's BOM manages commons-lang3 at 3.17.0 — override is removable once Spring Boot ships a managed version of 3.18.0+. All 152 tests pass),
-2026-04-19 (v0.1.25.16 — supply-chain CVE fix; bump `spring-boot-starter-parent` 3.5.11 → 3.5.13 and pin `tomcat.version=10.1.54` to close 5 HIGH/CRITICAL CVEs flagged by the new PR-time Trivy scan — CVE-2026-22732 CRITICAL on `spring-security-web` (fixed 6.5.9, pulled in transitively by 3.5.13), CVE-2026-29129 HIGH + CVE-2026-29145 CRITICAL on `tomcat-embed-core` (fixed 10.1.53, transitive), CVE-2026-34483 HIGH + CVE-2026-34487 HIGH on `tomcat-embed-core` (fixed 10.1.54, explicit property override since Spring Boot 3.5.14 with 10.1.54+ as managed version hasn't shipped yet); no code changes, all 152 tests pass),
-2026-04-18 (v0.1.25.15 — runtime audit-log retention TTL fix; `AuditRepository` now writes `audit:log:{id}` keys with `EX ttl` via the same Lua shape admin uses, configurable via `audit.retention.days` (default 400d), daily `@Scheduled` sweep prunes stale ZSET index pointers; closes a gap where runtime-written rows persisted indefinitely and did not participate in admin's authenticated-tier retention),
-2026-04-18 (v0.1.25.14 — trace_id (W3C Trace Context) cross-surface correlation per cycles-protocol revision 2026-04-18; new `TraceContextFilter` extracts `traceparent` or `X-Cycles-Trace-Id` from inbound requests or generates a fresh 128-bit id, echoes `X-Cycles-Trace-Id` on every response, populates `trace_id` on `ErrorResponse` / `Event` / `WebhookDelivery` / `AuditLogEntry`),
-2026-04-16 (v0.1.25.13 — hydration cap + enum wire annotations on the sorted `GET /v1/reservations` path; `SORTED_HYDRATE_CAP=2000` guard on the in-memory sort hydration with WARN-on-cap, matches admin plane's v0.1.25.24 pattern; `@JsonValue`/`@JsonCreator fromWire` on `ReservationSortBy` + `SortDirection` to mirror admin's `SortSpec`/`SortDirection` contract),
-2026-04-16 (v0.1.25.12 — `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16; 7-value sort enum, opaque cursor binds `(sort_by, sort_dir, filters)` tuple, legacy SCAN-cursor path preserved when both params omitted),
-2026-04-14 (automated performance regression detection — nightly trend + release gate, no version bump),
-2026-04-14 (nightly soak test — long-duration stability coverage, no version bump),
-2026-04-14 (v0.1.25.11 — concurrent retry-storm test for idempotency cache expiry + concurrent accuracy test for custom counters; closes two gaps flagged in the v0.1.25.10 review),
-2026-04-14 (v0.1.25.10 — custom Micrometer counters for reserve/commit/release/extend/expired/events + overdraft, plus Redis-disconnect resilience test; dormant emitExpiredEvent key-prefix bug fixed as a side effect),
-2026-04-14 (v0.1.25.9 — second-wave test additions: overdraft property, expire.lua conformance, admin-release race, multi-scope attribution, idempotency-cache expiry, clock-skew, metrics correctness, audit-log completeness),
-2026-04-14 (property-based concurrent budget-exhaustion test + jqwik-spring lifecycle and tries-override follow-up fixes; passing green on Docker Desktop),
-2026-04-12 (spec endpoint-coverage report — parity with admin),
-2026-04-12 (spec tracking: pinned SHA → cycles-protocol@main for immediate drift detection),
-2026-04-12 (strict response-status enforcement — Gap 2 closed),
-2026-04-12 (spec compliance hardening — full-coverage contract validation),
-2026-04-12 (spec contract validation added),
-2026-04-11 (v0.1.25.7 typed ReasonCode + flaky test fix), 2026-04-10 (v0.1.25.6 reserve/event UNIT_MISMATCH detection), 2026-04-08 (v0.1.25.5 duplicate event fix), 2026-04-07 (v0.1.25.4 event data completeness), 2026-04-01 (v0.1.25 event emission + TTL), 2026-03-24 (Round 6: spec compliance audit), 2026-03-24 (v0.1.24 update), 2026-03-23 (updated), 2026-03-15 (initial)
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
 **Server:** Spring Boot 3.5.14 / Java 21 / Jedis 6.2.0 / Redis (Lua scripts) · commons-lang3 3.18.0 pin (SB 3.5.14 still manages 3.17.0)
+
+---
+
+### 2026-06-18 — v0.1.25.34: surface committed metadata on `getReservation`
+
+Commit-time metadata was write-only on the server — accepted, persisted, never returned. Fixes runcycles/cycles-server#197.
+
+**The gap.** `commit.lua` already persists the COMMIT request's metadata as `committed_metadata_json` on the reservation hash, but `getReservationById` only projected the reserve-time `metadata_json`. So a client that committed with metadata and then read the reservation saw nothing.
+
+**Fix.** `ReservationDetail` gains a `committed_metadata` field (`@JsonInclude(NON_NULL)`); the read path parses `committed_metadata_json` into it. Reserve-time `metadata` is unchanged and stays distinct. Per cycles-protocol v0.1.25.7 (runcycles/cycles-protocol#114).
+
+**Coverage.** `RedisReservationCrudTest` +2 (read-path projection: parsed, distinct from reserve metadata, omitted when absent); `ReservationLifecycleIntegrationTest` +2 (end-to-end commit-with-metadata round-trip through real Redis + `commit.lua`; NON_NULL wire omission). Full `mvn verify` green, JaCoCo 95% gate met.
+
+---
+
+### 2026-06-18 — v0.1.25.33: retired-key rotation history in the published JWK Set
+
+The v0.2 signer-key-resolution follow-up to v0.1.25.32, so evidence signed before a key rotation still verifies against the key valid at its `issued_at_ms`.
+
+**Configuration.** A new `cycles.evidence.signing.retired-keys` property (env `EVIDENCE_SIGNING_RETIRED_KEYS`) takes a JSON array of `{signer_did, kid, nbf_ms, exp_ms}`. `JwksController` parses it fail-safe so bad config never stops the active key publishing; `JwksDocuments.jwkSet` appends each retired key as a bounded `[cycles_nbf_ms, cycles_exp_ms)` JWK with `status: retired`.
+
+**Defensive skips.** Retired entries are dropped when invalid: malformed hex; an absent, non-integral, or out-of-long-range window bound; an empty or inverted window; an overlapping window for already-published retired key material; or a duplicate `kid`. A retired key whose material matches the active key still publishes once the clamp (below) makes its window disjoint, so reused-key history is preserved.
+
+**Rotation safety floor.** On rotation the active key's `nbf-ms` should be set to the rotation time; if it is left lower, the published active window is clamped up to the latest retired `exp_ms` (fail-safe, with a warning) so the current key can't resolve as valid for pre-rotation evidence.
+
+**Scope.** No spec or wire change — `CyclesEvidenceJwks` already allowed multiple keys with windows and a retired status. `JwksDocumentsTest` +13, `JwksControllerTest` +7; full `mvn verify` green, 95% gate met.
+
+---
+
+### 2026-06-15 — getEvidenceJwks live-serving integration test (no version bump)
+
+`JwksEndpointIntegrationTest` (full `@SpringBootTest`, real Tomcat, the Spring Security filter chain active, Testcontainers Redis) proves the JWK Set endpoint serves over real HTTP with no API key — i.e. the `/v1/.well-known/**` public-path exemption holds end-to-end through the filter chain, which the filters-disabled `JwksControllerTest` `@WebMvcTest` can't show. With the signing identity configured, a no-header GET returns 200 and a JWK whose `x` decodes to the configured `signer_did` bytes, with the right `kid`/`cycles_nbf_ms`/`status` and a public, non-immutable cache; a bogus key still returns 200. 2 tests, test-only — the implementation shipped in v0.1.25.32 / #194.
+
+---
+
+### 2026-06-15 — v0.1.25.32: CyclesEvidence signer-key resolution, publication half
+
+`getEvidenceJwks` (`GET /v1/.well-known/cycles-jwks.json`), per cycles-protocol v0.1.25.6 / runcycles/cycles-protocol#113.
+
+**What it serves.** When `cycles.evidence.signing.signer-did` is a raw 64-hex key, the public `JwksController` serves a one-key JWK Set built by the pure `JwksDocuments.jwkSet` — an active Ed25519 OKP JWK whose `x` is the same 32 bytes `EnvelopeSigner` signs with, so a verifier resolving the set authenticates the emitted signatures — with a short public, non-immutable cache.
+
+**Fallback.** It 404s when no raw-hex key is configured (evidence off, or a `did:cycles` signer that carries no key bytes); consumers then stay on the raw-hex `expected_signer` pinning path.
+
+**Placement.** `/v1/.well-known/**` is public (public keys only) and API-base-relative under `/v1`, per the spec's authority-scope rule. `JwksDocumentsTest` (10), `JwksControllerTest` (4); `mvn verify` 906 tests green.
+
+---
+
+### 2026-06-14 — v0.1.25.31: suppress side-effect events on idempotent reserve replay
+
+Review fix [Medium]. `POST /v1/reservations` re-emitted side-effect events on an idempotent replay: `create` emitted the `RESERVATION_DENIED` event and balance-transition events unconditionally, while `decide`, `commit`, and `release` already skip them on a replay, so a replayed create double-counted them. Fixed by wrapping create's emission block in `if (!response.isIdempotentReplay())` to match the other endpoints. `ReservationControllerTest` +1. No wire/spec change. Numbered .31 because .30 was held by the open byte-parity PR #187.
+
+---
+
+### 2026-06-14 — v0.1.25.30: byte-parity hardening across all five artifact types
+
+Extends `EvidenceIdComputerTest` from the 3 reserve fixtures to the full 13-fixture set covering all five artifact types — the same fixtures the event-tier canonicalizer and the APS verifier use. This proves cycles-server's synchronous `evidence_id` computation reproduces the canonical id for every envelope shape, so a given shape's id always matches the worker and the cross-check never dead-letters on drift. Test-only: `@ValueSource` 3→13, `EvidenceIdComputerTest` 5→15 tests; `mvn verify` green.
+
+---
+
+### 2026-06-13 — v0.1.25.29: optional request body in `error` CyclesEvidence + null-strip fix
+
+Per the review note that `ErrorPayload.request` SHOULD be present for a full audit trail.
+
+**Request body.** The four core controllers stash their parsed request DTO in a request attribute, and `GlobalExceptionHandler` includes it in the `error` payload when present, completing the `{endpoint, http_status, [reservation_id], [request], response}` shape.
+
+**Review fix (codex, High).** Request/response DTOs can serialize null-valued properties, but the evidence mirror schemas are `additionalProperties:false` with non-nullable fields, so a serialized null failed mirror validation — affecting the already-merged reserve/commit/release evidence too. Fixed centrally in `EvidenceEmitter` with a NON_NULL mapper that null-strips the payload once, used for both the `evidence_id` and the queued record; the shared mapper and DTOs are left unchanged so idempotency hashes and cached bodies stay byte-stable.
+
+**Coverage.** `GlobalExceptionHandlerTest` +2, `ReservationControllerTest` +1, `EvidenceEmitterTest` +2; `mvn verify` green.
+
+---
+
+### 2026-06-13 — v0.1.25.28: CyclesEvidence fan-out to the `error` artifact
+
+Completes the lifecycle binding loop (decide/reserve/commit/release/error), per cycles-protocol v0.1.25.5 / #109.
+
+**Emission policy.** `GlobalExceptionHandler` emits an `error` source record over `{endpoint, http_status, response}` (plus a hoisted `reservation_id` for commit/release) and stamps the ref onto `ErrorResponse`, but only for budget and terminal-state denials raised on the four core endpoints — a code qualifies iff it is a server decision on a core endpoint. Pre-evaluation failures (validation, auth, not-found, idempotency mismatch) and non-core routes emit nothing, matching the spec's rule that `cycles_evidence` is absent for errors raised before evidence could be emitted.
+
+**Non-self-referential + fail-open.** The ref is stamped after the id is computed, so the attested response doesn't contain it, and emission never fails the error response. `GlobalExceptionHandlerTest` +9; the five controller tests gain a mocked emitter; `mvn verify` green.
+
+---
+
+### 2026-06-13 — v0.1.25.27: CyclesEvidence fan-out to decide + generalized idempotency
+
+Per cycles-protocol v0.1.25.4 / #108. `decide` now emits evidence over `{request, response}` and surfaces `cycles_evidence`.
+
+**Generalized machinery.** The dry_run atomic-claim-and-wait machinery is refactored into a shared `kind`-parameterized path serving both dry_run and decide, with keys derived from `kind` so dry_run stays byte-identical; concurrent same-key decides converge to one evaluation and one envelope.
+
+**Review fixes (codex).** The orchestrator rethrows runtime exceptions unwrapped; the claim cache/clear helpers self-acquire a short-lived connection and fail open; decide replays don't re-emit the deny event; and a pool-nesting bug on the dry_run failure path is fixed with an already-held-connection clear overload.
+
+**Coverage.** `RedisReservationDecideEventTest` +4, `RedisReservationCrudTest` +2, `DecisionControllerTest` +2; `mvn verify` green.
+
+---
+
+### 2026-06-13 — v0.1.25.26: CyclesEvidence fan-out to commit + release
+
+Per cycles-protocol v0.1.25.3 / #107, extending the reserve pattern across the budget lifecycle.
+
+**Mechanics.** `commit.lua`/`release.lua` flag their replay branch; on a fresh terminal op Java emits a `commit`/`release` record over `{reservation_id, request, response}`, stamps the ref, and caches the full body with a 30-day TTL matching the terminal reservation hash, replaying it verbatim on idempotent retry.
+
+**Review fixes (#183).** All three fresh paths (reserve/commit/release) release the Lua connection before evidence emit and body-cache so peak pool use stays at one connection, and the admin-release audit write is guarded against replay. `RedisReservationCommitReleaseTest` +4, `ReservationControllerTest` +2, plus `InOrder` regression guards; `mvn verify` green.
+
+---
+
+### 2026-06-13 — v0.1.25.25: CyclesEvidence idempotency-race hardening
+
+Closes two concurrency races (runcycles/cycles-server#181).
+
+**Reserve replay.** A reserve replay landing between reserve.lua's mapping write and the body-cache write now polls the body cache (≤4×25ms) before falling back to rebuilt balances.
+
+**Concurrent dry_run.** Concurrent fresh dry_runs with the same key now elect one evaluator via an atomic `SET NX` pending-claim while the losers wait, preventing duplicate evidence emission. The wait loops acquire a fresh connection per poll rather than holding the request connection across a sleep, and a waiter that still finds nothing returns a transient 500 that resolves on retry. The pending claim is released via an atomic compare-and-delete and cleared on cache-write or evaluation failure.
+
+**Coverage.** `RedisReservationCrudTest` +5; `mvn verify` green incl. the thundering-herd test.
+
+---
+
+### 2026-06-12 — v0.1.25.24: CyclesEvidence centralized into the reservation-creation flow
+
+Review follow-up (two High findings) that moves evidence into the idempotent unit.
+
+**Relocation.** Evidence is now emitted, stamped, and cached inside `createReservation` rather than the controller, with `EvidenceEmitter` injected into the repository and `trace_id` threaded through a new overload.
+
+**TTL + dry_run.** The body-cache TTL now matches reserve.lua's idempotency mapping (`max(ttl+grace, 24h)`) instead of a fixed 24h that expired early for long-lived reservations. dry_run now emits `reserve` evidence for all outcomes per spec authority (a dry-run DENY is the canonical signed "would this be allowed?" attestation), reversing the .23 suppression, and caches the body so DENY replays are idempotent.
+
+**Coverage.** `mvn verify` 402 data + 179 api green incl. the thundering-herd test.
+
+---
+
+### 2026-06-12 — v0.1.25.23: CyclesEvidence idempotent-replay-body fix
+
+Review follow-up (two High findings).
+
+**Verbatim replay.** A fresh non-dry create now stamps `cycles_evidence` and caches the whole response keyed by `reserve:body:<reservation_id>` (not the idempotency key, so it can't go stale across an idem-key expiry); the Lua idempotency-hit path replays that body verbatim, falling back to rebuild-from-hash only when the cache is absent. This replaces the .22 ref-only approach, whose rebuilt balances drifted from the envelope the `evidence_id` pointed to — violating the normative "return the original successful response" rule — and also fixes the pre-existing balance-drift-on-replay bug.
+
+**dry_run.** dry_run no longer emits or surfaces evidence, since it persists nothing and changes no budget. `ReservationControllerTest` reworked, `RedisReservationCrudTest` +3; 402 data + 181 api tests green.
+
+---
+
+### 2026-06-12 — v0.1.25.22: synchronous `evidence_id` + `cycles_evidence` on reserve
+
+Closes the APS binding loop. Per cycles-protocol v0.1.25.1–.2.
+
+**evidence_id recipe.** `EvidenceIdComputer` reproduces the cycles-evidence/v0.1 content-hash recipe (RFC 8785 JCS + sha256 over the envelope with `evidence_id`/`signature` emptied) byte-for-byte, proven against the reserve golden fixtures.
+
+**Surfacing.** When the public identity is configured, `EvidenceEmitter` computes the id synchronously, stamps it on the source record for the worker's cross-check, and returns the ref; `ReservationController` stamps `cycles_evidence` on the response after the id is computed so the attested body stays non-self-referential. A fresh reserve computes and emits once and persists the ref on the reservation hash; an idempotent replay returns it verbatim and never recomputes, since replay balances would drift to a different id.
+
+**Coverage.** `EvidenceIdComputer` ×5, `EvidenceEmitter` +5, `ReservationControllerTest` +4.
+
+---
+
+### 2026-06-12 — CyclesEvidence serving endpoint (no version bump)
+
+`getEvidence` (`GET /v1/evidence/{evidence_id}`), per cycles-protocol revision 2026-06-12 / #104. `EvidenceController` reads the shared store via `EvidenceStoreReader` and serves the signed envelope verbatim with a public, immutable cache; 404 when absent, 400 on a non-64-hex id. `/v1/evidence/**` is public (a capability URL, no API key). `EvidenceControllerTest`, `EvidenceStoreReaderTest`, and a mocked reader added to the four controller tests; no change to existing endpoints.
+
+---
+
+### 2026-06-12 — CyclesEvidence source emission, reserve endpoint (no version bump)
+
+The producer half of the dedicated-channel emitter. `EvidenceQueueRepository` LPUSHes a source record to `evidence:pending` and `EvidenceEmitter` stamps `artifact_type`, `issued_at_ms`, `trace_id`, and the artifact-specific payload (the worker adds `server_id`/`signer_did`). The enqueue is synchronous — the record is pushed to the same Redis as the committed ledger write before the response returns, so a committed op can't return without its evidence queued — and fail-open: a push failure is logged and metered but never fails the response, with signing left to the event tier. Wired into `create` for both ALLOW and DENY. 4 tests; `ReservationControllerTest` gains a mocked emitter. No wire/spec change.
 
 ---
 
@@ -118,6 +239,30 @@ Closes [#159](https://github.com/runcycles/cycles-server/issues/159). Spec lande
 All 538 protocol-service tests pass (375 data + 163 api). The 95% coverage gate per CLAUDE.md is satisfied — the only new untested branch is the equality fallthrough on `null` for both bounds, which is covered by every pre-existing `listReservations` test that doesn't pass `from`/`to`.
 
 **Out of scope.** The issue's rationale mentions cleanup of expired/abandoned reservations as a use case — that actually wants `expires_at` or `finalized_at` window filters, not `created_at`. Flagged on the issue thread and intentionally left as a follow-up to keep this change small and reviewable.
+
+---
+
+### 2026-05-21 — v0.1.25.19: supply-chain CVE patch (re-pin Tomcat 10.1.55)
+
+Re-pins `tomcat.version=10.1.55` in `cycles-protocol-service/pom.xml` to close 7 new CVEs flagged by Trivy against `tomcat-embed-core 10.1.54` — CRITICAL: CVE-2026-43512, CVE-2026-43515, CVE-2026-41293; HIGH: CVE-2026-43513, CVE-2026-42498, CVE-2026-41284; LOW: CVE-2026-43514 (all fixed in 10.1.55 / 11.0.22). Mirrors the v0.1.25.16 pattern; the override was dropped in v0.1.25.18 when SB 3.5.14's BOM caught up to 10.1.54, now re-added one patch higher because Trivy DB updates between 2026-05-11 and 2026-05-21 surfaced a new wave on the same artifact. Removable once Spring Boot ships 10.1.55+ as its managed version. `commons-lang3.version=3.18.0` retained. No production/test changes; all 537 protocol-service tests pass.
+
+---
+
+### 2026-04-26 — v0.1.25.18: dependency hygiene (matches cycles-server-events v0.1.25.12)
+
+Bumps `spring-boot-starter-parent` 3.5.13 → 3.5.14 (patch with upstream security hardening — constant-time DevTools-secret comparison, `RandomValuePropertySource` SecureRandom, consistent hostname verification for Cassandra/RabbitMQ SSL, symlink-handling fixes). **Drops** the `<tomcat.version>10.1.54</tomcat.version>` override since SB 3.5.14's BOM now manages 10.1.54 directly; the `commons-lang3 3.18.0` override is retained (SB still manages 3.17.0). **Jedis 7.4.1 → 6.2.0** to align all three services on the same Redis-client major (events and admin already at 6.2.0); all call sites use stable APIs, no 7.x-only usage. No code changes; all 152 tests pass.
+
+---
+
+### 2026-04-19 — v0.1.25.17: supply-chain CVE fix follow-up (commons-lang3 3.18.0)
+
+Pins `commons-lang3.version=3.18.0` to close CVE-2025-48924 (Trivy HIGH) on the `commons-lang3-3.17.0` jar that ships in the fat-jar image via `swagger-core-jakarta` (OpenAPI UI). SB 3.5.13's BOM manages commons-lang3 at 3.17.0 — override removable once Spring Boot ships a managed 3.18.0+. All 152 tests pass.
+
+---
+
+### 2026-04-19 — v0.1.25.16: supply-chain CVE fix (SB 3.5.13 + Tomcat 10.1.54)
+
+Bumps `spring-boot-starter-parent` 3.5.11 → 3.5.13 and pins `tomcat.version=10.1.54` to close 5 HIGH/CRITICAL CVEs flagged by the new PR-time Trivy scan: CVE-2026-22732 (CRITICAL, `spring-security-web`, fixed 6.5.9, transitive via 3.5.13); CVE-2026-29129 (HIGH) + CVE-2026-29145 (CRITICAL) on `tomcat-embed-core` (fixed 10.1.53, transitive); CVE-2026-34483 (HIGH) + CVE-2026-34487 (HIGH) on `tomcat-embed-core` (fixed 10.1.54, explicit override since SB with managed 10.1.54+ hadn't shipped). No code changes; all 152 tests pass.
 
 ---
 
