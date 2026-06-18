@@ -13,4 +13,5 @@ public class ReservationDetail extends ReservationSummary {
     @Valid @JsonProperty("committed") private Amount committed;
     @JsonProperty("finalized_at_ms") private Long finalizedAtMs;
     @JsonProperty("metadata") private Map<String, Object> metadata;
+    @JsonProperty("committed_metadata") private Map<String, Object> committedMetadata;
 }

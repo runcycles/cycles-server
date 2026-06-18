@@ -51,3 +51,4 @@ cycles-protocol-service/cycles-protocol-service-model/.project
 
 # Claude Code local state (not for commit)
 .claude/scheduled_tasks.lock
+.codex-worktrees/

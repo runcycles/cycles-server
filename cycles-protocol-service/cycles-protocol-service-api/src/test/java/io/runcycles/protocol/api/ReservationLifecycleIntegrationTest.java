@@ -266,6 +266,37 @@ class ReservationLifecycleIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void shouldSurfaceCommittedMetadataOnGetReservation() {
+            // End-to-end round-trip (real Redis + commit.lua, not mocked): a commit
+            // carrying metadata persists committed_metadata_json, and getReservation
+            // returns it as committed_metadata (cycles-server#197).
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body = commitBody(800);
+            body.put("metadata", Map.of("request_id", "req-abc-123"));
+            post("/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+
+            ResponseEntity<Map> resp = get("/v1/reservations/" + reservationId, API_KEY_SECRET_A);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> committedMetadata = (Map<String, Object>) resp.getBody().get("committed_metadata");
+            assertThat(committedMetadata).isNotNull().containsEntry("request_id", "req-abc-123");
+        }
+
+        @Test
+        void shouldOmitCommittedMetadataWhenCommitHadNone() {
+            // NON_NULL wire omission: a commit without metadata leaves the field
+            // absent from the JSON entirely, not present-as-null.
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            post("/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody(800));
+
+            ResponseEntity<Map> resp = get("/v1/reservations/" + reservationId, API_KEY_SECRET_A);
+
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat(resp.getBody().containsKey("committed_metadata")).isFalse();
+        }
+
+        @Test
         void shouldRejectCommitWithUnitMismatch() {
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
 

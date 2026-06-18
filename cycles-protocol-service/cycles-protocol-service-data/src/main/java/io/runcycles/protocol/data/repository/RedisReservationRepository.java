@@ -1915,7 +1915,16 @@ public class RedisReservationRepository {
             metadata = objectMapper.readValue(metadataJson, Map.class);
         }
 
-        ReservationDetail detail = new ReservationDetail(committed, finalizedAtMs, metadata);
+        // Parse commit-time metadata if present. commit.lua persists the COMMIT
+        // request's metadata as committed_metadata_json; surface it as
+        // committed_metadata so it is readable, not write-only (cycles-server#197).
+        Map<String, Object> committedMetadata = null;
+        String committedMetadataJson = fields.get("committed_metadata_json");
+        if (committedMetadataJson != null && !committedMetadataJson.isEmpty()) {
+            committedMetadata = objectMapper.readValue(committedMetadataJson, Map.class);
+        }
+
+        ReservationDetail detail = new ReservationDetail(committed, finalizedAtMs, metadata, committedMetadata);
         detail.setReservationId(fields.get("reservation_id"));
         detail.setStatus(Enums.ReservationStatus.valueOf(stateStr));
         detail.setIdempotencyKey(fields.get("idempotency_key"));
