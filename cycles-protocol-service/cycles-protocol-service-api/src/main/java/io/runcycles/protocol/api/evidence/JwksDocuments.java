@@ -2,6 +2,7 @@ package io.runcycles.protocol.api.evidence;
 
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -69,11 +70,13 @@ public final class JwksDocuments {
      * skipped defensively (a bad history entry never breaks publication of the
      * active key): malformed hex; a missing {@code expMs} (a retired key needs a
      * closed window); an empty/inverted window ({@code expMs <= nbfMs}, since
-     * {@code cycles_exp_ms} is EXCLUSIVE); the SAME key material as the active
-     * key (same {@code x} republished with a bounded window would make the
-     * window covering an {@code issued_at_ms} ambiguous); or a {@code kid}
-     * colliding with the active key or an earlier retired key (a duplicate
-     * {@code kid} is never emitted — set-wide kid uniqueness is required).
+     * {@code cycles_exp_ms} is EXCLUSIVE); the SAME key material as an
+     * already-published key (the active key's open-ended window or an earlier
+     * retired key) with an OVERLAPPING window — raw-hex selection by key bytes
+     * plus {@code issued_at_ms} would be ambiguous, though disjoint windows for
+     * one key are fine; or a {@code kid} colliding with the active key or an
+     * earlier retired key (a duplicate {@code kid} is never emitted — set-wide
+     * kid uniqueness is required).
      *
      * @param signerDid the active key ({@code cycles.evidence.signing.signer-did})
      * @param kid       active key id, or blank to derive a stable default
@@ -90,26 +93,41 @@ public final class JwksDocuments {
 
         List<Map<String, Object>> keys = new ArrayList<>();
         Set<String> kids = new LinkedHashSet<>();
+        // Emitted [nbf, exp) windows per key material (lowercased hex), so the
+        // same key republished with an OVERLAPPING window is never emitted twice
+        // (raw-hex selection is key-bytes + issued_at_ms, which would be ambiguous).
+        Map<String, List<long[]>> windowsByMaterial = new HashMap<>();
         keys.add(buildJwk(activeDid, activeKid, nbfMs, null, "active"));
         kids.add(activeKid);
+        // The active key occupies [nbfMs, +inf); seed it so a retired entry of the
+        // same material publishes only when its window is DISJOINT from the active
+        // one (overlap would be ambiguous) — the same rule applied between retired
+        // entries, so a key reused across non-overlapping periods is preserved.
+        windowsByMaterial.computeIfAbsent(activeDid.toLowerCase(), k -> new ArrayList<>())
+                .add(new long[]{nbfMs, Long.MAX_VALUE});
 
         if (retired != null) {
             for (RetiredKey r : retired) {
                 if (r == null || !isRawHexKey(r.signerDid()) || r.expMs() == null) {
                     continue; // malformed hex or no closed window — skip
                 }
-                if (r.expMs() <= r.nbfMs()) {
+                long rNbf = r.nbfMs();
+                long rExp = r.expMs();
+                if (rExp <= rNbf) {
                     continue; // empty or inverted window (exp is EXCLUSIVE) — skip
                 }
                 String rDid = r.signerDid().trim();
-                if (rDid.equalsIgnoreCase(activeDid)) {
-                    continue; // same key material as the active key — ambiguous window, skip
+                String material = rDid.toLowerCase();
+                List<long[]> seen = windowsByMaterial.get(material);
+                if (seen != null && seen.stream().anyMatch(w -> rNbf < w[1] && w[0] < rExp)) {
+                    continue; // same key material with an overlapping window (active or retired) — ambiguous, skip
                 }
                 String rKid = (r.kid() == null || r.kid().isBlank()) ? defaultKid(rDid) : r.kid().trim();
                 if (!kids.add(rKid)) {
                     continue; // duplicate kid — never emit (set-wide uniqueness)
                 }
-                keys.add(buildJwk(rDid, rKid, r.nbfMs(), r.expMs(), "retired"));
+                keys.add(buildJwk(rDid, rKid, rNbf, rExp, "retired"));
+                windowsByMaterial.computeIfAbsent(material, k -> new ArrayList<>()).add(new long[]{rNbf, rExp});
             }
         }
 

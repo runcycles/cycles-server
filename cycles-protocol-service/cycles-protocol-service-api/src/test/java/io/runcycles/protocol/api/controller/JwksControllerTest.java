@@ -134,6 +134,31 @@ class JwksControllerTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void retiredKeyOutlastingActiveNbf_stillPublishesBothKeys() {
+        // Active nbf 0 but a retired window ends at 100 — the rotation-window
+        // warning fires at construction, and both keys still publish.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"old\",\"nbf_ms\":0,\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(2);
+    }
+
+    @Test
+    void activeKeyWindowPredatesRetirement_flagsDefaultNbfAfterRotation() {
+        java.util.List<io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey> retired =
+                java.util.List.of(new io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey(
+                        "ab".repeat(32), "old", 0L, 100L));
+        // Default active nbf 0 < retired exp 100 → the active key still covers
+        // pre-rotation time: flagged.
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(0L, retired)).isTrue();
+        // Active nbf advanced to the rotation time (= retired exp) → contiguous, not flagged.
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(100L, retired)).isFalse();
+        // No retired keys → nothing to compare against.
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(0L, java.util.List.of())).isFalse();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void nonArrayRetiredKeysJson_isIgnored() {
         // Valid JSON but not an array → ignored, active key still published.
         JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{\"oops\":true}");

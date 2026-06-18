@@ -71,7 +71,27 @@ public class JwksController {
         }
         if (!this.retiredKeys.isEmpty()) {
             LOG.info("evidence JWKS: {} retired key(s) configured for rotation history", this.retiredKeys.size());
+            if (activeKeyWindowPredatesRetirement(this.nbfMs, this.retiredKeys)) {
+                LOG.warn("evidence JWKS: active key cycles_nbf_ms ({}) is at/before the end of a retired key's "
+                        + "window — on rotation set cycles.evidence.signing.nbf-ms to the rotation time, or the "
+                        + "active key is published as valid for pre-rotation evidence", this.nbfMs);
+            }
         }
+    }
+
+    /**
+     * True when the active key's {@code nbf-ms} starts before a retired key's
+     * window ends — i.e. retired keys exist (a rotation happened) but the active
+     * key's window was not advanced to the rotation time, so the active key is
+     * still published as authoritative for pre-rotation {@code issued_at_ms}.
+     */
+    static boolean activeKeyWindowPredatesRetirement(long activeNbfMs, List<RetiredKey> retired) {
+        long latestRetiredExp = retired.stream()
+                .filter(r -> r != null && r.expMs() != null)
+                .mapToLong(RetiredKey::expMs)
+                .max()
+                .orElse(Long.MIN_VALUE);
+        return activeNbfMs < latestRetiredExp;
     }
 
     /**

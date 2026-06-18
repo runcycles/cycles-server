@@ -145,14 +145,49 @@ class JwksDocumentsTest {
     }
 
     @Test
-    void retiredKey_sameMaterialAsActiveKey_isSkipped() {
-        // Republishing the active key's own bytes with a bounded window would make
-        // the window covering an issued_at_ms ambiguous — drop it (case-insensitive).
+    void retiredKey_sameMaterialAsActiveKey_overlappingWindow_isSkipped() {
+        // The active key's window is [0, inf); a retired entry of the same bytes
+        // with an overlapping window would be ambiguous — drop it (case-insensitive).
         List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
                 RAW_HEX, "active", 0L,
                 List.of(new JwksDocuments.RetiredKey(RAW_HEX.toUpperCase(), "dup-material", 0L, 100L))));
         assertThat(keys).hasSize(1);
         assertThat(keys.get(0)).containsEntry("status", "active");
+    }
+
+    @Test
+    void retiredKey_sameMaterialAsActiveKey_disjointWindow_isPublished() {
+        // Same key reused before it became active again: active window [200, inf),
+        // retired [0, 100) — disjoint, so the retired window is preserved and old
+        // evidence still resolves.
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 200L,
+                List.of(new JwksDocuments.RetiredKey(RAW_HEX.toUpperCase(), "prior", 0L, 100L))));
+        assertThat(keys).hasSize(2);
+        assertThat(keys.get(1)).containsEntry("kid", "prior").containsEntry("status", "retired");
+    }
+
+    @Test
+    void retiredKey_sameMaterialOverlappingWindows_secondIsSkipped() {
+        // Same key bytes, distinct kids, OVERLAPPING windows — raw-hex selection
+        // (key bytes + issued_at_ms) would be ambiguous, so only the first emits.
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 0L, List.of(
+                        new JwksDocuments.RetiredKey(RETIRED_HEX, "win-a", 0L, 200L),
+                        new JwksDocuments.RetiredKey(RETIRED_HEX, "win-b", 100L, 300L))));
+        assertThat(keys).hasSize(2);
+        assertThat(keys.get(1)).containsEntry("kid", "win-a");
+    }
+
+    @Test
+    void retiredKey_sameMaterialDisjointWindows_bothEmitted() {
+        // Same key reused across NON-overlapping periods is legitimate and
+        // unambiguous (exp is exclusive, so [0,100) and [100,200) do not overlap).
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 0L, List.of(
+                        new JwksDocuments.RetiredKey(RETIRED_HEX, "early", 0L, 100L),
+                        new JwksDocuments.RetiredKey(RETIRED_HEX, "later", 100L, 200L))));
+        assertThat(keys).hasSize(3);
     }
 
     @Test
