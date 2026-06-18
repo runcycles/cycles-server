@@ -90,10 +90,85 @@ class JwksDocumentsTest {
         assertThat(JwksDocuments.isRawHexKey("  " + RAW_HEX.toUpperCase() + "  ")).isTrue();
     }
 
+    // ── Retired-key rotation history ──
+    private static final String RETIRED_HEX =
+            "ec52b49b81eb29ef6f62947cade245c715bf943b7ef2a5f2789288574466fc43";
+
+    @Test
+    void retiredKeys_appendedWithBoundedWindowAndRetiredStatus() {
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "2026-06", 1700000000000L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "2025-h2", 0L, 1700000000000L))));
+        assertThat(keys).hasSize(2);
+        assertThat(keys.get(0)).containsEntry("kid", "2026-06").containsEntry("status", "active")
+                .doesNotContainKey("cycles_exp_ms");
+        assertThat(keys.get(1)).containsEntry("kid", "2025-h2").containsEntry("status", "retired")
+                .containsEntry("cycles_nbf_ms", 0L).containsEntry("cycles_exp_ms", 1700000000000L);
+    }
+
+    @Test
+    void retiredKey_withNullExp_isSkipped() {
+        // A retired key needs a closed window; a null exp is a config error.
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "k", 0L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "no-exp", 0L, null))));
+        assertThat(keys).hasSize(1); // active only
+    }
+
+    @Test
+    void retiredKey_malformedHex_isSkipped() {
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "k", 0L,
+                List.of(new JwksDocuments.RetiredKey("not-hex", "bad", 0L, 100L))));
+        assertThat(keys).hasSize(1);
+    }
+
+    @Test
+    void retiredKey_duplicateKid_isSkipped() {
+        // kid MUST be unique set-wide; a retired key colliding with the active
+        // key's kid is dropped (never emit a duplicate kid).
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "dup", 0L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "dup", 0L, 100L))));
+        assertThat(keys).hasSize(1);
+        assertThat(keys.get(0)).containsEntry("status", "active");
+    }
+
+    @Test
+    void retiredKey_emptyOrInvertedWindow_isSkipped() {
+        // cycles_exp_ms is EXCLUSIVE, so exp == nbf is an empty window and
+        // exp < nbf is inverted; neither is publishable.
+        assertThat(allKeys(JwksDocuments.jwkSet(RAW_HEX, "k", 0L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "empty", 100L, 100L))))).hasSize(1);
+        assertThat(allKeys(JwksDocuments.jwkSet(RAW_HEX, "k", 0L,
+                List.of(new JwksDocuments.RetiredKey(RETIRED_HEX, "inverted", 200L, 100L))))).hasSize(1);
+    }
+
+    @Test
+    void retiredKey_sameMaterialAsActiveKey_isSkipped() {
+        // Republishing the active key's own bytes with a bounded window would make
+        // the window covering an issued_at_ms ambiguous — drop it (case-insensitive).
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+                RAW_HEX, "active", 0L,
+                List.of(new JwksDocuments.RetiredKey(RAW_HEX.toUpperCase(), "dup-material", 0L, 100L))));
+        assertThat(keys).hasSize(1);
+        assertThat(keys.get(0)).containsEntry("status", "active");
+    }
+
+    @Test
+    void emptyRetiredList_isSingleActiveKey() {
+        assertThat(allKeys(JwksDocuments.jwkSet(RAW_HEX, "k", 0L, List.of()))).hasSize(1);
+        assertThat(allKeys(JwksDocuments.jwkSet(RAW_HEX, "k", 0L, null))).hasSize(1);
+    }
+
     private static Map<String, Object> firstKey(Optional<Map<String, Object>> set) {
+        return allKeys(set).get(0);
+    }
+
+    private static List<Map<String, Object>> allKeys(Optional<Map<String, Object>> set) {
         assertThat(set).isPresent();
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> keys = (List<Map<String, Object>>) set.get().get("keys");
-        return keys.get(0);
+        return keys;
     }
 }
