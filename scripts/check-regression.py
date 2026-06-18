@@ -32,16 +32,20 @@ import sys
 from typing import Dict, List, Optional
 
 
-# Headline metrics the gate cares about. Direction: True = lower-is-better
-# (latency). False = higher-is-better (throughput).
+# Headline metrics. 2nd element = direction (True = lower-is-better/latency,
+# False = higher-is-better/throughput). 3rd element = GATING: whether a breach
+# fails the build. p99 tail latency on a 200-iteration micro-benchmark over
+# shared CI runners swings ~2x run-to-run (GC pauses / runner contention), far
+# beyond any sane threshold, so p99 is tracked + reported but NON-GATING; the
+# stable signals — p50 latency and concurrent throughput — are the hard gates.
 HEADLINE_METRICS = [
-    ("reserve_p50_ms",           True),
-    ("reserve_p99_ms",           True),
-    ("commit_p50_ms",            True),
-    ("commit_p99_ms",            True),
-    ("release_p50_ms",           True),
-    ("event_p50_ms",             True),
-    ("concurrent_throughput_32t", False),
+    ("reserve_p50_ms",            True,  True),
+    ("reserve_p99_ms",            True,  False),
+    ("commit_p50_ms",             True,  True),
+    ("commit_p99_ms",             True,  False),
+    ("release_p50_ms",            True,  True),
+    ("event_p50_ms",              True,  True),
+    ("concurrent_throughput_32t", False, True),
 ]
 
 
@@ -68,7 +72,7 @@ def rolling_median(history: List[dict], window: int) -> Dict[str, float]:
     """Take the last `window` history entries, median each metric."""
     recent = history[-window:] if window > 0 else history
     result: Dict[str, float] = {}
-    for metric, _ in HEADLINE_METRICS:
+    for metric, *_ in HEADLINE_METRICS:
         values = [
             e[metric] for e in recent
             if metric in e and isinstance(e[metric], (int, float))
@@ -94,7 +98,7 @@ def compare(
 ) -> List[dict]:
     """Return a list of {metric, current, baseline, change, regressed}."""
     results = []
-    for metric, lower_is_better in HEADLINE_METRICS:
+    for metric, lower_is_better, gating in HEADLINE_METRICS:
         c = current.get(metric)
         b = baseline.get(metric)
         if c is None or b is None:
@@ -104,16 +108,23 @@ def compare(
                 "baseline": b,
                 "change_pct": None,
                 "regressed": False,
+                "breached": False,
+                "gating": gating,
                 "note": "missing",
             })
             continue
         change = pct_change(c, b, lower_is_better)
+        breached = change > threshold
         results.append({
             "metric": metric,
             "current": c,
             "baseline": b,
             "change_pct": round(change * 100, 1),
-            "regressed": change > threshold,
+            # Only a GATING metric's breach fails the build; a non-gating
+            # (p99) breach is reported but does not regress the gate.
+            "regressed": breached and gating,
+            "breached": breached,
+            "gating": gating,
             "note": None,
         })
     return results
@@ -149,8 +160,20 @@ def format_summary(
         else:
             sign = "+" if r["change_pct"] >= 0 else ""
             delta = f"{sign}{r['change_pct']}%"
-            status = "REGRESSED" if r["regressed"] else "OK"
+            if r["regressed"]:
+                status = "REGRESSED"
+            elif r.get("breached"):
+                # exceeded threshold but the metric is non-gating (p99 noise)
+                status = "noisy (non-gating)"
+            else:
+                status = "OK"
         lines.append(f"| `{r['metric']}` | {b} | {c} | {delta} | {status} |")
+    lines.append("")
+    lines.append(
+        "_p99 latency is non-gating (informational): tail latency on a "
+        "micro-benchmark over shared CI runners is too noisy to gate; p50 "
+        "and throughput are the gating signals._"
+    )
     lines.append("")
     lines.append(
         f"**Overall: {'REGRESSION DETECTED' if any_regressed else 'OK'}**"
@@ -169,7 +192,7 @@ def run_release(args) -> int:
     # the gate. Accept and let the caller overwrite baseline.json with
     # `current`.
     if not baseline_raw or not any(
-        m in baseline_raw for m, _ in HEADLINE_METRICS
+        m in baseline_raw for m, *_ in HEADLINE_METRICS
     ):
         results = [
             {
@@ -180,7 +203,7 @@ def run_release(args) -> int:
                 "regressed": False,
                 "note": "bootstrap",
             }
-            for m, _ in HEADLINE_METRICS
+            for m, *_ in HEADLINE_METRICS
         ]
         print(format_summary(
             "release-gate", results, args.threshold,
@@ -190,7 +213,7 @@ def run_release(args) -> int:
 
     baseline = {
         m: baseline_raw[m]
-        for m, _ in HEADLINE_METRICS
+        for m, *_ in HEADLINE_METRICS
         if m in baseline_raw
     }
     results = compare(current, baseline, args.threshold)

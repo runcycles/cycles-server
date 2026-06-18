@@ -5,6 +5,16 @@
 
 ---
 
+### 2026-06-18 — Benchmark release gate: p99 metrics non-gating (no version bump)
+
+The release gate (`scripts/check-regression.py`) failed the v0.1.25.34 release on `commit_p99` (+94% vs baseline) while every p50 and throughput metric was within tolerance.
+
+**Why.** p99 tail latency on a 200-iteration micro-benchmark over shared GitHub runners swings ~2× run-to-run (`commit_p99` measured 6.5 → 8.2 → 12.6 across three runs) — GC pauses and runner contention dominate the tail, far beyond the 25% threshold. No single-sample baseline can stabilize that, and same-machine `.21`→`.34` showed only +8% on `commit_p99`, so it's noise, not a code regression.
+
+**Change.** `HEADLINE_METRICS` gains a third element, `gating`. The p99 metrics (`reserve_p99_ms`, `commit_p99_ms`) are now **non-gating**: still measured and shown in the summary table (labelled `noisy (non-gating)` when they exceed the threshold) but no longer failing the build. The stable signals — p50 latency (reserve/commit/release/event) and `concurrent_throughput_32t` — remain hard gates. Applies to both the release gate and the nightly trend check.
+
+**Verified.** A p99-only breach now passes (exit 0); a real p50 regression (+100% `commit_p50`) still fails (exit 1); bootstrap and trend modes unaffected. CI-tooling only — no production/spec/wire change, no version bump.
+
 ### 2026-06-18 — v0.1.25.34: surface committed metadata on `getReservation`
 
 Commit-time metadata was write-only on the server — accepted, persisted, never returned. Fixes runcycles/cycles-server#197.
