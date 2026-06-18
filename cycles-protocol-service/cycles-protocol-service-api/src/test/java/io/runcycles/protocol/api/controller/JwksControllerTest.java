@@ -18,6 +18,9 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -74,7 +77,7 @@ class JwksControllerTest {
         // Direct construction (no key configured) — the endpoint 404s via the
         // standard NOT_FOUND ErrorResponse path; a server not doing signer-key
         // resolution publishes nothing.
-        JwksController controller = new JwksController("", "", 0L);
+        JwksController controller = new JwksController("", "", 0L, "");
         assertThatThrownBy(controller::getEvidenceJwks)
                 .isInstanceOf(CyclesProtocolException.class);
     }
@@ -82,15 +85,96 @@ class JwksControllerTest {
     @Test
     void didCyclesSigner_throwsNotFound() {
         JwksController controller = new JwksController(
-                "did:cycles:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08#k", "", 0L);
+                "did:cycles:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08#k", "", 0L, "");
         assertThatThrownBy(controller::getEvidenceJwks)
                 .isInstanceOf(CyclesProtocolException.class);
     }
 
     @Test
     void configuredSigner_returnsBodyDirectly() {
-        JwksController controller = new JwksController(SIGNER_DID, "k1", 5L);
+        JwksController controller = new JwksController(SIGNER_DID, "k1", 5L, "");
         assertThat(controller.getEvidenceJwks().getStatusCode().value()).isEqualTo(200);
         assertThat(controller.getEvidenceJwks().getBody()).containsKey("keys");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void retiredKeysJson_publishesActivePlusRetiredWithWindows() {
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"2025-h2\","
+                + "\"nbf_ms\":0,\"exp_ms\":1700000000000}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 1700000000000L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        List<Map<String, Object>> keys = (List<Map<String, Object>>) body.get("keys");
+        assertThat(keys).hasSize(2);
+        assertThat(keys.get(0)).containsEntry("kid", "2026-06").containsEntry("status", "active");
+        assertThat(keys.get(0)).doesNotContainKey("cycles_exp_ms"); // active = open-ended
+        assertThat(keys.get(1)).containsEntry("kid", "2025-h2").containsEntry("status", "retired")
+                .containsEntry("cycles_exp_ms", 1700000000000L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void malformedRetiredKeysJson_stillPublishesActiveKey() {
+        // A bad retired-keys config must never break publication of the active key.
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{not valid json");
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void retiredKeyWithMissingNbf_isSkipped() {
+        // A missing/non-integral nbf_ms must NOT be coerced to epoch 0 (which would
+        // silently widen the window) — the retired entry is dropped, active still publishes.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"no-nbf\",\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void retiredKeyOutlastingActiveNbf_stillPublishesBothKeys() {
+        // Active nbf 0 but a retired window ends at 100 — the rotation-window
+        // warning fires at construction, and both keys still publish.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"old\",\"nbf_ms\":0,\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(2);
+    }
+
+    @Test
+    void activeKeyWindowPredatesRetirement_flagsDefaultNbfAfterRotation() {
+        java.util.List<io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey> retired =
+                java.util.List.of(new io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey(
+                        "ab".repeat(32), "old", 0L, 100L));
+        // Default active nbf 0 < retired exp 100 → the active key still covers
+        // pre-rotation time: flagged.
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(0L, retired)).isTrue();
+        // Active nbf advanced to the rotation time (= retired exp) → contiguous, not flagged.
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(100L, retired)).isFalse();
+        // No retired keys → nothing to compare against.
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(0L, java.util.List.of())).isFalse();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void retiredKeyWithOutOfRangeExp_isSkipped() {
+        // exp_ms beyond Long range is integral to Jackson but asLong() would wrap it
+        // (2^63 -> Long.MIN_VALUE); it must be rejected, not silently wrapped.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32)
+                + "\",\"kid\":\"huge\",\"nbf_ms\":0,\"exp_ms\":9223372036854775808}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void nonArrayRetiredKeysJson_isIgnored() {
+        // Valid JSON but not an array → ignored, active key still published.
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{\"oops\":true}");
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
     }
 }
