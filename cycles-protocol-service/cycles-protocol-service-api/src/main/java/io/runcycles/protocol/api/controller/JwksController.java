@@ -69,15 +69,62 @@ public class JwksController {
                     + "publication needs a raw-hex public key, so GET /v1/.well-known/cycles-jwks.json "
                     + "will return 404 until one is configured");
         }
-        if (!this.retiredKeys.isEmpty()) {
-            LOG.info("evidence JWKS: {} retired key(s) configured for rotation history", this.retiredKeys.size());
+        // Base the rotation-history signal on what JwksDocuments will ACTUALLY publish,
+        // not on parser output: an entry can pass parsing yet be dropped on emission
+        // (empty/inverted window, malformed hex, duplicate kid, overlapping material),
+        // which would leave the active key unbounded with no signal at all.
+        long publishedRetired = publishedRetiredCount(this.signerDid, this.kid, this.nbfMs, this.retiredKeys);
+        boolean retiredConfigured = retiredKeysJson != null && !retiredKeysJson.isBlank();
+        if (publishedRetired > 0) {
+            LOG.info("evidence JWKS: {} retired key(s) published for rotation history", publishedRetired);
             if (activeKeyWindowPredatesRetirement(this.nbfMs, this.retiredKeys)) {
                 LOG.warn("evidence JWKS: configured active key cycles_nbf_ms ({}) is at/before a retired key's "
                         + "window end; the published active window is advanced to the latest retired exp so the "
                         + "current key cannot resolve as valid for pre-rotation evidence. Set "
                         + "cycles.evidence.signing.nbf-ms to the rotation time to make this explicit.", this.nbfMs);
             }
+        } else if (retiredConfigured && JwksDocuments.isRawHexKey(this.signerDid)) {
+            // Configured but NOTHING was publishable — rotation history is NOT served either way,
+            // so pre-rotation evidence won't resolve. Split on whether a valid retired WINDOW
+            // existed to clamp the active key (the clamp ignores key material, so a malformed-hex
+            // entry with a good window still bounds the active key even though it isn't published).
+            if (activeKeyWindowPredatesRetirement(this.nbfMs, this.retiredKeys)) {
+                // A valid window clamped the active key up: it stays BOUNDED (no backdating); the
+                // problem is the unpublishable retired key (e.g. malformed key material).
+                LOG.error("evidence JWKS: cycles.evidence.signing.retired-keys is set but no retired key is "
+                        + "publishable (e.g. malformed key material); rotation history is NOT being published, "
+                        + "so evidence signed before the rotation will not resolve. The active key window was "
+                        + "advanced to the latest valid retired exp, so it stays bounded — fix the retired-keys "
+                        + "config.");
+            } else {
+                // No valid window to clamp against: the active key publishes at the configured nbf
+                // with no rotation boundary, so if that is the since-epoch default a backdated
+                // envelope could resolve as authentic. Loud ERROR — but never fail closed, which
+                // would also break verification of all current evidence.
+                LOG.error("evidence JWKS: cycles.evidence.signing.retired-keys is set but produced no "
+                        + "publishable retired entries and no valid window to bound the active key (malformed "
+                        + "JSON, empty/inverted windows, etc.); rotation history is NOT being published and the "
+                        + "active key publishes at cycles_nbf_ms={} with no rotation boundary — if that is the "
+                        + "default 0 (since epoch), a backdated envelope could resolve as authentic. Fix the "
+                        + "retired-keys config.", this.nbfMs);
+            }
         }
+    }
+
+    /**
+     * How many retired keys {@link JwksDocuments} will actually publish for this config —
+     * i.e. after the full emission validation (window validity, hex, duplicate-kid,
+     * overlap), not just the lenient parser. Returns 0 when the signer isn't a raw-hex
+     * key (the set 404s) or no retired entry survives emission.
+     */
+    @SuppressWarnings("unchecked")
+    private static long publishedRetiredCount(String signerDid, String kid, long nbfMs, List<RetiredKey> retired) {
+        return JwksDocuments.jwkSet(signerDid, kid, nbfMs, retired)
+                .map(set -> (List<Map<String, Object>>) set.get("keys"))
+                .orElse(List.of())
+                .stream()
+                .filter(k -> "retired".equals(k.get("status")))
+                .count();
     }
 
     /**

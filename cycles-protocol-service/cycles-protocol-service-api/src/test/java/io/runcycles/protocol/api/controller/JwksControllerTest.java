@@ -7,6 +7,9 @@ import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -119,6 +122,51 @@ class JwksControllerTest {
         JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{not valid json");
         Map<String, Object> body = controller.getEvidenceJwks().getBody();
         assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @SuppressWarnings("unchecked")
+    void configuredButUnusableRetiredKeys_logsErrorAndStillPublishes(CapturedOutput output) {
+        // A non-blank retired-keys config that yields zero usable entries (here: a valid
+        // array whose only entry has no window bounds) must not silently collapse to the
+        // never-rotated posture — loud ERROR, but the active key still publishes.
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "[{\"kid\":\"x\"}]");
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+        // assert the LEVEL too — a regression from error() to warn() with the same text must fail
+        assertThat(output).containsPattern("ERROR.*produced no publishable retired entries");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @SuppressWarnings("unchecked")
+    void retiredKeyParsedButDroppedOnEmission_logsError(CapturedOutput output) {
+        // The gap parser-output detection misses: an empty window (nbf_ms == exp_ms) PASSES
+        // the parser (both bounds integral + in range) but JwksDocuments drops it, so only the
+        // unbounded active key publishes. Detection is based on PUBLISHED retired keys, so the
+        // ERROR still fires.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"empty\",\"nbf_ms\":100,\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1); // active only — retired dropped
+        assertThat(output).containsPattern("ERROR.*produced no publishable retired entries");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @SuppressWarnings("unchecked")
+    void clampCandidateButNothingPublished_logsBoundedErrorNotBackdating(CapturedOutput output) {
+        // A valid window with MALFORMED key material: the clamp (which ignores key material)
+        // still advances the active key, so it stays bounded — the entry just isn't publishable.
+        // The ERROR must report missing history with the active key bounded, NOT backdating.
+        String retired = "[{\"signer_did\":\"not-hex\",\"kid\":\"bad\",\"nbf_ms\":0,\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        List<Map<String, Object>> keys = (List<Map<String, Object>>) controller.getEvidenceJwks().getBody().get("keys");
+        assertThat(keys).hasSize(1);                                  // malformed retired not published
+        assertThat(keys.get(0)).containsEntry("cycles_nbf_ms", 100L); // active clamped up to the retired exp
+        assertThat(output).containsPattern("ERROR.*no retired key is publishable");
+        assertThat(output).doesNotContain("backdated");
     }
 
     @Test
