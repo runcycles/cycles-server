@@ -917,6 +917,76 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             assertThat(page2.getNextCursor()).isNull();
         }
 
+        // cycles-protocol revision 2026-06-19 (cycles-server#201): include is
+        // PROJECTION-ONLY and MUST NOT bind the cursor. Changing it between pages
+        // must neither 400 (contrast cursorMismatchRejected, where sort_by does
+        // bind) nor disturb paging — it only changes which fields serialize.
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("include can change between pages without invalidating the cursor")
+        void includeDoesNotBindCursor() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // COMMITTED rows carrying commit metadata, distinct created_at for a
+            // deterministic sort.
+            Map<String, String> f1 = committedRow("r1", 100);
+            Map<String, String> f2 = committedRow("r2", 200);
+            Map<String, String> f3 = committedRow("r3", 300);
+            Map<String, String> f4 = committedRow("r4", 400);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            Response<Map<String, String>> resp3 = mock(Response.class);
+            Response<Map<String, String>> resp4 = mock(Response.class);
+            when(resp1.get()).thenReturn(f1);
+            when(resp2.get()).thenReturn(f2);
+            when(resp3.get()).thenReturn(f3);
+            when(resp4.get()).thenReturn(f4);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(
+                List.of("reservation:res_r1", "reservation:res_r2",
+                        "reservation:res_r3", "reservation:res_r4"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
+            when(pipeline.hgetAll("reservation:res_r4")).thenReturn(resp4);
+
+            // Page 1: no include → committed_metadata omitted; capture the cursor.
+            ReservationListResponse page1 = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 2, null,
+                "created_at_ms", "asc", null, null, null, null, null, null,
+                EnumSet.noneOf(ReservationInclude.class));
+            assertThat(page1.getReservations()).extracting(ReservationSummary::getReservationId)
+                .containsExactly("r1", "r2");
+            assertThat(page1.getReservations().get(0).getCommittedMetadata()).isNull();
+            String cursor = page1.getNextCursor();
+            assertThat(cursor).isNotNull();
+
+            // Page 2: SAME cursor, but now opt into committed_metadata. The cursor
+            // must remain valid (no 400) and paging continues at r3/r4, with the
+            // newly-requested field projected onto this page.
+            ReservationListResponse page2 = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 2, cursor,
+                "created_at_ms", "asc", null, null, null, null, null, null,
+                EnumSet.of(ReservationInclude.COMMITTED_METADATA));
+            assertThat(page2.getReservations()).extracting(ReservationSummary::getReservationId)
+                .containsExactly("r3", "r4");
+            assertThat(page2.getReservations().get(0).getCommittedMetadata())
+                .containsEntry("request_id", "req-r3");
+        }
+
+        private Map<String, String> committedRow(String id, long createdAt) {
+            Map<String, String> f = reservationFields(id, "COMMITTED");
+            f.put("created_at", String.valueOf(createdAt));
+            f.put("charged_amount", "4200");
+            f.put("committed_metadata_json", "{\"request_id\":\"req-" + id + "\"}");
+            return f;
+        }
+
         @SuppressWarnings("unchecked")
         @Test
         @DisplayName("cursor reused with different sort_by → 400 INVALID_REQUEST")
