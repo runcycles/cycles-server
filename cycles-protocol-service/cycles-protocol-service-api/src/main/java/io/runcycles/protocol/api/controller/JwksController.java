@@ -77,6 +77,18 @@ public class JwksController {
                         + "current key cannot resolve as valid for pre-rotation evidence. Set "
                         + "cycles.evidence.signing.nbf-ms to the rotation time to make this explicit.", this.nbfMs);
             }
+        } else if (retiredKeysJson != null && !retiredKeysJson.isBlank()) {
+            // Configured but produced ZERO usable entries (malformed JSON, or every entry
+            // invalid). Do NOT silently collapse to the never-rotated posture: with nothing
+            // to clamp against, the active key publishes UNBOUNDED at the configured nbf, so
+            // pre-rotation evidence won't resolve and a backdated envelope could resolve as
+            // authentic. Loud ERROR — but never fail closed, which would also break
+            // verification of all current evidence.
+            LOG.error("evidence JWKS: cycles.evidence.signing.retired-keys is set but produced no usable "
+                    + "entries (malformed JSON, or every entry invalid); rotation history is NOT being "
+                    + "published and the active key remains unbounded at cycles_nbf_ms={}. Evidence signed "
+                    + "before a rotation will not resolve, and a backdated envelope could resolve as "
+                    + "authentic — fix the retired-keys config.", this.nbfMs);
         }
     }
 

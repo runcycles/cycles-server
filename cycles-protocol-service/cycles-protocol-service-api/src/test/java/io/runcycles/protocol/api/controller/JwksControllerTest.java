@@ -7,6 +7,9 @@ import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -119,6 +122,20 @@ class JwksControllerTest {
         JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{not valid json");
         Map<String, Object> body = controller.getEvidenceJwks().getBody();
         assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @SuppressWarnings("unchecked")
+    void configuredButUnusableRetiredKeys_logsErrorAndStillPublishes(CapturedOutput output) {
+        // A non-blank retired-keys config that yields zero usable entries (here: a valid
+        // array whose only entry has no window bounds) must not silently collapse to the
+        // never-rotated posture — loud ERROR, but the active key still publishes.
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "[{\"kid\":\"x\"}]");
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+        // assert the LEVEL too — a regression from error() to warn() with the same text must fail
+        assertThat(output).containsPattern("ERROR.*retired-keys is set but produced no usable entries");
     }
 
     @Test

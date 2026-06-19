@@ -5,6 +5,14 @@
 
 ---
 
+### 2026-06-19 — v0.1.25.35: loud error when a retired-keys config is unusable
+
+Closes a silent gap in the v0.1.25.33 rotation-history publication. The active-key `nbf` clamp only fires when a retired entry has a usable window; if `cycles.evidence.signing.retired-keys` is configured (non-blank) but produces ZERO usable entries — malformed JSON, or every entry dropped for bad bounds — there is nothing to clamp against, so the active key publishes UNBOUNDED at the configured `nbf` (default 0 = since epoch). That silently reverts a rotated server to the never-rotated posture: pre-rotation evidence won't resolve, and the current key could resolve a backdated envelope as authentic.
+
+`JwksController` now distinguishes "retired-keys not configured" (blank → legitimate never-rotated, no noise) from "configured but yielded zero usable entries," logging a clear ERROR for the latter that names the consequence and tells the operator to fix the config. Deliberately NOT fail-closed — refusing to publish would also break verification of all current evidence; the active key still publishes (the existing never-fail-closed guarantee is retained and tested). Surfaced by the codex review of the rotation blog post (runcycles/cycles-docs#724).
+
+`JwksControllerTest` +1 (`OutputCaptureExtension`: configured-but-unusable logs the ERROR and still publishes the active key). Full `mvn verify` green, jacoco 95% gate met. Observability-only — no wire/spec change, no change to the published JWK Set.
+
 ### 2026-06-18 — Benchmark release gate: p99 metrics non-gating (no version bump)
 
 The release gate (`scripts/check-regression.py`) failed the v0.1.25.34 release on `commit_p99` (+94% vs baseline) while every p50 and throughput metric was within tolerance.
