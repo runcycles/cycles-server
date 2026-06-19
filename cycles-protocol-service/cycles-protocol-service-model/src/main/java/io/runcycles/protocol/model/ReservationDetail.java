@@ -1,17 +1,21 @@
 package io.runcycles.protocol.model;
 
 import com.fasterxml.jackson.annotation.*;
-import jakarta.validation.Valid;
 import lombok.*;
-import java.util.Map;
 
-/** Cycles Protocol v0.1.25 */
-@Data @EqualsAndHashCode(callSuper = true) @NoArgsConstructor @AllArgsConstructor
+/**
+ * Cycles Protocol v0.1.25 — single-reservation detail
+ * (GET /v1/reservations/{reservation_id}).
+ *
+ * <p>As of cycles-protocol-v0.yaml revision 2026-06-19 (cycles-server#201) the
+ * {@code committed}, {@code metadata}, and {@code committed_metadata} fields
+ * live on {@link ReservationSummary}, so the list and single-row projections
+ * share one shape. ReservationDetail remains a distinct type for the
+ * single-GET response, where those fields are always populated (when present
+ * on the record); the list path opts into the metadata maps via the
+ * {@code include} query parameter. */
+@EqualsAndHashCode(callSuper = true) @NoArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class ReservationDetail extends ReservationSummary {
-    @Valid @JsonProperty("committed") private Amount committed;
-    @JsonProperty("finalized_at_ms") private Long finalizedAtMs;
-    @JsonProperty("metadata") private Map<String, Object> metadata;
-    @JsonProperty("committed_metadata") private Map<String, Object> committedMetadata;
 }

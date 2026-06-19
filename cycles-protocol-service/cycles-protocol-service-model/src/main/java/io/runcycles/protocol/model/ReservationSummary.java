@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import lombok.*;
 import java.util.List;
+import java.util.Map;
 
 /** Cycles Protocol v0.1.25 */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
@@ -26,4 +27,20 @@ public class ReservationSummary {
     @Min(0) @JsonProperty("finalized_at_ms") private Long finalizedAtMs;
     @NotNull @JsonProperty("scope_path") private String scopePath;
     @NotNull @JsonProperty("affected_scopes") private List<String> affectedScopes;
+    /** The amount charged at COMMIT. Present on COMMITTED rows only; NON_NULL
+     * strips it on ACTIVE / EXPIRED / RELEASED rows. Projected UNCONDITIONALLY
+     * on listReservations rows (no include opt-in needed), on the same footing
+     * as finalized_at_ms. Spec: cycles-protocol-v0.yaml revision 2026-06-19
+     * (cycles-server#201). */
+    @Valid @JsonProperty("committed") private Amount committed;
+    /** RESERVE-time metadata. Always present (when populated) on the single-row
+     * ReservationDetail; on listReservations it is OMITTED BY DEFAULT and
+     * projected only when the caller opts in via include=metadata — the map is
+     * arbitrary-size and may carry application PII, so it is not sprayed across
+     * every list row. Spec: cycles-protocol-v0.yaml revision 2026-06-19. */
+    @JsonProperty("metadata") private Map<String, Object> metadata;
+    /** COMMIT-time metadata. Same include-gated list semantics as metadata
+     * (include=committed_metadata). Spec: cycles-protocol-v0.yaml revision
+     * 2026-06-19 (cycles-server#197 read-path, #201 list projection). */
+    @JsonProperty("committed_metadata") private Map<String, Object> committedMetadata;
 }
