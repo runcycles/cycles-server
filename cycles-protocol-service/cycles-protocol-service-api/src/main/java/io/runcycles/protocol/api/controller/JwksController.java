@@ -84,18 +84,30 @@ public class JwksController {
                         + "cycles.evidence.signing.nbf-ms to the rotation time to make this explicit.", this.nbfMs);
             }
         } else if (retiredConfigured && JwksDocuments.isRawHexKey(this.signerDid)) {
-            // Configured but NOTHING was publishable — malformed JSON, or every entry dropped
-            // for an invalid window / hex / duplicate kid / overlap. Do NOT silently collapse to
-            // the never-rotated posture: with nothing to clamp against, the active key publishes
-            // UNBOUNDED at the configured nbf, so pre-rotation evidence won't resolve and a
-            // backdated envelope could resolve as authentic. Loud ERROR — but never fail closed,
-            // which would also break verification of all current evidence.
-            LOG.error("evidence JWKS: cycles.evidence.signing.retired-keys is set but produced no publishable "
-                    + "retired entries (malformed JSON, or every entry dropped for an invalid window / hex / "
-                    + "duplicate kid / overlap); rotation history is NOT being published and the active key "
-                    + "remains unbounded at cycles_nbf_ms={}. Evidence signed before a rotation will not "
-                    + "resolve, and a backdated envelope could resolve as authentic — fix the retired-keys "
-                    + "config.", this.nbfMs);
+            // Configured but NOTHING was publishable — rotation history is NOT served either way,
+            // so pre-rotation evidence won't resolve. Split on whether a valid retired WINDOW
+            // existed to clamp the active key (the clamp ignores key material, so a malformed-hex
+            // entry with a good window still bounds the active key even though it isn't published).
+            if (activeKeyWindowPredatesRetirement(this.nbfMs, this.retiredKeys)) {
+                // A valid window clamped the active key up: it stays BOUNDED (no backdating); the
+                // problem is the unpublishable retired key (e.g. malformed key material).
+                LOG.error("evidence JWKS: cycles.evidence.signing.retired-keys is set but no retired key is "
+                        + "publishable (e.g. malformed key material); rotation history is NOT being published, "
+                        + "so evidence signed before the rotation will not resolve. The active key window was "
+                        + "advanced to the latest valid retired exp, so it stays bounded — fix the retired-keys "
+                        + "config.");
+            } else {
+                // No valid window to clamp against: the active key publishes at the configured nbf
+                // with no rotation boundary, so if that is the since-epoch default a backdated
+                // envelope could resolve as authentic. Loud ERROR — but never fail closed, which
+                // would also break verification of all current evidence.
+                LOG.error("evidence JWKS: cycles.evidence.signing.retired-keys is set but produced no "
+                        + "publishable retired entries and no valid window to bound the active key (malformed "
+                        + "JSON, empty/inverted windows, etc.); rotation history is NOT being published and the "
+                        + "active key publishes at cycles_nbf_ms={} with no rotation boundary — if that is the "
+                        + "default 0 (since epoch), a backdated envelope could resolve as authentic. Fix the "
+                        + "retired-keys config.", this.nbfMs);
+            }
         }
     }
 

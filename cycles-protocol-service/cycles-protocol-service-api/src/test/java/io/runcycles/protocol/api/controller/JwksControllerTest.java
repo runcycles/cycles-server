@@ -154,6 +154,22 @@ class JwksControllerTest {
     }
 
     @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @SuppressWarnings("unchecked")
+    void clampCandidateButNothingPublished_logsBoundedErrorNotBackdating(CapturedOutput output) {
+        // A valid window with MALFORMED key material: the clamp (which ignores key material)
+        // still advances the active key, so it stays bounded — the entry just isn't publishable.
+        // The ERROR must report missing history with the active key bounded, NOT backdating.
+        String retired = "[{\"signer_did\":\"not-hex\",\"kid\":\"bad\",\"nbf_ms\":0,\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        List<Map<String, Object>> keys = (List<Map<String, Object>>) controller.getEvidenceJwks().getBody().get("keys");
+        assertThat(keys).hasSize(1);                                  // malformed retired not published
+        assertThat(keys.get(0)).containsEntry("cycles_nbf_ms", 100L); // active clamped up to the retired exp
+        assertThat(output).containsPattern("ERROR.*no retired key is publishable");
+        assertThat(output).doesNotContain("backdated");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void retiredKeyWithMissingNbf_isSkipped() {
         // A missing/non-integral nbf_ms must NOT be coerced to epoch 0 (which would
