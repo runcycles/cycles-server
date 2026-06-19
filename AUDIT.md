@@ -5,6 +5,14 @@
 
 ---
 
+### 2026-06-19 — v0.1.25.36: surface `committed` + opt-in metadata on `listReservations`
+
+Follow-up to v0.1.25.34/#197: the same fields surfaced on the single-row `getReservation` were dropped from the `GET /v1/reservations` list rows (runcycles/cycles-server#201). The list path already hydrated a full `ReservationDetail` per row (`buildReservationSummary`), but `toSummary` down-converted to `ReservationSummary` and discarded `committed`, `metadata`, and `committed_metadata` — so the data was read then thrown away.
+
+Hybrid projection per cycles-protocol v0.1.25.8 (runcycles/cycles-protocol#115). `committed` (the COMMIT charge, a small scalar) now projects UNCONDITIONALLY on list rows — same footing as `finalized_at_ms`, NON_NULL strips it off non-COMMITTED rows. The arbitrary-size, possibly-PII metadata maps (`metadata`, `committed_metadata`) stay OFF list rows by default and are projected only when the caller opts in via a new comma-separated `include` query parameter (`?include=metadata,committed_metadata`); unrecognized/empty tokens are ignored, never 400. The three fields move from `ReservationDetail` up to the shared `ReservationSummary` base (`ReservationDetail` becomes a marker subclass — single-GET still serializes all three unconditionally); a new `ReservationInclude` enum parses the param. `include` is projection-only and deliberately NOT folded into `FilterHasher`, so changing it mid-pagination never invalidates a cursor (contrast the window filters). `listReservations` gains an include-aware overload; the legacy 18-arg signature delegates with an empty set (no metadata), preserving the unconditional-`committed` change but default-lean lists.
+
+`ReservationIncludeTest` (parse: null/blank/whitespace/case/unknown/duplicate/trailing-comma), `RedisReservationQueryTest` +5 (committed-always + each include combination + legacy-overload default), `ReservationControllerTest` +3 (param parsed → empty/both/ignored-unknown sets threaded). Full `mvn verify` green against the v0.1.25.8 spec, JaCoCo 95% gate met. Spec-first: gated on cycles-protocol#115 reaching `main` before the contract test resolves the new fields against the published spec.
+
 ### 2026-06-19 — v0.1.25.35: loud error when a retired-keys config is unusable
 
 Closes a silent gap in the v0.1.25.33 rotation-history publication. The active-key `nbf` clamp only fires when a retired entry has a usable window; if `cycles.evidence.signing.retired-keys` is configured (non-blank) but produces ZERO PUBLISHABLE entries, there is nothing to clamp against, so the active key publishes UNBOUNDED at the configured `nbf` (default 0 = since epoch). That silently reverts a rotated server to the never-rotated posture: pre-rotation evidence won't resolve, and the current key could resolve a backdated envelope as authentic.

@@ -1078,6 +1078,36 @@ public class RedisReservationRepository {
                                                     Long fromMs, Long toMs,
                                                     Long expiresFromMs, Long expiresToMs,
                                                     Long finalizedFromMs, Long finalizedToMs) {
+        return listReservations(tenant, idempotencyKey, status, workspace, app, workflow,
+            agent, toolset, limit, startCursor, sortBy, sortDir, fromMs, toMs,
+            expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs,
+            EnumSet.noneOf(ReservationInclude.class));
+    }
+
+    /**
+     * include-aware overload (cycles-protocol revision 2026-06-19,
+     * cycles-server#201). {@code include} is PROJECTION-ONLY: it selects which
+     * optional metadata maps are serialized onto each summary row and is
+     * deliberately NOT part of the filter/cursor binding (see
+     * {@link FilterHasher} — it is not passed there), so changing {@code include}
+     * across pages never invalidates a cursor. {@code committed} is always
+     * projected regardless of {@code include}.
+     */
+    public ReservationListResponse listReservations(String tenant, String idempotencyKey,
+                                                    String status, String workspace, String app,
+                                                    String workflow, String agent, String toolset,
+                                                    int limit, String startCursor,
+                                                    String sortBy, String sortDir,
+                                                    Long fromMs, Long toMs,
+                                                    Long expiresFromMs, Long expiresToMs,
+                                                    Long finalizedFromMs, Long finalizedToMs,
+                                                    Set<ReservationInclude> include) {
+        // Normalize once at entry: tolerate a null arg (direct callers) and take a
+        // private snapshot so a caller mutating their set mid-scan can't affect
+        // projection. EnumSet.copyOf requires a non-empty source.
+        Set<ReservationInclude> includeFields = (include == null || include.isEmpty())
+            ? EnumSet.noneOf(ReservationInclude.class)
+            : EnumSet.copyOf(include);
         boolean sortRequested = sortBy != null || sortDir != null;
         Optional<SortedListCursor> parsedCursor = SortedListCursor.decode(startCursor);
 
@@ -1087,7 +1117,7 @@ public class RedisReservationRepository {
         if (sortRequested || parsedCursor.isPresent()) {
             return listReservationsSorted(tenant, idempotencyKey, status, workspace, app,
                 workflow, agent, toolset, limit, parsedCursor.orElse(null), sortBy, sortDir,
-                fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs);
+                fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, includeFields);
         }
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -1131,7 +1161,7 @@ public class RedisReservationRepository {
                             if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) continue;
                             if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) continue;
 
-                            result.add(toSummary(buildReservationSummary(fields)));
+                            result.add(toSummary(buildReservationSummary(fields), includeFields));
 
                             if (result.size() >= limit) {
                                 String nextCursor = scan.getCursor();
@@ -1171,7 +1201,8 @@ public class RedisReservationRepository {
             int limit, SortedListCursor resumeCursor, String sortBy, String sortDir,
             Long fromMs, Long toMs,
             Long expiresFromMs, Long expiresToMs,
-            Long finalizedFromMs, Long finalizedToMs) {
+            Long finalizedFromMs, Long finalizedToMs,
+            Set<ReservationInclude> include) {
 
         // Normalize for cursor storage + comparator use. Null sort_dir with a non-null
         // sort_by defaults to DESC per spec; null sort_by with a non-null sort_dir defaults
@@ -1181,6 +1212,10 @@ public class RedisReservationRepository {
         String effectiveSortDir = sortDir != null ? sortDir.toLowerCase()
             : (resumeCursor != null ? resumeCursor.getSortDir() : "desc");
 
+        // include is deliberately NOT folded into the filter hash: it is a
+        // projection-only parameter (which fields serialize), not a filter
+        // (which rows / what order). Changing include across pages MUST NOT
+        // invalidate a cursor. Spec: cycles-protocol-v0 revision 2026-06-19.
         String filterHash = FilterHasher.hash(tenant, idempotencyKey, status,
             workspace, app, workflow, agent, toolset, fromMs, toMs,
             expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs);
@@ -1238,7 +1273,7 @@ public class RedisReservationRepository {
                             if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) continue;
                             if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) continue;
 
-                            matching.add(toSummary(buildReservationSummary(fields)));
+                            matching.add(toSummary(buildReservationSummary(fields), include));
                         } catch (Exception e) {
                             LOG.warn("Failed to parse reservation: {}", key, e);
                         }
@@ -1851,8 +1886,8 @@ public class RedisReservationRepository {
         return startOk && endOk;
     }
 
-    private ReservationSummary toSummary(ReservationDetail detail) {
-        return ReservationSummary.builder()
+    private ReservationSummary toSummary(ReservationDetail detail, Set<ReservationInclude> include) {
+        ReservationSummary.ReservationSummaryBuilder builder = ReservationSummary.builder()
             .reservationId(detail.getReservationId())
             .status(detail.getStatus())
             .idempotencyKey(detail.getIdempotencyKey())
@@ -1868,7 +1903,23 @@ public class RedisReservationRepository {
             .finalizedAtMs(detail.getFinalizedAtMs())
             .scopePath(detail.getScopePath())
             .affectedScopes(detail.getAffectedScopes())
-            .build();
+            // committed (the COMMIT charge) is projected UNCONDITIONALLY on list
+            // rows, on the same footing as finalized_at_ms — a small scalar, and
+            // NON_NULL strips it on non-COMMITTED rows. Spec: cycles-protocol-v0
+            // revision 2026-06-19 (cycles-server#201).
+            .committed(detail.getCommitted());
+        // metadata / committed_metadata are arbitrary-size, possibly-PII maps, so
+        // they are OMITTED FROM LIST ROWS BY DEFAULT and projected only when the
+        // caller opts in via ?include=. The single-row getReservation path always
+        // carries them (it serializes the ReservationDetail directly). Spec rev
+        // 2026-06-19.
+        if (include.contains(ReservationInclude.METADATA)) {
+            builder.metadata(detail.getMetadata());
+        }
+        if (include.contains(ReservationInclude.COMMITTED_METADATA)) {
+            builder.committedMetadata(detail.getCommittedMetadata());
+        }
+        return builder.build();
     }
 
     private ReservationDetail buildReservationSummary(Map<String, String> fields) throws Exception {
@@ -1924,7 +1975,15 @@ public class RedisReservationRepository {
             committedMetadata = objectMapper.readValue(committedMetadataJson, Map.class);
         }
 
-        ReservationDetail detail = new ReservationDetail(committed, finalizedAtMs, metadata, committedMetadata);
+        // As of cycles-protocol revision 2026-06-19 (cycles-server#201) committed
+        // / metadata / committed_metadata live on the shared ReservationSummary
+        // base, so set them via the inherited setters rather than a detail-only
+        // constructor.
+        ReservationDetail detail = new ReservationDetail();
+        detail.setCommitted(committed);
+        detail.setFinalizedAtMs(finalizedAtMs);
+        detail.setMetadata(metadata);
+        detail.setCommittedMetadata(committedMetadata);
         detail.setReservationId(fields.get("reservation_id"));
         detail.setStatus(Enums.ReservationStatus.valueOf(stateStr));
         detail.setIdempotencyKey(fields.get("idempotency_key"));

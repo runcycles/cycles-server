@@ -591,6 +591,125 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
         }
     }
 
+    // ---- listReservations field projection: committed + opt-in metadata ----
+    // Spec: cycles-protocol-v0.yaml revision 2026-06-19 (cycles-server#201).
+
+    @Nested
+    @DisplayName("listReservations field projection (committed + include)")
+    class ListReservationsIncludeProjection {
+
+        /** A COMMITTED reservation carrying a charge plus reserve-time and
+         * commit-time metadata, so the projection rules are observable. */
+        private Map<String, String> committedFields(String id) {
+            Map<String, String> fields = reservationFields(id, "COMMITTED");
+            fields.put("charged_amount", "4200");
+            fields.put("finalized_at", "1700050000000");
+            fields.put("metadata_json", "{\"session_id\":\"s-1\"}");
+            fields.put("committed_metadata_json", "{\"request_id\":\"req-9\"}");
+            return fields;
+        }
+
+        @SuppressWarnings("unchecked")
+        private ReservationListResponse listSingleCommitted(Set<ReservationInclude> include) {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Pipeline pipeline = mock(Pipeline.class);
+            Response<Map<String, String>> resp = mock(Response.class);
+            when(resp.get()).thenReturn(committedFields("r1"));
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+
+            return repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, null, null, null, include);
+        }
+
+        @Test
+        @DisplayName("committed is projected unconditionally; metadata maps omitted by default")
+        void committedAlwaysMetadataOptIn() {
+            ReservationListResponse response =
+                    listSingleCommitted(EnumSet.noneOf(ReservationInclude.class));
+
+            assertThat(response.getReservations()).hasSize(1);
+            ReservationSummary row = response.getReservations().get(0);
+            // committed is surfaced on the list row with no include opt-in.
+            assertThat(row.getCommitted()).isNotNull();
+            assertThat(row.getCommitted().getAmount()).isEqualTo(4200L);
+            // metadata / committed_metadata are omitted unless explicitly requested.
+            assertThat(row.getMetadata()).isNull();
+            assertThat(row.getCommittedMetadata()).isNull();
+        }
+
+        @Test
+        @DisplayName("include=committed_metadata surfaces only committed_metadata")
+        void includeCommittedMetadataOnly() {
+            ReservationListResponse response =
+                    listSingleCommitted(EnumSet.of(ReservationInclude.COMMITTED_METADATA));
+
+            ReservationSummary row = response.getReservations().get(0);
+            assertThat(row.getCommitted().getAmount()).isEqualTo(4200L);
+            assertThat(row.getCommittedMetadata()).containsEntry("request_id", "req-9");
+            assertThat(row.getMetadata()).isNull();
+        }
+
+        @Test
+        @DisplayName("include=metadata surfaces only reserve-time metadata")
+        void includeMetadataOnly() {
+            ReservationListResponse response =
+                    listSingleCommitted(EnumSet.of(ReservationInclude.METADATA));
+
+            ReservationSummary row = response.getReservations().get(0);
+            assertThat(row.getMetadata()).containsEntry("session_id", "s-1");
+            assertThat(row.getCommittedMetadata()).isNull();
+        }
+
+        @Test
+        @DisplayName("include=metadata,committed_metadata surfaces both maps")
+        void includeBothMaps() {
+            ReservationListResponse response = listSingleCommitted(
+                    EnumSet.of(ReservationInclude.METADATA, ReservationInclude.COMMITTED_METADATA));
+
+            ReservationSummary row = response.getReservations().get(0);
+            assertThat(row.getMetadata()).containsEntry("session_id", "s-1");
+            assertThat(row.getCommittedMetadata()).containsEntry("request_id", "req-9");
+        }
+
+        @Test
+        @DisplayName("18-arg overload defaults to no metadata projection (committed still present)")
+        void legacyOverloadOmitsMetadata() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Pipeline pipeline = mock(Pipeline.class);
+            @SuppressWarnings("unchecked")
+            Response<Map<String, String>> resp = mock(Response.class);
+            when(resp.get()).thenReturn(committedFields("r1"));
+
+            @SuppressWarnings("unchecked")
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+
+            ReservationListResponse response = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 100, null, null, null,
+                    null, null, null, null, null, null);
+
+            ReservationSummary row = response.getReservations().get(0);
+            assertThat(row.getCommitted().getAmount()).isEqualTo(4200L);
+            assertThat(row.getMetadata()).isNull();
+            assertThat(row.getCommittedMetadata()).isNull();
+        }
+    }
+
     // ---- listReservations with idempotency_key filter ----
 
     @Nested
@@ -796,6 +915,76 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
                 .containsExactly("r3", "r4");
             assertThat(page2.getHasMore()).isFalse();
             assertThat(page2.getNextCursor()).isNull();
+        }
+
+        // cycles-protocol revision 2026-06-19 (cycles-server#201): include is
+        // PROJECTION-ONLY and MUST NOT bind the cursor. Changing it between pages
+        // must neither 400 (contrast cursorMismatchRejected, where sort_by does
+        // bind) nor disturb paging — it only changes which fields serialize.
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("include can change between pages without invalidating the cursor")
+        void includeDoesNotBindCursor() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            // COMMITTED rows carrying commit metadata, distinct created_at for a
+            // deterministic sort.
+            Map<String, String> f1 = committedRow("r1", 100);
+            Map<String, String> f2 = committedRow("r2", 200);
+            Map<String, String> f3 = committedRow("r3", 300);
+            Map<String, String> f4 = committedRow("r4", 400);
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            Response<Map<String, String>> resp3 = mock(Response.class);
+            Response<Map<String, String>> resp4 = mock(Response.class);
+            when(resp1.get()).thenReturn(f1);
+            when(resp2.get()).thenReturn(f2);
+            when(resp3.get()).thenReturn(f3);
+            when(resp4.get()).thenReturn(f4);
+
+            ScanResult<String> scanResult = mock(ScanResult.class);
+            when(scanResult.getResult()).thenReturn(
+                List.of("reservation:res_r1", "reservation:res_r2",
+                        "reservation:res_r3", "reservation:res_r4"));
+            when(scanResult.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
+            when(pipeline.hgetAll("reservation:res_r4")).thenReturn(resp4);
+
+            // Page 1: no include → committed_metadata omitted; capture the cursor.
+            ReservationListResponse page1 = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 2, null,
+                "created_at_ms", "asc", null, null, null, null, null, null,
+                EnumSet.noneOf(ReservationInclude.class));
+            assertThat(page1.getReservations()).extracting(ReservationSummary::getReservationId)
+                .containsExactly("r1", "r2");
+            assertThat(page1.getReservations().get(0).getCommittedMetadata()).isNull();
+            String cursor = page1.getNextCursor();
+            assertThat(cursor).isNotNull();
+
+            // Page 2: SAME cursor, but now opt into committed_metadata. The cursor
+            // must remain valid (no 400) and paging continues at r3/r4, with the
+            // newly-requested field projected onto this page.
+            ReservationListResponse page2 = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 2, cursor,
+                "created_at_ms", "asc", null, null, null, null, null, null,
+                EnumSet.of(ReservationInclude.COMMITTED_METADATA));
+            assertThat(page2.getReservations()).extracting(ReservationSummary::getReservationId)
+                .containsExactly("r3", "r4");
+            assertThat(page2.getReservations().get(0).getCommittedMetadata())
+                .containsEntry("request_id", "req-r3");
+        }
+
+        private Map<String, String> committedRow(String id, long createdAt) {
+            Map<String, String> f = reservationFields(id, "COMMITTED");
+            f.put("created_at", String.valueOf(createdAt));
+            f.put("charged_amount", "4200");
+            f.put("committed_metadata_json", "{\"request_id\":\"req-" + id + "\"}");
+            return f;
         }
 
         @SuppressWarnings("unchecked")

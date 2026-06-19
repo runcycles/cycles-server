@@ -12,6 +12,7 @@ import io.runcycles.protocol.model.event.*;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Map;
+import java.util.Set;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -283,7 +284,8 @@ public class ReservationController extends BaseController{
             @RequestParam(value = "expires_from", required = false) String expiresFrom,
             @RequestParam(value = "expires_to", required = false) String expiresTo,
             @RequestParam(value = "finalized_from", required = false) String finalizedFrom,
-            @RequestParam(value = "finalized_to", required = false) String finalizedTo) {
+            @RequestParam(value = "finalized_to", required = false) String finalizedTo,
+            @RequestParam(value = "include", required = false) String include) {
         // Validate status against ReservationStatus enum if provided
         if (status != null) {
             try {
@@ -364,12 +366,17 @@ public class ReservationController extends BaseController{
             effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
             authorizeTenant(effectiveTenant);
         }
-        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}, from: {}, to: {}, expires_from: {}, expires_to: {}, finalized_from: {}, finalized_to: {}",
+        // cycles-protocol revision 2026-06-19 (cycles-server#201): include is a
+        // comma-separated field-projection list. Unrecognized / empty tokens are
+        // ignored (no 400). Projection-only — never bound to the cursor.
+        Set<ReservationInclude> includeFields = ReservationInclude.parseCsv(include);
+        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}, from: {}, to: {}, expires_from: {}, expires_to: {}, finalized_from: {}, finalized_to: {}, include: {}",
                 effectiveTenant, isAdminAuth(), sortBy, sortDir, fromMs, toMs,
-                expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs);
+                expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, includeFields);
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
                 status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir,
-                fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs));
+                fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs,
+                includeFields));
     }
 
     private Long parseIsoToEpochMs(String raw, String paramName) {
