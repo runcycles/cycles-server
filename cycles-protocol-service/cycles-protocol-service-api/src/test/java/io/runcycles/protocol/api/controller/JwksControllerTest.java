@@ -135,7 +135,22 @@ class JwksControllerTest {
         Map<String, Object> body = controller.getEvidenceJwks().getBody();
         assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
         // assert the LEVEL too — a regression from error() to warn() with the same text must fail
-        assertThat(output).containsPattern("ERROR.*retired-keys is set but produced no usable entries");
+        assertThat(output).containsPattern("ERROR.*produced no publishable retired entries");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @SuppressWarnings("unchecked")
+    void retiredKeyParsedButDroppedOnEmission_logsError(CapturedOutput output) {
+        // The gap parser-output detection misses: an empty window (nbf_ms == exp_ms) PASSES
+        // the parser (both bounds integral + in range) but JwksDocuments drops it, so only the
+        // unbounded active key publishes. Detection is based on PUBLISHED retired keys, so the
+        // ERROR still fires.
+        String retired = "[{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"empty\",\"nbf_ms\":100,\"exp_ms\":100}]";
+        JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, retired);
+        Map<String, Object> body = controller.getEvidenceJwks().getBody();
+        assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1); // active only — retired dropped
+        assertThat(output).containsPattern("ERROR.*produced no publishable retired entries");
     }
 
     @Test
