@@ -355,6 +355,9 @@ public class RedisReservationRepository {
                     .evidenceId(ref.evidenceId())
                     .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
                     .build());
+            // Record the ref on the reservation so it is linkable later via
+            // include=evidence. Null reservation_id (dry_run) is a no-op.
+            persistEvidenceRef(response.getReservationId(), "reserve", ref);
         }
     }
 
@@ -411,6 +414,60 @@ public class RedisReservationRepository {
     private EvidenceEmitter.EvidenceRef emitLifecycleEvidence(String artifactType, String traceId,
                                                               Object payloadBody) {
         return evidenceEmitter.emit(artifactType, System.currentTimeMillis(), traceId, payloadBody);
+    }
+
+    /**
+     * Persist the just-computed evidence ref for an artifact onto the reservation
+     * hash ({@code <artifact>_evidence_id} / {@code <artifact>_evidence_url}), so
+     * {@code listReservations} / {@code getReservation} can surface it via
+     * {@code include=evidence} — letting a consumer link a reservation to its
+     * signed envelope(s) without having captured the id off the original
+     * response. Both id and url are stored so hydration needs no server-id
+     * reconstruction. No-op when the ref is null (evidence emission disabled) or
+     * for dry-run (no reservation_id). Fail-open: a write failure is logged,
+     * never thrown — it only degrades the evidence projection, never the op.
+     */
+    private void persistEvidenceRef(String reservationId, String artifactType,
+                                    EvidenceEmitter.EvidenceRef ref) {
+        if (ref == null || reservationId == null || reservationId.isEmpty()) {
+            return;
+        }
+        try (Jedis jedis = jedisPool.getResource()) {
+            Map<String, String> f = new LinkedHashMap<>();
+            f.put(artifactType + "_evidence_id", ref.evidenceId());
+            f.put(artifactType + "_evidence_url", ref.cyclesEvidenceUrl());
+            jedis.hset("reservation:res_" + reservationId, f);
+        } catch (Exception e) {
+            LOG.warn("Failed to persist {} evidence for reservation {}: {}",
+                    artifactType, reservationId, e.getMessage());
+        }
+    }
+
+    /**
+     * Hydrate the {@code evidence} projection from the persisted
+     * {@code <artifact>_evidence_id} / {@code _url} hash fields. Returns null
+     * when no artifact has recorded evidence (NON_NULL then strips the field).
+     */
+    private ReservationEvidence buildEvidence(Map<String, String> fields) {
+        ReservationEvidence.ReservationEvidenceBuilder b = ReservationEvidence.builder();
+        boolean any = false;
+        for (String artifact : new String[] {"reserve", "commit", "release"}) {
+            String id = fields.get(artifact + "_evidence_id");
+            String url = fields.get(artifact + "_evidence_url");
+            if (id == null || id.isEmpty() || url == null || url.isEmpty()) {
+                continue;
+            }
+            CyclesEvidenceRef ref = CyclesEvidenceRef.builder()
+                    .evidenceId(id).cyclesEvidenceUrl(url).build();
+            switch (artifact) {
+                case "reserve" -> b.reserve(ref);
+                case "commit" -> b.commit(ref);
+                case "release" -> b.release(ref);
+                default -> { /* unreachable */ }
+            }
+            any = true;
+        }
+        return any ? b.build() : null;
     }
 
     /** Cache a finalized lifecycle response body (with evidence stamped) for verbatim replay,
@@ -872,6 +929,7 @@ public class RedisReservationRepository {
                         .evidenceId(ref.evidenceId())
                         .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
                         .build());
+                persistEvidenceRef(reservationId, "commit", ref);
             }
             cacheLifecycleBody("commit", reservationId, committed);
             return committed;
@@ -970,6 +1028,7 @@ public class RedisReservationRepository {
                         .evidenceId(ref.evidenceId())
                         .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
                         .build());
+                persistEvidenceRef(reservationId, "release", ref);
             }
             cacheLifecycleBody("release", reservationId, releasedResponse);
             return releasedResponse;
@@ -1919,6 +1978,13 @@ public class RedisReservationRepository {
         if (include.contains(ReservationInclude.COMMITTED_METADATA)) {
             builder.committedMetadata(detail.getCommittedMetadata());
         }
+        // evidence is the linkage from a reservation to its signed envelope(s);
+        // a small map of refs, but opt-in on list rows for symmetry with the
+        // other heavy projections. Always present on the single-row detail.
+        // Spec: cycles-protocol-v0.yaml revision 2026-06-22 (v0.1.25.9).
+        if (include.contains(ReservationInclude.EVIDENCE)) {
+            builder.evidence(detail.getEvidence());
+        }
         return builder.build();
     }
 
@@ -1994,6 +2060,11 @@ public class RedisReservationRepository {
         detail.setExpiresAtMs(Long.parseLong(expiresAtStr));
         detail.setScopePath(fields.get("scope_path"));
         detail.setAffectedScopes(affectedScopes);
+        // Evidence refs recorded at reserve/commit/release time (spec v0.1.25.9).
+        // Always hydrated onto the detail; listReservations strips it in toSummary
+        // unless include=evidence. Null when the reservation has no recorded
+        // evidence (emission disabled, or pre-evidence reservation).
+        detail.setEvidence(buildEvidence(fields));
         return detail;
     }
 

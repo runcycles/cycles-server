@@ -43,4 +43,12 @@ public class ReservationSummary {
      * (include=committed_metadata). Spec: cycles-protocol-v0.yaml revision
      * 2026-06-19 (cycles-server#197 read-path, #201 list projection). */
     @JsonProperty("committed_metadata") private Map<String, Object> committedMetadata;
+    /** CyclesEvidence references for this reservation's reserve / commit /
+     * release operations, keyed by artifact type — lets a consumer resolve the
+     * signed envelope(s) via getEvidence without having captured the
+     * evidence_id off the original response. Always present (when recorded) on
+     * the single-row ReservationDetail; on listReservations it is OMITTED BY
+     * DEFAULT and projected only when the caller opts in via include=evidence.
+     * Spec: cycles-protocol-v0.yaml revision 2026-06-22 (v0.1.25.9). */
+    @Valid @JsonProperty("evidence") private ReservationEvidence evidence;
 }
