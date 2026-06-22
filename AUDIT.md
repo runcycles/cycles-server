@@ -5,6 +5,14 @@
 
 ---
 
+### 2026-06-22 — v0.1.25.37: link reservations to their evidence via `include=evidence`
+
+Implements cycles-protocol v0.1.25.9 (runcycles/cycles-protocol#117). The `cycles_evidence` ref previously rode only on the live reserve/commit/release response, so a reservation fetched later (e.g. by the admin dashboard) had no path back to its signed envelope — you had to have captured the `evidence_id` at the moment of the call. Now the server persists each computed ref onto the reservation and surfaces it via a new `evidence` projection.
+
+`EvidenceEmitter.emit` already computes the `evidence_id` synchronously (when the server identity is configured), but only after the reserve/commit/release Lua runs — so the id can't be passed into the script. Instead `persistEvidenceRef` does a fail-open follow-up `HSET` of `<artifact>_evidence_id` + `<artifact>_evidence_url` onto the `reservation:res_*` hash right after the ref is stamped on the response (HSET preserves the terminal 30-day TTL set by Lua; a write failure logs and never fails the op). Both id and url are stored so hydration needs no server-id reconstruction. `buildReservationSummary` hydrates them into a new `ReservationEvidence` map (keyed `reserve`/`commit`/`release`, each a `CyclesEvidenceRef`); `toSummary` gates it on a new `ReservationInclude.EVIDENCE` token (`?include=evidence`) for symmetry with the metadata projections — projection-only, NOT folded into `FilterHasher`, so it never invalidates a cursor. The single-row `getReservation` always carries it. A reservation has at most a `reserve` entry plus one terminal (`commit` XOR `release`); a half-written ref (id without url) is ignored. Degrades gracefully: `null` when evidence emission is disabled or for pre-feature reservations (`NON_NULL` strips it).
+
+New `ReservationEvidence` model + `ReservationInclude.EVIDENCE`. `ReservationEvidenceTest` (isEmpty + per-artifact refs), `ReservationIncludeTest` +2 (evidence token, all-three parse), `RedisReservationEvidenceLinkTest` +6 (hydrate reserve+commit, absent → null, half-written ignored, persist HSETs id+url, null-ref/null-id no-op, projection gated on include). Full `mvn verify` green across model/data/api, JaCoCo 95% gate met; contract + spec-coverage tests pass against cycles-protocol#117 (merged to main). Additive/non-breaking — clients that don't request `include=evidence` see byte-identical responses.
+
 ### 2026-06-19 — v0.1.25.36: surface `committed` + opt-in metadata on `listReservations`
 
 Follow-up to v0.1.25.34/#197: the same fields surfaced on the single-row `getReservation` were dropped from the `GET /v1/reservations` list rows (runcycles/cycles-server#201). The list path already hydrated a full `ReservationDetail` per row (`buildReservationSummary`), but `toSummary` down-converted to `ReservationSummary` and discarded `committed`, `metadata`, and `committed_metadata` — so the data was read then thrown away.

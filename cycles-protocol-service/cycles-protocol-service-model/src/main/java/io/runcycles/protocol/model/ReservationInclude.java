@@ -17,7 +17,11 @@ import java.util.Set;
  */
 public enum ReservationInclude {
     METADATA("metadata"),
-    COMMITTED_METADATA("committed_metadata");
+    COMMITTED_METADATA("committed_metadata"),
+    /** Project ReservationSummary.evidence (CyclesEvidence refs for the
+     * reservation's reserve/commit/release operations). Spec revision
+     * 2026-06-22 (v0.1.25.9). */
+    EVIDENCE("evidence");
 
     private final String wire;
 

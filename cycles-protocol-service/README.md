@@ -465,6 +465,7 @@ List reservations for the effective tenant. Optional recovery/debug endpoint. Re
 | `expires_to` | ISO 8601 date-time (v0.1.25.21+). Inclusive upper bound on `expires_at_ms`. Same blank-as-unset rule. `expires_from > expires_to` returns `400 INVALID_REQUEST`. |
 | `finalized_from` | ISO 8601 date-time (v0.1.25.21+). Inclusive lower bound on `finalized_at_ms`. Populated only on COMMITTED and RELEASED rows — ACTIVE and EXPIRED rows are normatively excluded when this is set. May be supplied alone or with `finalized_to`. Blank string treated as unset. |
 | `finalized_to` | ISO 8601 date-time (v0.1.25.21+). Inclusive upper bound on `finalized_at_ms`. Same blank-as-unset rule and ACTIVE/EXPIRED exclusion. `finalized_from > finalized_to` returns `400 INVALID_REQUEST`. |
+| `include` | Comma-separated field projection (v0.1.25.36+). Optional heavy fields omitted from list rows by default: `metadata` (reserve-time), `committed_metadata` (commit-time), `evidence` (CyclesEvidence refs for the row's reserve/commit/release ops, keyed by artifact type — v0.1.25.37+). E.g. `?include=evidence` adds the evidence map so a consumer can link a reservation to its signed envelope without having captured the `evidence_id` off the original response. Projection-only: unrecognized/empty tokens are ignored, and it does **not** participate in cursor / filter-hash binding (changing it mid-pagination never invalidates a cursor). |
 
 When `sort_by` or `sort_dir` is provided, the cursor encodes the
 `(sort_by, sort_dir, filters)` tuple — reusing a sorted cursor after
@@ -513,6 +514,8 @@ Includes all fields from the list entry above, plus:
 | `committed` | Amount actually charged (present when COMMITTED) |
 | `finalized_at_ms` | Timestamp of commit or release |
 | `metadata` | Metadata supplied at reservation time |
+| `committed_metadata` | Metadata supplied on the commit request (present on COMMITTED rows whose commit carried metadata) |
+| `evidence` | CyclesEvidence refs keyed by artifact type (`reserve` / `commit` / `release`), each `{ evidence_id, cycles_evidence_url }` — resolve via `GET /v1/evidence/{id}` (v0.1.25.37+). Always present on the single-get when recorded; absent when evidence emission is disabled. On the list endpoint it is opt-in via `include=evidence`. |
 
 ---
 

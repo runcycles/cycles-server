@@ -26,6 +26,18 @@ class ReservationIncludeTest {
                 .containsExactly(ReservationInclude.METADATA);
         assertThat(ReservationInclude.parseCsv("committed_metadata"))
                 .containsExactly(ReservationInclude.COMMITTED_METADATA);
+        assertThat(ReservationInclude.parseCsv("evidence"))
+                .containsExactly(ReservationInclude.EVIDENCE);
+    }
+
+    @Test
+    @DisplayName("all three projection tokens parse together")
+    void allTokens() {
+        assertThat(ReservationInclude.parseCsv("metadata,committed_metadata,evidence"))
+                .containsExactlyInAnyOrder(
+                        ReservationInclude.METADATA,
+                        ReservationInclude.COMMITTED_METADATA,
+                        ReservationInclude.EVIDENCE);
     }
 
     @Test
@@ -67,5 +79,6 @@ class ReservationIncludeTest {
     void wireSpelling() {
         assertThat(ReservationInclude.METADATA.wire()).isEqualTo("metadata");
         assertThat(ReservationInclude.COMMITTED_METADATA.wire()).isEqualTo("committed_metadata");
+        assertThat(ReservationInclude.EVIDENCE.wire()).isEqualTo("evidence");
     }
 }
