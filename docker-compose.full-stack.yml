@@ -1,5 +1,12 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     ports:
       - "6379:6379"
@@ -17,6 +24,7 @@ services:
   #   <parent>/cycles-server-admin/  <- sibling
   #   <parent>/cycles-server-events/ <- sibling
   cycles-server:
+    logging: *default-logging
     build:
       context: .
       dockerfile: Dockerfile
@@ -40,6 +48,7 @@ services:
         condition: service_healthy
 
   cycles-admin:
+    logging: *default-logging
     build:
       context: ../cycles-server-admin
       dockerfile: Dockerfile
@@ -63,6 +72,7 @@ services:
         condition: service_healthy
 
   cycles-events:
+    logging: *default-logging
     build:
       context: ../cycles-server-events
       dockerfile: Dockerfile

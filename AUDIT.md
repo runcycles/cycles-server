@@ -5,6 +5,10 @@
 
 ---
 
+### 2026-06-23 — Docker log rotation defaults on all compose files (no version bump)
+
+All four `docker-compose*.yml` (base, `prod`, `full-stack`, `full-stack.prod`) gain a shared `x-logging` anchor (`json-file`, `max-size: 10m`, `max-file: 5`) referenced by every service (redis, cycles-server, cycles-admin, cycles-events). Previously no compose file declared a logging driver, so containers inherited Docker's default UNBOUNDED `json-file` logs — a slow disk-exhaustion path on long-running deployments (a stack left up for days grows each container's `*-json.log` without limit). The anchor caps every container at 5×10 MB = 50 MB with rotation. Runtime/deployment config only — no image, server-code, or wire change, so no version bump or release; the cap takes effect on containers (re)created from these files. `docker compose config` validates clean on all four.
+
 ### 2026-06-22 — v0.1.25.37: link reservations to their evidence via `include=evidence`
 
 Implements cycles-protocol v0.1.25.9 (runcycles/cycles-protocol#117). The `cycles_evidence` ref previously rode only on the live reserve/commit/release response, so a reservation fetched later (e.g. by the admin dashboard) had no path back to its signed envelope — you had to have captured the `evidence_id` at the moment of the call. Now the server persists each computed ref onto the reservation and surfaces it via a new `evidence` projection.

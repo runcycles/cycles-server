@@ -1,5 +1,12 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     restart: unless-stopped
     ports:
@@ -14,6 +21,7 @@ services:
       retries: 5
 
   cycles-server:
+    logging: *default-logging
     image: ghcr.io/runcycles/cycles-server:0.1.25.18
     restart: unless-stopped
     ports:
@@ -38,6 +46,7 @@ services:
         condition: service_healthy
 
   cycles-admin:
+    logging: *default-logging
     image: ghcr.io/runcycles/cycles-server-admin:0.1.25.38
     restart: unless-stopped
     ports:
@@ -62,6 +71,7 @@ services:
         condition: service_healthy
 
   cycles-events:
+    logging: *default-logging
     image: ghcr.io/runcycles/cycles-server-events:0.1.25.10
     restart: unless-stopped
     ports:
