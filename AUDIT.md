@@ -9,6 +9,12 @@
 
 All four `docker-compose*.yml` (base, `prod`, `full-stack`, `full-stack.prod`) gain a shared `x-logging` anchor (`json-file`, `max-size: 10m`, `max-file: 5`) referenced by every service (redis, cycles-server, cycles-admin, cycles-events). Previously no compose file declared a logging driver, so containers inherited Docker's default UNBOUNDED `json-file` logs — a slow disk-exhaustion path on long-running deployments (a stack left up for days grows each container's `*-json.log` without limit). The anchor caps every container at 5×10 MB = 50 MB with rotation. Runtime/deployment config only — no image, server-code, or wire change, so no version bump or release; the cap takes effect on containers (re)created from these files. `docker compose config` validates clean on all four.
 
+### 2026-06-23 — v0.1.25.38: disable evidence emission when identity is unconfigured
+
+Aligns runtime producer behavior with the event-tier disabled mode. Previously `EvidenceEmitter.emit` returned no `cycles_evidence` ref when `EVIDENCE_SERVER_ID` / `EVIDENCE_SIGNING_SIGNER_DID` were blank, but it still built and LPUSH'd a source record without `evidence_id` to `evidence:pending`. That made an intentionally non-evidence deployment accumulate work for a signer that should be off.
+
+`EvidenceEmitter.emit` now fail-opens earlier: if either public identity value is blank, it returns `null` before null-stripping payloads, computing ids, or touching `EvidenceQueueRepository`. Configured deployments retain the existing path exactly: payload null-stripping, synchronous `evidence_id` computation, record stamping, queue push, and response ref. `EvidenceEmitterTest` updates the unconfigured case to assert no Redis push and no failure metric, and the configured cases now set identity explicitly. Data-module focused test: `mvn -B -pl cycles-protocol-service-data -am -Dtest=EvidenceEmitterTest -Dsurefire.failIfNoSpecifiedTests=false test`. Version bump: `cycles-protocol-service/pom.xml` `<revision>` → `0.1.25.38`.
+
 ### 2026-06-22 — v0.1.25.37: link reservations to their evidence via `include=evidence`
 
 Implements cycles-protocol v0.1.25.9 (runcycles/cycles-protocol#117). The `cycles_evidence` ref previously rode only on the live reserve/commit/release response, so a reservation fetched later (e.g. by the admin dashboard) had no path back to its signed envelope — you had to have captured the `evidence_id` at the moment of the call. Now the server persists each computed ref onto the reservation and surfaces it via a new `evidence` projection.
