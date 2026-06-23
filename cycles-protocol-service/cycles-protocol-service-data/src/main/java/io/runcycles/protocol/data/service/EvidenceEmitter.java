@@ -20,9 +20,10 @@ import java.util.Map;
  * identity), store and serve.
  *
  * <p>This server stamps the operational facts ({@code artifact_type},
- * {@code issued_at_ms}, {@code trace_id}, payload) AND — when the public server
- * identity ({@code cycles.evidence.server-id} + {@code cycles.evidence.signer-did})
- * is configured — computes the {@code evidence_id} SYNCHRONOUSLY via
+ * {@code issued_at_ms}, {@code trace_id}, payload) when the public server
+ * identity ({@code cycles.evidence.server-id} +
+ * {@code cycles.evidence.signing.signer-did}) is configured. It also computes
+ * the {@code evidence_id} SYNCHRONOUSLY via
  * {@link EvidenceIdComputer} and stamps it on the record. The {@code evidence_id}
  * is a pure function of the envelope contents (no private key needed), so it can
  * be returned on the lifecycle response ({@link EvidenceRef}) for a caller to
@@ -36,7 +37,7 @@ import java.util.Map;
  * carry {@code reservation_id}, and {@code error} carries
  * {@code {endpoint, http_status, request, response}}.
  *
- * <p>DURABILITY: the enqueue is SYNCHRONOUS — the source record is LPUSH'd
+ * <p>DURABILITY: when evidence is configured, the enqueue is SYNCHRONOUS — the source record is LPUSH'd
  * before the lifecycle response returns, so a successful operation cannot return
  * without its evidence being durably queued. The enqueue targets the same Redis
  * as the ledger write that just committed, so it succeeds whenever the operation
@@ -108,9 +109,9 @@ public class EvidenceEmitter {
     private String signerDid;
 
     /**
-     * Synchronously enqueue an evidence-source record for a lifecycle artifact
-     * and, when the public server identity is configured, compute its
-     * {@code evidence_id} and return a {@link EvidenceRef} for the caller to
+     * When the public server identity is configured, synchronously enqueue an
+     * evidence-source record for a lifecycle artifact, compute its
+     * {@code evidence_id}, and return a {@link EvidenceRef} for the caller to
      * surface on the response. Call AFTER the ledger write commits and BEFORE
      * returning the response.
      *
@@ -122,10 +123,15 @@ public class EvidenceEmitter {
      *                     {@code payload.<artifactType>} (see class javadoc)
      * @return the evidence reference ({@code evidence_id} + {@code cycles_evidence_url})
      *         when the id could be computed, or {@code null} if the server
-     *         identity is unconfigured or emission failed (fail-open — never throws)
+     *         identity is unconfigured (no record queued) or emission failed
+     *         (fail-open — never throws)
      */
     public EvidenceRef emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
         try {
+            if (!identityConfigured()) {
+                return null;
+            }
+
             // Null-strip the payload ONCE into a tree, and use that same tree for
             // BOTH the content-id computation and the queued record, so the id the
             // worker recomputes over the stored payload matches byte-for-byte.
@@ -139,18 +145,15 @@ public class EvidenceEmitter {
             }
             record.put("payload", cleanPayload);
 
-            EvidenceRef ref = null;
-            if (identityConfigured()) {
-                // Compute the content id over the SAME envelope the worker will
-                // build, BEFORE the record is serialized — and never over a
-                // response already carrying cycles_evidence (the caller stamps
-                // the ref on the response only AFTER this returns), so the
-                // attested payload stays free of a self-reference.
-                String evidenceId = evidenceIdComputer.compute(
-                        artifactType, serverId, signerDid, issuedAtMs, traceId, cleanPayload);
-                record.put("evidence_id", evidenceId);
-                ref = new EvidenceRef(evidenceId, evidenceUrl(evidenceId));
-            }
+            // Compute the content id over the SAME envelope the worker will
+            // build, BEFORE the record is serialized — and never over a
+            // response already carrying cycles_evidence (the caller stamps
+            // the ref on the response only AFTER this returns), so the
+            // attested payload stays free of a self-reference.
+            String evidenceId = evidenceIdComputer.compute(
+                    artifactType, serverId, signerDid, issuedAtMs, traceId, cleanPayload);
+            record.put("evidence_id", evidenceId);
+            EvidenceRef ref = new EvidenceRef(evidenceId, evidenceUrl(evidenceId));
 
             repository.push(objectMapper.writeValueAsString(record));
             return ref;

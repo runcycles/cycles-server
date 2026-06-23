@@ -16,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 class EvidenceEmitterTest {
@@ -46,6 +47,8 @@ class EvidenceEmitterTest {
 
     @Test
     void enqueuesSynchronouslyWithArtifactTypeTraceAndPayloadBody() throws Exception {
+        configureIdentity();
+
         emitter.emit("reserve", 1810000000100L, "trace-abc",
                 Map.of("request", Map.of("idempotency_key", "k1"),
                         "response", Map.of("decision", "ALLOW")));
@@ -63,6 +66,8 @@ class EvidenceEmitterTest {
 
     @Test
     void stripsNullValuedPropertiesFromTheEvidencePayload() throws Exception {
+        configureIdentity();
+
         // The evidence mirrors are additionalProperties:false with non-nullable typed
         // fields, so an unset request field serialized as null (e.g. ttl_ms / metadata)
         // would make the envelope fail mirror validation. Null-strip it.
@@ -112,6 +117,8 @@ class EvidenceEmitterTest {
 
     @Test
     void omitsTraceIdWhenBlank() throws Exception {
+        configureIdentity();
+
         emitter.emit("commit", 123L, "  ", Map.of("request", Map.of("a", 1), "response", Map.of("b", 2)));
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
@@ -120,15 +127,14 @@ class EvidenceEmitterTest {
     }
 
     @Test
-    void returnsNullAndOmitsEvidenceIdWhenIdentityUnconfigured() throws Exception {
+    void returnsNullAndDoesNotQueueWhenIdentityUnconfigured() {
         // default wire() leaves server-id/signer-did blank
         EvidenceEmitter.EvidenceRef ref = emitter.emit("reserve", 1L, null,
                 Map.of("request", Map.of(), "response", Map.of("decision", "ALLOW")));
 
         assertThat(ref).isNull();
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(repository).push(captor.capture());
-        assertThat(mapper.readTree(captor.getValue()).has("evidence_id")).isFalse();
+        verify(repository, never()).push(anyString());
+        verify(metrics, never()).recordEvidenceEmitFailed(anyString());
     }
 
     @Test
@@ -168,7 +174,8 @@ class EvidenceEmitterTest {
     }
 
     @Test
-    void failsOpenAndMetersWhenPushThrows() {
+    void failsOpenAndMetersWhenPushThrows() throws Exception {
+        configureIdentity();
         doThrow(new RuntimeException("redis down")).when(repository).push(anyString());
 
         // a push failure must NOT propagate (the ledger write already committed)

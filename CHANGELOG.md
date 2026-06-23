@@ -14,6 +14,28 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.38] — 2026-06-23
+
+### Fixed
+
+- **Unconfigured CyclesEvidence no longer queues source records.** When either
+  `EVIDENCE_SERVER_ID` or `EVIDENCE_SIGNING_SIGNER_DID` is blank,
+  `EvidenceEmitter.emit(...)` now returns `null` before building a source record
+  or pushing to `evidence:pending`.
+- Configured deployments are unchanged: the emitter still null-strips the
+  evidence payload, computes `evidence_id` synchronously, stamps it onto the
+  queued record, and returns `cycles_evidence` for the response.
+
+### Documentation
+
+- Updated the evidence configuration comments to state that missing public
+  identity disables evidence emission completely.
+
+### Validation
+
+- `mvn -B -pl cycles-protocol-service-data -am -Dtest=EvidenceEmitterTest -Dsurefire.failIfNoSpecifiedTests=false test`
+  passes.
+
 ## [0.1.25.21] — 2026-05-22
 
 `expires_from`/`expires_to` and `finalized_from`/`finalized_to` ISO-8601 time-window filters on `GET /v1/reservations`, implementing `cycles-protocol-v0.yaml` revision 2026-05-22 ([runcycles/cycles-protocol#98](https://github.com/runcycles/cycles-protocol/pull/98)). Closes [#162](https://github.com/runcycles/cycles-server/issues/162).
