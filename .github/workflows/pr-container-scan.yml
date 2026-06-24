@@ -72,6 +72,13 @@ jobs:
           format: 'sarif'
           output: 'trivy-results.sarif'
           exit-code: '1'
+          # In `format: sarif` mode the action builds an all-severities report
+          # by default, so `exit-code: 1` trips on ANY fixable finding and the
+          # `severity` filter above is ignored for gating. Limit the SARIF to
+          # the declared severities so the gate (and the Security-tab report)
+          # honor HIGH,CRITICAL only — a fixable MEDIUM should not block a PR.
+          # See AUDIT.md (jackson-databind CVE-2026-54515).
+          limit-severities-for-sarif: true
 
       - name: Upload Trivy SARIF to Security tab
         if: always()
