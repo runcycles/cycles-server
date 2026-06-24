@@ -20,7 +20,9 @@ called out but are not breaking to API clients.
 
 - Legacy SCAN pagination for `GET /v1/reservations` and `GET /v1/balances`
   now uses opaque intra-batch cursors when a page limit is reached mid-batch,
-  preventing skipped rows on follow-up pages.
+  preventing deterministic skipped rows on follow-up pages for an unchanged
+  SCAN batch. As with Redis SCAN generally, pagination remains best-effort
+  under concurrent writes or Redis rehashing.
 - Sorted `GET /v1/reservations` no longer truncates matches at 2000 hydrated
   rows. Large result sets still warn so operators can narrow filters or add
   indexed listing support later.
@@ -32,8 +34,9 @@ called out but are not breaking to API clients.
   `INVALID_REQUEST`; Lua commit/event paths also reject unknown overage
   policies defensively.
 - API key validation no longer caches full allow/deny decisions. It still
-  caches successful BCrypt verification briefly, but status, expiry, tenant,
-  and tenant-status checks are read on every request.
+  caches BCrypt verification results briefly, including repeated wrong-secret
+  checks keyed by the current stored hash, while status, expiry, tenant, and
+  tenant-status checks are read on every request.
 - Production Compose files require `REDIS_PASSWORD`, authenticate Redis health
   checks, stop publishing Redis on the host port, and pin `cycles-server` to
   `0.1.25.39`.

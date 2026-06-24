@@ -107,8 +107,8 @@ public class ApiKeyRepository {
             }
         }
         boolean verified = verifyKey(keySecret, hash);
-        if (verified && cacheKey != null) {
-            bcryptVerificationCache.put(cacheKey, Boolean.TRUE);
+        if (cacheKey != null) {
+            bcryptVerificationCache.put(cacheKey, verified);
         }
         return verified;
     }

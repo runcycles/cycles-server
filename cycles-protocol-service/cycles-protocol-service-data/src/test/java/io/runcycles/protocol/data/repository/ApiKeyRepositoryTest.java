@@ -37,9 +37,13 @@ class ApiKeyRepositoryTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        var field = ApiKeyRepository.class.getDeclaredField("objectMapper");
+        setField(repository, "objectMapper", objectMapper);
+    }
+
+    private void setField(Object target, String fieldName, Object value) throws Exception {
+        var field = ApiKeyRepository.class.getDeclaredField(fieldName);
         field.setAccessible(true);
-        field.set(repository, objectMapper);
+        field.set(target, value);
     }
 
     // ---- extractPrefix ----
@@ -415,6 +419,48 @@ class ApiKeyRepositoryTest {
             assertThat(result2.isValid()).isTrue();
             verify(jedisPool, times(2)).getResource();
             verify(jedis, times(2)).get("apikey:" + keyId);
+        }
+
+        @Test
+        void shouldReuseFailedBcryptVerificationUntilStoredHashChanges() throws Exception {
+            ApiKeyRepository spyRepository = spy(new ApiKeyRepository());
+            setField(spyRepository, "objectMapper", objectMapper);
+            setField(spyRepository, "jedisPool", jedisPool);
+
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            String staleHash = "stored-hash-v1";
+            String rotatedHash = "stored-hash-v2";
+            ApiKey staleKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(staleHash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            ApiKey rotatedKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(rotatedHash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(
+                    objectMapper.writeValueAsString(staleKey),
+                    objectMapper.writeValueAsString(staleKey),
+                    objectMapper.writeValueAsString(rotatedKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+            doReturn(false).when(spyRepository).verifyKey(secret, staleHash);
+            doReturn(true).when(spyRepository).verifyKey(secret, rotatedHash);
+
+            ApiKeyValidationResponse result1 = spyRepository.validate(secret);
+            ApiKeyValidationResponse result2 = spyRepository.validate(secret);
+            ApiKeyValidationResponse result3 = spyRepository.validate(secret);
+
+            assertThat(result1.isValid()).isFalse();
+            assertThat(result1.getReason()).isEqualTo("INVALID_KEY");
+            assertThat(result2.isValid()).isFalse();
+            assertThat(result2.getReason()).isEqualTo("INVALID_KEY");
+            assertThat(result3.isValid()).isTrue();
+            verify(spyRepository, times(1)).verifyKey(secret, staleHash);
+            verify(spyRepository, times(1)).verifyKey(secret, rotatedHash);
+            verify(jedisPool, times(3)).getResource();
+            verify(jedis, times(3)).get("apikey:" + keyId);
         }
 
         @Test

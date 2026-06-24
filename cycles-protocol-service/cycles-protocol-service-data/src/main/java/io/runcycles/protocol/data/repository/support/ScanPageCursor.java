@@ -14,7 +14,9 @@ import java.util.Base64;
  * page limit is reached before consuming the full returned batch, the next page
  * must resume from the same Redis cursor and skip keys already inspected in
  * that batch. Numeric Redis cursors are still accepted for backwards
- * compatibility.
+ * compatibility. Like any Redis SCAN iteration, this is best-effort rather
+ * than snapshot-isolated when the keyspace changes or Redis rehashes between
+ * page requests.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ScanPageCursor {
