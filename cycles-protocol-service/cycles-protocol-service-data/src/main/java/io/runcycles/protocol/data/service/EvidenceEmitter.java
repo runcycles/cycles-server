@@ -158,7 +158,9 @@ public class EvidenceEmitter {
             repository.push(objectMapper.writeValueAsString(record));
             return ref;
         } catch (Exception e) {
-            LOG.error("evidence-source emission failed (artifact_type={}): {}", artifactType, e.getMessage());
+            LOG.error("evidence-source emission failed: artifact_type={} trace_id={} server_id_configured={} signer_did_configured={} error={}",
+                    artifactType, traceId, serverId != null && !serverId.isBlank(),
+                    signerDid != null && !signerDid.isBlank(), e.toString(), e);
             metrics.recordEvidenceEmitFailed(artifactType);
             return null;
         }

@@ -1,6 +1,7 @@
 package io.runcycles.protocol.api.auth;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.api.filter.RequestIdFilter;
 import io.runcycles.protocol.api.filter.TraceContextFilter;
 import io.runcycles.protocol.data.util.TraceIdGenerator;
 import io.runcycles.protocol.model.Enums;
@@ -126,9 +127,13 @@ public class AdminApiKeyAuthenticationFilter extends OncePerRequestFilter {
         // path because the user clearly intended admin auth and a fall-
         // through would produce a confusing "Missing API key" error.
         if (adminApiKey == null || adminApiKey.isBlank()) {
-            LOG.error("X-Admin-API-Key header sent but admin.api-key not configured on this server");
-            sendErrorResponse(request, response, 500,
-                Enums.ErrorCode.INTERNAL_ERROR, "Server misconfiguration: admin API key not set");
+            String requestId = resolveRequestId(request);
+            String traceId = resolveTraceId(request);
+            LOG.error("Admin API key authentication cannot run: admin.api-key is not configured method={} path={} request_id={} trace_id={}",
+                    method, path, requestId, traceId);
+            sendErrorResponse(response, 500,
+                Enums.ErrorCode.INTERNAL_ERROR, "Server misconfiguration: admin API key not set",
+                requestId, traceId);
             return;
         }
         // MessageDigest.isEqual is constant-time on equal-length inputs
@@ -143,9 +148,12 @@ public class AdminApiKeyAuthenticationFilter extends OncePerRequestFilter {
         if (!MessageDigest.isEqual(
                 adminApiKey.getBytes(StandardCharsets.UTF_8),
                 adminHeader.getBytes(StandardCharsets.UTF_8))) {
-            LOG.warn("Invalid X-Admin-API-Key on {} {}", method, path);
-            sendErrorResponse(request, response, 401,
-                Enums.ErrorCode.UNAUTHORIZED, "Invalid admin API key");
+            String requestId = resolveRequestId(request);
+            String traceId = resolveTraceId(request);
+            LOG.warn("Admin API key authentication failed: reason=invalid_admin_key method={} path={} request_id={} trace_id={}",
+                    method, path, requestId, traceId);
+            sendErrorResponse(response, 401,
+                Enums.ErrorCode.UNAUTHORIZED, "Invalid admin API key", requestId, traceId);
             return;
         }
 
@@ -165,21 +173,25 @@ public class AdminApiKeyAuthenticationFilter extends OncePerRequestFilter {
         return false;
     }
 
-    private void sendErrorResponse(HttpServletRequest request,
-                                   HttpServletResponse response,
+    private String resolveRequestId(HttpServletRequest request) {
+        Object reqIdAttr = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        return reqIdAttr != null ? reqIdAttr.toString() : UUID.randomUUID().toString();
+    }
+
+    private String resolveTraceId(HttpServletRequest request) {
+        String traceId = TraceContextFilter.currentTraceId(request);
+        return traceId != null && !traceId.isBlank() ? traceId : TraceIdGenerator.generate();
+    }
+
+    private void sendErrorResponse(HttpServletResponse response,
                                    int status,
                                    Enums.ErrorCode code,
-                                   String message) throws IOException {
+                                   String message,
+                                   String requestId,
+                                   String traceId) throws IOException {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
-        Object reqIdAttr = request.getAttribute(
-            io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE);
-        String requestId = reqIdAttr != null ? reqIdAttr.toString() : UUID.randomUUID().toString();
-        String traceId = TraceContextFilter.currentTraceId(request);
-        if (traceId == null || traceId.isBlank()) {
-            traceId = TraceIdGenerator.generate();
-        }
         if (!response.containsHeader(TraceContextFilter.TRACE_ID_HEADER)) {
             response.setHeader(TraceContextFilter.TRACE_ID_HEADER, traceId);
         }

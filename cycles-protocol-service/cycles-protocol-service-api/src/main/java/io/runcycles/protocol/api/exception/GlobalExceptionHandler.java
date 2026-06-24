@@ -97,16 +97,51 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(CyclesProtocolException.class)
     public ResponseEntity<ErrorResponse> handleCyclesException(CyclesProtocolException ex, HttpServletRequest request) {
-        LOG.info("Landed in cycles exception handler: clazz={}",ex.getClass());
+        String requestId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
+        logCyclesException(ex, request, requestId, traceId);
         ErrorResponse body = ErrorResponse.builder()
             .error(ex.getErrorCode())
             .message(ex.getMessage())
-            .requestId(resolveRequestId(request))
-            .traceId(resolveTraceId(request))
+            .requestId(requestId)
+            .traceId(traceId)
             .details(ex.getDetails())
             .build();
         maybeEmitErrorEvidence(body, ex, request);
         return ResponseEntity.status(ex.getHttpStatus()).body(body);
+    }
+
+    private void logCyclesException(CyclesProtocolException ex, HttpServletRequest request,
+                                    String requestId, String traceId) {
+        LOG.info("Cycles protocol exception handled: method={} path={} route={} status={} error={} request_id={} trace_id={} reservation_id={} message={}",
+            request != null ? request.getMethod() : null,
+            request != null ? request.getRequestURI() : null,
+            bestMatchingRoute(request),
+            ex.getHttpStatus(),
+            ex.getErrorCode(),
+            requestId,
+            traceId,
+            reservationIdFor(request),
+            ex.getMessage());
+    }
+
+    private void logRequestError(String message, HttpServletRequest request, int status,
+                                 Enums.ErrorCode errorCode, String requestId, String traceId) {
+        LOG.info("{}: method={} path={} route={} status={} error={} request_id={} trace_id={} reservation_id={}",
+            message,
+            request != null ? request.getMethod() : null,
+            request != null ? request.getRequestURI() : null,
+            bestMatchingRoute(request),
+            status,
+            errorCode,
+            requestId,
+            traceId,
+            reservationIdFor(request));
+    }
+
+    private String bestMatchingRoute(HttpServletRequest request) {
+        Object pattern = request != null ? request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE) : null;
+        return pattern != null ? pattern.toString() : null;
     }
 
     /**
@@ -170,6 +205,9 @@ public class GlobalExceptionHandler {
 
     @SuppressWarnings("unchecked")
     private String reservationIdFor(HttpServletRequest request) {
+        if (request == null) {
+            return null;
+        }
         Object vars = request.getAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
         return vars instanceof Map ? ((Map<String, String>) vars).get("reservation_id") : null;
     }
@@ -179,11 +217,15 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
             .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
             .collect(Collectors.joining(", "));
+        String requestId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
+        logRequestError("Request body validation failed", request, HttpStatus.BAD_REQUEST.value(),
+            Enums.ErrorCode.INVALID_REQUEST, requestId, traceId);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
             .error(Enums.ErrorCode.INVALID_REQUEST)
             .message("Validation failed: " + message)
-            .requestId(resolveRequestId(request))
-            .traceId(resolveTraceId(request))
+            .requestId(requestId)
+            .traceId(traceId)
             .build());
     }
 
@@ -196,39 +238,63 @@ public class GlobalExceptionHandler {
                 return param + ": " + v.getMessage();
             })
             .collect(Collectors.joining(", "));
+        String requestId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
+        logRequestError("Request parameter validation failed", request, HttpStatus.BAD_REQUEST.value(),
+            Enums.ErrorCode.INVALID_REQUEST, requestId, traceId);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
             .error(Enums.ErrorCode.INVALID_REQUEST)
             .message("Validation failed: " + message)
-            .requestId(resolveRequestId(request))
-            .traceId(resolveTraceId(request))
+            .requestId(requestId)
+            .traceId(traceId)
             .build());
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleMessageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        String requestId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
+        logRequestError("Malformed request body", request, HttpStatus.BAD_REQUEST.value(),
+            Enums.ErrorCode.INVALID_REQUEST, requestId, traceId);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
             .error(Enums.ErrorCode.INVALID_REQUEST)
             .message("Malformed request body")
-            .requestId(resolveRequestId(request))
-            .traceId(resolveTraceId(request))
+            .requestId(requestId)
+            .traceId(traceId)
             .build());
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex, HttpServletRequest request) {
 
-        LOG.error("Unhandled exception: clazz={}", ex.getClass(), ex);
+        String requestId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
         if (ex instanceof CyclesProtocolException){
-            LOG.warn("CyclesProtocolException reached generic handler unexpectedly; check @ControllerAdvice ordering. class={}", ex.getClass().getName());
+            LOG.warn("CyclesProtocolException reached generic handler unexpectedly; check @ControllerAdvice ordering. class={} method={} path={} route={} request_id={} trace_id={}",
+                ex.getClass().getName(),
+                request != null ? request.getMethod() : null,
+                request != null ? request.getRequestURI() : null,
+                bestMatchingRoute(request),
+                requestId,
+                traceId);
             return handleCyclesException((CyclesProtocolException) ex, request);
         }
         else {
+            LOG.error("Unhandled exception: class={} method={} path={} route={} request_id={} trace_id={} reservation_id={}",
+                ex.getClass().getName(),
+                request != null ? request.getMethod() : null,
+                request != null ? request.getRequestURI() : null,
+                bestMatchingRoute(request),
+                requestId,
+                traceId,
+                reservationIdFor(request),
+                ex);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(ErrorResponse.builder()
                             .error(Enums.ErrorCode.INTERNAL_ERROR)
                             .message("Internal error")
-                            .requestId(resolveRequestId(request))
-                            .traceId(resolveTraceId(request))
+                            .requestId(requestId)
+                            .traceId(traceId)
                             .build());
         }
     }

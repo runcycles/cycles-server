@@ -115,8 +115,15 @@ public class AuditRepository {
                 List.of(json, score, logId, String.valueOf(ttlSeconds)));
         } catch (Exception e) {
             // Audit log failure must NOT break the business operation.
-            LOG.error("Failed to write audit log (non-fatal): operation={} resource_id={}",
-                entry.getOperation(), entry.getResourceId(), e);
+            LOG.error("Failed to write audit log (non-fatal): operation={} tenant={} resource_type={} resource_id={} status={} request_id={} trace_id={}",
+                entry != null ? entry.getOperation() : null,
+                entry != null ? entry.getTenantId() : null,
+                entry != null ? entry.getResourceType() : null,
+                entry != null ? entry.getResourceId() : null,
+                entry != null ? entry.getStatus() : null,
+                entry != null ? entry.getRequestId() : null,
+                entry != null ? entry.getTraceId() : null,
+                e);
         }
     }
 

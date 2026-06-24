@@ -40,7 +40,8 @@ public class DecisionController extends BaseController {
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody DecisionRequest request,
             HttpServletRequest httpRequest) {
-        LOG.info("POST /v1/decide - tenant: {}", request.getSubject().getTenant());
+        logRequest(LOG, httpRequest, "POST /v1/decide",
+                request.getSubject() != null ? request.getSubject().getTenant() : null);
         // Stash the parsed request so a budget-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
@@ -80,7 +81,9 @@ public class DecisionController extends BaseController {
                         resolveRequestId(httpRequest),
                         resolveTraceContext(httpRequest));
             }
-        } catch (Exception e) { /* non-blocking */ }
+        } catch (Exception e) {
+            logSideEffectFailure(LOG, httpRequest, "emit decision denial event", tenant, null, e);
+        }
         return ResponseEntity.ok(response);
     }
 }

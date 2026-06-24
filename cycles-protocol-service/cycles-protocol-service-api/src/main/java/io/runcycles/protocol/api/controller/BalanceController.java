@@ -6,6 +6,7 @@ import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.BalanceResponse;
 import io.swagger.v3.oas.annotations.*;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.slf4j.*;
@@ -36,7 +37,8 @@ public class BalanceController extends BaseController{
             @RequestParam(required = false) String toolset,
             @RequestParam(value = "include_children", required = false, defaultValue = "false") boolean includeChildren,
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
-            @RequestParam(required = false) String cursor) {
+            @RequestParam(required = false) String cursor,
+            HttpServletRequest httpRequest) {
         // Spec NORMATIVE: at least one subject filter must be provided
         if (tenant == null && workspace == null && app == null && workflow == null && agent == null && toolset == null) {
             throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
@@ -44,7 +46,9 @@ public class BalanceController extends BaseController{
         }
         // If tenant provided, it must match auth context; if omitted, use auth tenant
         String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
-        LOG.info("GET /v1/balances - tenant: {}", effectiveTenant);
+        LOG.info("GET /v1/balances tenant={} include_children={} limit={} has_cursor={} request_id={} trace_id={} admin={}",
+                effectiveTenant, includeChildren, limit, cursor != null && !cursor.isBlank(),
+                resolveRequestId(httpRequest), resolveTraceId(httpRequest), isAdminAuth());
         authorizeTenant(effectiveTenant);
         BalanceResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, includeChildren, limit, cursor);
         return ResponseEntity.ok(response);

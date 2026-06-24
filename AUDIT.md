@@ -5,6 +5,18 @@
 
 ---
 
+### 2026-06-24 — v0.1.25.40: ops-focused logging context review
+
+Follow-up to production log review after seeing `Landed in cycles exception handler: clazz=...` without enough context to diagnose the request. The logging audit covered runtime `INFO`, `WARN`, and `ERROR` call sites in the API and data modules.
+
+**Exception handling.** `GlobalExceptionHandler` now logs handled protocol exceptions with method, concrete path, matched route pattern, HTTP status, protocol error code, `request_id`, `trace_id`, and `reservation_id` when present. Validation and malformed-body handlers now emit the same request context at `INFO`; unexpected 500s log class plus request/route/correlation fields at `ERROR`. The null-request fallback remains safe.
+
+**Request and side-effect visibility.** Reservation, balance, decision, event, and evidence controllers now include request/trace context in request logs. Previously swallowed non-blocking event side-effect failures now log at `WARN` with operation, tenant, reservation id where available, request id, trace id, and stack trace; response behavior remains fail-open.
+
+**Auth, event, evidence, audit, and repository logs.** Client auth failures now log safe failure context at `WARN` instead of dumping the full validation DTO at `ERROR`; admin-key server misconfiguration remains `ERROR`. Async event/evidence/audit failure logs now carry tenant/resource/event/request/trace identifiers. Repository failure logs avoid whole request DTOs and raw idempotency keys, replacing them with operation/resource identifiers and key-presence booleans.
+
+**Validation.** Focused handler/auth tests pass; WebMvc controller tests pass with contract validation disabled because this sandbox cannot fetch the protocol spec; data-layer tests for API keys, audit, event emission, evidence emission, and expiry pass. Commands are recorded in `CHANGELOG.md` under `0.1.25.40`.
+
 ### 2026-06-24 — v0.1.25.39: review fixes for pagination, replay, auth, and prod defaults
 
 Follow-up to a full static review of `cycles-server` against `cycles-protocol` v0.1.25. The fixes are deliberately mixed because the reviewed issues share one release boundary: they close correctness/spec gaps without changing the public request/response schema.

@@ -55,7 +55,8 @@ public class ReservationController extends BaseController{
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody ReservationCreateRequest request,
             HttpServletRequest httpRequest) {
-        LOG.info("POST /v1/reservations - tenant: {}", request.getSubject().getTenant());
+        logRequest(LOG, httpRequest, "POST /v1/reservations",
+                request.getSubject() != null ? request.getSubject().getTenant() : null);
         // Stash the parsed request so a budget-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
@@ -115,16 +116,20 @@ public class ReservationController extends BaseController{
                         resolveRequestId(httpRequest),
                         resolveTraceContext(httpRequest));
             }
-        } catch (Exception e) { /* non-blocking */ }
+        } catch (Exception e) {
+            logSideEffectFailure(LOG, httpRequest, "emit reservation create events", tenant,
+                    response.getReservationId(), e);
+        }
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/{reservation_id}")
     @Operation(operationId = "getReservation", summary = "Get reservation by ID")
     public ResponseEntity<ReservationDetail> get(
-            @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId) {
-        LOG.info("GET /v1/reservations/{}", reservationId);
+            @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
+            HttpServletRequest httpRequest) {
         String tenant = repository.findReservationTenantById(reservationId);
+        logRequest(LOG, httpRequest, "GET /v1/reservations/{reservation_id}", tenant, reservationId);
         authorizeTenant(tenant);
         ReservationDetail detail = repository.getReservationById(reservationId);
         return ResponseEntity.ok(detail);
@@ -137,12 +142,12 @@ public class ReservationController extends BaseController{
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody CommitRequest request,
             HttpServletRequest httpRequest) {
-        LOG.info("POST /v1/reservations/{}/commit", reservationId);
         // Stash the parsed request so a lifecycle-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
+        logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/commit", tenant, reservationId);
         authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request, tenant,
                 resolveTraceId(httpRequest));
@@ -183,7 +188,10 @@ public class ReservationController extends BaseController{
                     null,
                     resolveRequestId(httpRequest),
                     resolveTraceContext(httpRequest));
-        } catch (Exception e) { /* non-blocking */ }
+        } catch (Exception e) {
+            logSideEffectFailure(LOG, httpRequest, "emit reservation commit events", tenant,
+                    reservationId, e);
+        }
         return ResponseEntity.ok(response);
     }
 
@@ -194,12 +202,12 @@ public class ReservationController extends BaseController{
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody ReleaseRequest request,
             HttpServletRequest httpRequest) {
-        LOG.info("POST /v1/reservations/{}/release", reservationId);
         // Stash the parsed request so a lifecycle-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
+        logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/release", tenant, reservationId);
         authorizeTenant(tenant);
         String actorType = isAdminAuth() ? "admin_on_behalf_of" : "tenant";
         ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType,
@@ -244,8 +252,10 @@ public class ReservationController extends BaseController{
             // Keep the structured log too — ops teams watching
             // stdout (dev, incident response) see admin actions in
             // real time without having to query the audit endpoint.
-            LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} reason={}",
-                reservationId, tenant, safeReason != null ? safeReason : "(none)");
+            LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} request_id={} trace_id={} source_ip={} reason={}",
+                reservationId, tenant, resolveRequestId(httpRequest), resolveTraceId(httpRequest),
+                httpRequest != null ? httpRequest.getRemoteAddr() : null,
+                safeReason != null ? safeReason : "(none)");
         }
         return ResponseEntity.ok(response);
     }
@@ -255,10 +265,11 @@ public class ReservationController extends BaseController{
     public ResponseEntity<ReservationExtendResponse> extend(
             @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
-            @Valid @RequestBody ReservationExtendRequest request) {
-        LOG.info("POST /v1/reservations/{}/extend", reservationId);
+            @Valid @RequestBody ReservationExtendRequest request,
+            HttpServletRequest httpRequest) {
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         String tenant = repository.findReservationTenantById(reservationId);
+        logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/extend", tenant, reservationId);
         authorizeTenant(tenant);
         ReservationExtendResponse response = repository.extendReservation(reservationId, request, tenant);
         return ResponseEntity.ok(response);
@@ -285,7 +296,8 @@ public class ReservationController extends BaseController{
             @RequestParam(value = "expires_to", required = false) String expiresTo,
             @RequestParam(value = "finalized_from", required = false) String finalizedFrom,
             @RequestParam(value = "finalized_to", required = false) String finalizedTo,
-            @RequestParam(value = "include", required = false) String include) {
+            @RequestParam(value = "include", required = false) String include,
+            HttpServletRequest httpRequest) {
         // Validate status against ReservationStatus enum if provided
         if (status != null) {
             try {
@@ -370,9 +382,11 @@ public class ReservationController extends BaseController{
         // comma-separated field-projection list. Unrecognized / empty tokens are
         // ignored (no 400). Projection-only — never bound to the cursor.
         Set<ReservationInclude> includeFields = ReservationInclude.parseCsv(include);
-        LOG.info("GET /v1/reservations - tenant: {}, admin: {}, sort_by: {}, sort_dir: {}, from: {}, to: {}, expires_from: {}, expires_to: {}, finalized_from: {}, finalized_to: {}, include: {}",
-                effectiveTenant, isAdminAuth(), sortBy, sortDir, fromMs, toMs,
-                expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, includeFields);
+        LOG.info("GET /v1/reservations tenant={} admin={} limit={} has_cursor={} sort_by={} sort_dir={} from_ms={} to_ms={} expires_from_ms={} expires_to_ms={} finalized_from_ms={} finalized_to_ms={} include={} request_id={} trace_id={}",
+                effectiveTenant, isAdminAuth(), limit, cursor != null && !cursor.isBlank(),
+                sortBy, sortDir, fromMs, toMs, expiresFromMs, expiresToMs,
+                finalizedFromMs, finalizedToMs, includeFields, resolveRequestId(httpRequest),
+                resolveTraceId(httpRequest));
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
                 status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir,
                 fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs,

@@ -80,7 +80,9 @@ public class EventEmitterService implements DisposableBean {
                         .build();
                 repository.emit(event);
             } catch (Exception e) {
-                LOG.error("Failed to emit event {}: {}", type, e.getMessage());
+                LOG.error("Failed to emit event: event_type={} tenant={} scope={} correlation_id={} request_id={} trace_id={} actor_type={} error={}",
+                        type, tenantId, scope, correlationId, requestId, traceNonNull.traceId(),
+                        actor != null ? actor.getType() : null, e.toString(), e);
             }
         }, emitExecutor);
     }

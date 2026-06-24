@@ -18,7 +18,9 @@ public class ApiKeyValidationService {
         ApiKeyValidationResponse apiKeyValidationResponse = apiKeyRepository.validate(apiToken) ;
         if (LOG.isDebugEnabled()) {
             String masked = (apiToken != null && apiToken.length() > 8) ? apiToken.substring(0, 8) + "***" : "***";
-            LOG.debug("API key validation: apiToken={}, result={}", masked, apiKeyValidationResponse);
+            LOG.debug("API key validation: apiToken={} valid={} tenant={} key_id={} reason={}",
+                    masked, apiKeyValidationResponse.isValid(), apiKeyValidationResponse.getTenantId(),
+                    apiKeyValidationResponse.getKeyId(), apiKeyValidationResponse.getReason());
         }
         return apiKeyValidationResponse ;
     }

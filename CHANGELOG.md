@@ -14,6 +14,30 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.40] — 2026-06-24
+
+### Fixed
+
+- Replaced the class-only `Landed in cycles exception handler` log with
+  structured protocol-exception logs carrying method, path, matched route,
+  status, error code, `request_id`, `trace_id`, and `reservation_id`.
+- Added the same operational context to validation, malformed-body, and
+  unexpected exception handler logs so 4xx/5xx responses can be joined to
+  application logs.
+- Added request-context fields to controller request logs for reservations,
+  balances, decisions, events, and evidence retrieval.
+- Made formerly silent non-blocking controller side-effect failures visible at
+  `WARN` without changing response behavior.
+- Tightened auth and async event/evidence/audit logs to include safe identifiers
+  such as tenant, resource, event, request, and trace context while avoiding
+  full validation DTOs, request DTOs, API keys, and raw idempotency keys.
+
+### Validation
+
+- `mvn -B -pl cycles-protocol-service-api -am "-Dtest=GlobalExceptionHandlerTest,ApiKeyAuthenticationFilterTest,AdminApiKeyAuthenticationFilterTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`
+- `mvn -B -pl cycles-protocol-service-api -am "-Dtest=ReservationControllerTest,DecisionControllerTest,EventControllerTest,BalanceControllerTest,EvidenceControllerTest" "-Dsurefire.failIfNoSpecifiedTests=false" "-Dcontract.validation.enabled=false" test`
+- `mvn -B -pl cycles-protocol-service-data -am "-Dtest=ApiKeyRepositoryTest,ApiKeyValidationServiceTest,AuditRepositoryTest,EventEmitterRepositoryTest,EventEmitterServiceTest,ReservationExpiryServiceTest,EvidenceEmitterTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`
+
 ## [0.1.25.39] — 2026-06-24
 
 ### Fixed

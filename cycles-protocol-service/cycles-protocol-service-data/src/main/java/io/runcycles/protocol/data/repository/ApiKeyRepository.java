@@ -47,8 +47,9 @@ public class ApiKeyRepository {
             .build();
 
     public ApiKeyValidationResponse validate(String keySecret) {
+        String prefix = null;
         try (Jedis jedis = jedisPool.getResource()) {
-            String prefix = extractPrefix(keySecret);
+            prefix = extractPrefix(keySecret);
             String keyId = jedis.get("apikey:lookup:" + prefix);
             if (keyId == null) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
@@ -92,7 +93,8 @@ public class ApiKeyRepository {
                     .expiresAt(key.getExpiresAt())
                     .build();
         } catch (Exception e) {
-            LOG.error("API key validation failed", e);
+            LOG.error("API key validation failed: key_prefix_present={} key_prefix_length={} error={}",
+                    prefix != null, prefix != null ? prefix.length() : null, e.toString(), e);
             return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
         }
     }
@@ -117,7 +119,8 @@ public class ApiKeyRepository {
         try {
             return BCrypt.checkpw(keySecret, hash);
         } catch (Exception e) {
-            LOG.warn("BCrypt verification failed", e);
+            LOG.warn("BCrypt verification failed: stored_hash_present={} stored_hash_length={} error={}",
+                    hash != null, hash != null ? hash.length() : null, e.toString(), e);
             return false;
         }
     }

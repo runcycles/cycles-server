@@ -9,7 +9,10 @@ import io.runcycles.protocol.model.ErrorResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import jakarta.validation.ConstraintViolationException;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -67,6 +70,27 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.BUDGET_EXCEEDED);
         assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
         assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("handled CyclesProtocolException log includes operator context")
+    void cyclesExceptionLogIncludesOperatorContext(CapturedOutput output) {
+        request.setRequestURI("/v1/reservations/res_abc123/commit");
+        withRoute("POST", "/v1/reservations/{reservation_id}/commit",
+                Map.of("reservation_id", "res_abc123"));
+
+        handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        assertThat(output).contains("Cycles protocol exception handled")
+                .contains("method=POST")
+                .contains("path=/v1/reservations/res_abc123/commit")
+                .contains("route=/v1/reservations/{reservation_id}/commit")
+                .contains("status=409")
+                .contains("error=BUDGET_EXCEEDED")
+                .contains("request_id=req-test-123")
+                .contains("trace_id=" + TRACE_ID)
+                .contains("reservation_id=res_abc123");
     }
 
     @Test

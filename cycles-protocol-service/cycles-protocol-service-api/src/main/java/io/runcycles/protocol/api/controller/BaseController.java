@@ -100,6 +100,25 @@ abstract public class BaseController {
         return TraceContextFilter.currentContext(request);
     }
 
+    protected void logRequest(Logger logger, HttpServletRequest request, String operation,
+                              String tenant, String reservationId) {
+        logger.info("{} tenant={} reservation_id={} request_id={} trace_id={} admin={}",
+                operation, tenant, reservationId, resolveRequestId(request),
+                resolveTraceId(request), isAdminAuth());
+    }
+
+    protected void logRequest(Logger logger, HttpServletRequest request, String operation,
+                              String tenant) {
+        logRequest(logger, request, operation, tenant, null);
+    }
+
+    protected void logSideEffectFailure(Logger logger, HttpServletRequest request, String operation,
+                                        String tenant, String reservationId, Exception e) {
+        logger.warn("Non-blocking side effect failed: operation={} tenant={} reservation_id={} request_id={} trace_id={} error={}",
+                operation, tenant, reservationId, resolveRequestId(request), resolveTraceId(request),
+                e.toString(), e);
+    }
+
     public void validateIdempotencyHeader(String headerKey, String bodyKey) {
         if (headerKey != null && bodyKey != null && !headerKey.equals(bodyKey)) {
             throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
