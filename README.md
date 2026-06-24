@@ -108,7 +108,7 @@ Webhook receivers
 
 ## API Endpoints
 
-All endpoints require `X-Cycles-API-Key` header authentication — **except `GET /v1/evidence/{id}`**, a public capability URL (the unguessable `evidence_id` is the bearer secret; see [CyclesEvidence](#cyclesevidence)).
+All endpoints require `X-Cycles-API-Key` header authentication — **except `GET /v1/evidence/{id}`**, a public capability URL (the unguessable `evidence_id` is the bearer secret), and **`GET /v1/.well-known/cycles-jwks.json`**, which publishes public verification keys for CyclesEvidence signer resolution (see [CyclesEvidence](#cyclesevidence)).
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -122,12 +122,13 @@ All endpoints require `X-Cycles-API-Key` header authentication — **except `GET
 | `/v1/events` | POST | Direct debit without prior reservation (returns 201) |
 | `/v1/balances` | GET | Query budget balances for scopes |
 | `/v1/evidence/{id}` | GET | Fetch a signed [CyclesEvidence](#cyclesevidence) envelope by id (public capability URL — no API key) |
+| `/v1/.well-known/cycles-jwks.json` | GET | Fetch the public CyclesEvidence signer JWK Set for authority resolution and rotation history (no API key) |
 
 ### CyclesEvidence
 
 Every budget decision can be backed by a tamper-evident, signed audit envelope. On `decide` / `reserve` / `commit` / `release` — and on budget/lifecycle **denials** (e.g. a 409 `BUDGET_EXCEEDED` `error`) — the response carries an optional `cycles_evidence` ref (`{ evidence_id, cycles_evidence_url }`). `cycles-server` computes the content-addressed `evidence_id` synchronously and returns it on the wire; the `cycles-server-events` tier asynchronously Ed25519-signs the envelope and stores it, served back verbatim at the public `GET /v1/evidence/{id}` capability URL. A consumer (e.g. an APS gateway) records the `evidence_id` to bind its own receipt to the decision, then fetches + verifies the envelope offline — no live ledger access needed.
 
-Evidence is **off until configured**: set the shared identity env vars (below). The private signing key lives only in `cycles-server-events` — see its [identity enablement runbook](https://github.com/runcycles/cycles-server-events/blob/main/docs/evidence-identity-enablement.md). Wire shape: `cycles-protocol-v0.yaml` (`CyclesEvidenceRef`, `getEvidence`) + the [`cycles-evidence-v0.1`](https://github.com/runcycles/cycles-protocol/blob/main/drafts/cycles-evidence-v0.1.yaml) envelope draft.
+Evidence is **off until configured**: set the shared identity env vars (below). The private signing key lives only in `cycles-server-events` — see its [identity enablement runbook](https://github.com/runcycles/cycles-server-events/blob/main/docs/evidence-identity-enablement.md). Wire shape: `cycles-protocol-v0.yaml` (`CyclesEvidenceRef`, `getEvidence`, `getEvidenceJwks`) + [`cycles-evidence-v0.2.yaml`](https://github.com/runcycles/cycles-protocol/blob/main/cycles-evidence-v0.2.yaml), whose signer-key resolution/JWKS layer is additive to the raw-hex envelope shape.
 
 ## Build
 
@@ -203,6 +204,9 @@ The cycles-server itself doesn't need to know it's behind a proxy. Standard `X-F
 - `ADMIN_API_KEY` — the bootstrap admin key for the admin server (32+ random bytes recommended)
 - `WEBHOOK_SECRET_ENCRYPTION_KEY` — encrypts webhook subscriber secrets at rest in Redis (32 bytes, base64)
 - `EVIDENCE_SERVER_ID` + `EVIDENCE_SIGNING_SIGNER_DID` — (optional) the public [CyclesEvidence](#cyclesevidence) identity; set both to enable evidence, **byte-identical to the `cycles-server-events` values**. `cycles-server` holds only the public half — the private signing key lives in `cycles-server-events`. Leave unset to run without evidence. See the [enablement runbook](https://github.com/runcycles/cycles-server-events/blob/main/docs/evidence-identity-enablement.md).
+- `EVIDENCE_SIGNING_KID` — (optional) public JWK `kid` label for `GET /v1/.well-known/cycles-jwks.json`; defaults to the first 16 hex chars of `EVIDENCE_SIGNING_SIGNER_DID`. Not a signing key.
+- `EVIDENCE_SIGNING_NBF_MS` — (optional) active key validity start in epoch milliseconds; default `0` is appropriate for a never-rotated key.
+- `EVIDENCE_SIGNING_RETIRED_KEYS` — (optional) JSON array of retired public keys for JWKS rotation history (`signer_did`, `kid`, `nbf_ms`, `exp_ms`).
 
 See [Configuration](#configuration) below for the full env-var matrix.
 
@@ -271,6 +275,11 @@ The property annotation deliberately does **not** set `tries` — the count come
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | *(empty)* | AES-256-GCM key for webhook signing secret encryption at rest (base64, 32 bytes). Must match admin + events services. Generate: `openssl rand -base64 32` |
 | `EVENT_TTL_DAYS` | `90` | Redis TTL for `event:{id}` keys (days) |
 | `DELIVERY_TTL_DAYS` | `14` | Redis TTL for `delivery:{id}` keys (days) |
+| `EVIDENCE_SERVER_ID` | *(empty)* | Public CyclesEvidence issuer base including `/v1`; set with `EVIDENCE_SIGNING_SIGNER_DID` to emit `cycles_evidence` refs. Must match `cycles-server-events`. |
+| `EVIDENCE_SIGNING_SIGNER_DID` | *(empty)* | Public raw Ed25519 key (64 hex) stamped as `signer_did`; must match the events worker signing key public half. |
+| `EVIDENCE_SIGNING_KID` | *(empty)* | Optional public JWK `kid` label for the signer JWKS; defaults to the first 16 hex chars of `EVIDENCE_SIGNING_SIGNER_DID`. |
+| `EVIDENCE_SIGNING_NBF_MS` | `0` | Active JWKS key validity start, epoch ms inclusive; set to the rotation time when rotating keys. |
+| `EVIDENCE_SIGNING_RETIRED_KEYS` | *(empty)* | Optional JSON array of retired public signing keys with bounded validity windows for evidence rotation history. |
 
 ### Webhook Event Emission
 

@@ -92,6 +92,12 @@ All settings are via environment variables (with defaults):
 | `REDIS_HOST` | `localhost` | Redis hostname |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | *(empty)* | Redis password (omit for no auth) |
+| `EVIDENCE_SERVER_ID` | *(empty)* | Public CyclesEvidence issuer base including `/v1`; set with `EVIDENCE_SIGNING_SIGNER_DID` to emit `cycles_evidence` refs. Must match `cycles-server-events`. |
+| `EVIDENCE_SIGNING_SIGNER_DID` | *(empty)* | Public raw Ed25519 key (64 hex) stamped as `signer_did`; the private key lives only in `cycles-server-events`. |
+| `EVIDENCE_SIGNING_KID` | *(empty)* | Optional public JWK `kid` label for `GET /v1/.well-known/cycles-jwks.json`; defaults to the first 16 hex chars of `EVIDENCE_SIGNING_SIGNER_DID`. |
+| `EVIDENCE_SIGNING_NBF_MS` | `0` | Active JWKS key validity start, epoch ms inclusive; set to the rotation time when rotating keys. |
+| `EVIDENCE_SIGNING_RETIRED_KEYS` | *(empty)* | Optional JSON array of retired public signing keys with `signer_did`, `kid`, `nbf_ms`, and exclusive `exp_ms` for rotation history. |
+| `EVIDENCE_STORE_KEY_PREFIX` | `evidence:envelope:` | Redis key prefix for signed envelopes served by `GET /v1/evidence/{id}`; must match `cycles-server-events`. |
 
 ---
 
@@ -725,6 +731,7 @@ Each script follows a common pattern:
 | `cycles.expiry.interval-ms` | `5000` | How often the background expiry sweep runs (ms) |
 | `spring.jackson.deserialization.fail-on-unknown-properties` | `true` | Reject unknown JSON fields |
 | `spring.jackson.default-property-inclusion` | `non_null` | Omit null fields from responses |
+| `cycles.evidence.signing.*` | see above | Public CyclesEvidence identity and JWKS publication settings. Private signing material is never configured on `cycles-server`; it belongs only on `cycles-server-events`. |
 
 ---
 
