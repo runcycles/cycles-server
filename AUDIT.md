@@ -20,6 +20,20 @@ It reports only key presence and length, while validation/auth failure logs keep
 tenant/key/reason/request/trace context in sanitized form. No HTTP status/body
 change, no Redis/Lua change, and no cycles-protocol spec change.
 
+The same sanitization is now also applied in the **data plane**, which the first
+pass missed: repository and service failure logs (`RedisReservationRepository`,
+`AuditRepository`, `EventEmitterRepository`, `EventEmitterService`,
+`EvidenceEmitter`, `ReservationExpiryService`) flattened request-derived strings
+(tenant, reservation id, scope, resource keys, exception messages) only after
+this follow-up. The CR/LF flatten previously lived in three private copies
+(`BaseController`, `GlobalExceptionHandler`, `ApiKeyValidationService`); a shared
+`io.runcycles.protocol.data.util.LogSanitizer.sanitize(Object)` (null-safe) is
+now the single source the data plane uses, covered by a focused
+`LogSanitizerTest`. The trailing SLF4J throwable argument is never sanitized
+(stack traces are preserved) and DEBUG one-arg traces are left as-is. The
+existing API-module copies still behave identically and can fold into
+`LogSanitizer` in a later cleanup.
+
 ### 2026-06-24 — v0.1.25.40: ops-focused logging context review
 
 Follow-up to production log review after seeing `Landed in cycles exception handler: clazz=...` without enough context to diagnose the request. The logging audit covered runtime `INFO`, `WARN`, and `ERROR` call sites in the API and data modules.

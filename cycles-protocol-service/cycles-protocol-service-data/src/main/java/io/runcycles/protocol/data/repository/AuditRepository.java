@@ -1,6 +1,7 @@
 package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,9 +118,9 @@ public class AuditRepository {
             // Audit log failure must NOT break the business operation.
             LOG.error("Failed to write audit log (non-fatal): operation={} tenant={} resource_type={} resource_id={} status={} request_id={} trace_id={}",
                 entry != null ? entry.getOperation() : null,
-                entry != null ? entry.getTenantId() : null,
+                entry != null ? LogSanitizer.sanitize(entry.getTenantId()) : null,
                 entry != null ? entry.getResourceType() : null,
-                entry != null ? entry.getResourceId() : null,
+                entry != null ? LogSanitizer.sanitize(entry.getResourceId()) : null,
                 entry != null ? entry.getStatus() : null,
                 entry != null ? entry.getRequestId() : null,
                 entry != null ? entry.getTraceId() : null,

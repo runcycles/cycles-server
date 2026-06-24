@@ -26,6 +26,10 @@ called out but are not breaking to API clients.
   failures.
 - Sanitized JWKS retired-key parsing warnings and auth rejection logs while
   preserving method, path, request id, trace id, and error context.
+- Extended the same CR/LF flattening to data-plane repository/service failure
+  logs (reservation, audit, event-emitter, evidence, expiry) via a shared
+  `LogSanitizer` utility, so request-derived strings logged below the
+  controller layer cannot inject log lines either.
 
 ### Compatibility
 

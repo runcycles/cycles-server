@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.EvidenceQueueRepository;
+import io.runcycles.protocol.data.util.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -160,7 +161,7 @@ public class EvidenceEmitter {
         } catch (Exception e) {
             LOG.error("evidence-source emission failed: artifact_type={} trace_id={} server_id_configured={} signer_did_configured={} error={}",
                     artifactType, traceId, serverId != null && !serverId.isBlank(),
-                    signerDid != null && !signerDid.isBlank(), e.toString(), e);
+                    signerDid != null && !signerDid.isBlank(), LogSanitizer.sanitize(e.toString()), e);
             metrics.recordEvidenceEmitFailed(artifactType);
             return null;
         }
