@@ -111,4 +111,11 @@ class ApiKeyValidationServiceTest {
         assertThat(result.isValid()).isFalse();
         assertThat(result.getReason()).isEqualTo("KEY_NOT_FOUND");
     }
+
+    @Test
+    void safeLogValueFlattensLineBreaks() {
+        assertThat(ApiKeyValidationService.safeLogValue("tenant\r\nfake=1"))
+                .isEqualTo("tenant  fake=1");
+        assertThat(ApiKeyValidationService.safeLogValue(null)).isNull();
+    }
 }

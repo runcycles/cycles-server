@@ -25,7 +25,7 @@ public class ApiKeyValidationService {
         return apiKeyValidationResponse ;
     }
 
-    private static String safeLogValue(Object value) {
+    static String safeLogValue(Object value) {
         if (value == null) {
             return null;
         }
