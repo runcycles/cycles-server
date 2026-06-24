@@ -3,6 +3,8 @@ package io.runcycles.protocol.data.repository.support;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +54,15 @@ class SortedListCursorTest {
     void decodeMalformed() {
         assertThat(SortedListCursor.decode("!!!not-base64!!!")).isEmpty();
         assertThat(SortedListCursor.decode("SGVsbG8gV29ybGQ=")).isEmpty(); // valid b64 but not JSON
+    }
+
+    @Test
+    @DisplayName("decode rejects JSON that is not a sorted cursor")
+    void decodeRejectsWrongCursorShape() {
+        String encoded = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("{\"v\":1}".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(SortedListCursor.decode(encoded)).isEmpty();
     }
 
     @Test

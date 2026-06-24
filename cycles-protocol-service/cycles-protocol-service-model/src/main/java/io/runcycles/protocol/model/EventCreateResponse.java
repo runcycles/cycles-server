@@ -16,6 +16,8 @@ public class EventCreateResponse {
     @NotNull @JsonProperty("event_id") private String eventId;
     @Valid @JsonProperty("charged") private Amount charged;
     @Valid @JsonProperty("balances") private List<Balance> balances;
+    /** Internal: true when this is an idempotent replay. Not serialized. */
+    @JsonIgnore private boolean idempotentReplay;
     /** Internal: per-scope debt incurred during this event for event emission. Not serialized. */
     @JsonIgnore private Map<String, Long> scopeDebtIncurred;
     /** Internal: per-scope pre-mutation remaining for transition detection. Not serialized. */

@@ -130,6 +130,8 @@ class ApiKeyAuthenticationFilterTest {
     void shouldReturnCorrectErrorResponseFields() throws Exception {
         // No API key header set — triggers sendErrorResponse
         request.setAttribute(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-fixed-id");
+        request.setAttribute(io.runcycles.protocol.api.filter.TraceContextFilter.TRACE_ID_ATTRIBUTE,
+                "0123456789abcdef0123456789abcdef");
 
         filter.doFilterInternal(request, response, filterChain);
 
@@ -141,7 +143,11 @@ class ApiKeyAuthenticationFilterTest {
         assertThat(json.has("error")).isTrue();
         assertThat(json.has("message")).isTrue();
         assertThat(json.has("request_id")).isTrue();
+        assertThat(json.has("trace_id")).isTrue();
         assertThat(json.get("request_id").asText()).isEqualTo("req-fixed-id");
+        assertThat(json.get("trace_id").asText()).isEqualTo("0123456789abcdef0123456789abcdef");
+        assertThat(response.getHeader("X-Cycles-Trace-Id"))
+                .isEqualTo("0123456789abcdef0123456789abcdef");
         assertThat(json.get("message").asText()).isEqualTo("Missing API key");
     }
 

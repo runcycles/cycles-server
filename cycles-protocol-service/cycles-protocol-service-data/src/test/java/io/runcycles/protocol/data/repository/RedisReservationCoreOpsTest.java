@@ -219,6 +219,16 @@ class RedisReservationCoreOpsTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldThrowInvalidRequest() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "INVALID_REQUEST", "message", "bad overage_policy")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INVALID_REQUEST)
+                    .hasFieldOrPropertyWithValue("httpStatus", 400)
+                    .hasMessageContaining("bad overage_policy");
+        }
+
+        @Test
         void shouldThrowInternalErrorForUnknownError() {
             assertThatThrownBy(() -> invokeHandleScriptError(
                     Map.of("error", "SOMETHING_UNKNOWN")))

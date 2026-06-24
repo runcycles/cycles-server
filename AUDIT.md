@@ -1,9 +1,23 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
-**Server:** Spring Boot 3.5.14 / Java 21 / Jedis 6.2.0 / Redis (Lua scripts) · commons-lang3 3.18.0 pin (SB 3.5.14 still manages 3.17.0)
+**Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 / Redis (Lua scripts) · commons-lang3 3.18.0 and Tomcat 10.1.55 pins
 
 ---
+
+### 2026-06-24 — v0.1.25.39: review fixes for pagination, replay, auth, and prod defaults
+
+Follow-up to a full static review of `cycles-server` against `cycles-protocol` v0.1.25. The fixes are deliberately mixed because the reviewed issues share one release boundary: they close correctness/spec gaps without changing the public request/response schema.
+
+**SCAN pagination.** The legacy no-sort `listReservations` and `getBalances` paths previously returned Redis' next SCAN cursor as soon as the API `limit` was reached. If the limit was reached midway through a Redis batch, the unreturned keys later in that same batch were skipped permanently on the next page. `ScanPageCursor` now wraps the current Redis cursor plus an intra-batch offset when needed, while still accepting all-digit Redis cursors from older clients. Regression tests page through a two-key single batch for both reservations and balances.
+
+**Sorted listing.** The v0.1.25.13 heap-safety cap on sorted `listReservations` made rows beyond the 2000-row hydrated slice unreachable even though `has_more` could eventually become false. The sorted path now hydrates all matching rows for correctness and logs when it crosses the same 2000-row threshold. The long-term performance answer remains the deferred per-tenant sorted index; the cap is no longer allowed to leak into wire correctness.
+
+**Auth and idempotency.** Auth-filter error bodies now include `trace_id` and set `X-Cycles-Trace-Id` when a direct filter test or unusual deployment order bypasses `TraceContextFilter`. Event idempotency replay now stores and returns the original successful response JSON instead of reconstructing balances from current budget state, and `EventController` skips duplicate balance-event side effects on replay. API key validation no longer caches full allow/deny decisions; only successful BCrypt verification is cached, while key status, expiry, tenant ownership, and tenant status are re-read on every request.
+
+**Fail-closed config and deployment defaults.** Invalid tenant `default_commit_overage_policy` values now fail with `INVALID_REQUEST` before Lua execution; commit/event Lua scripts also reject unknown overage policies defensively for corrupted reservation/script inputs. Production Compose files now require `REDIS_PASSWORD`, authenticate Redis health checks, stop publishing Redis on the host port, and pin `cycles-server` to `0.1.25.39`.
+
+**Documentation and versioning.** `cycles-protocol-service/README.md` now distinguishes header/body idempotency-key mismatch (`400 INVALID_REQUEST`) from same-key/different-payload replay (`409 IDEMPOTENCY_MISMATCH`). `CHANGELOG.md` and `cycles-protocol-service/pom.xml` bump the service to `0.1.25.39`.
 
 ### 2026-06-23 — Docker log rotation defaults on all compose files (no version bump)
 

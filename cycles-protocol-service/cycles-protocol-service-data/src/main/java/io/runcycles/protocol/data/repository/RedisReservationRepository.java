@@ -4,6 +4,7 @@ import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.support.FilterHasher;
 import io.runcycles.protocol.data.repository.support.ReservationComparators;
+import io.runcycles.protocol.data.repository.support.ScanPageCursor;
 import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
@@ -55,20 +56,8 @@ public class RedisReservationRepository {
         .map(Enums.UnitEnum::name)
         .collect(Collectors.joining(","));
 
-    /**
-     * v0.1.25.13 hydration cap for the sorted listReservations path. The sorted
-     * path must full-SCAN every `reservation:res_*` key across all tenants
-     * before the in-memory sort, which is unbounded in the naive case. At
-     * runtime scale (10k reservations per active tenant) this can exhaust
-     * heap before the cursor even runs. Cap at 2000 rows per request; when
-     * the cap is hit we break out of hydration, sort the capped slice, and
-     * serve the cursor from that slice. Operators that need to see beyond
-     * the cap should narrow filters (status, scope segments, tenant) — the
-     * deferred-optimization ADR (docs/deferred-optimizations/
-     * sorted-list-zset-indices.md) tracks the longer-term per-tenant ZSET
-     * index work that will retire this cap.
-     */
-    static final int SORTED_HYDRATE_CAP = 2000;
+    /** Warn when the naive sorted list path hydrates a large result set. */
+    static final int SORTED_HYDRATE_WARN_THRESHOLD = 2000;
     private static final long IDEMPOTENCY_CACHE_TTL_MS = 86_400_000L;
     // commit/release are terminal: reserve/commit/release.lua set a 30-day TTL on the
     // finalized reservation hash (audit trail), so the commit/release idempotent replay is
@@ -1182,7 +1171,9 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
-            String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
+            ScanPageCursor pageCursor = ScanPageCursor.decode(startCursor);
+            String cursor = pageCursor.redisCursor();
+            int batchOffset = pageCursor.offset();
 
             // Pre-lowercase filter params once (scope paths are already lowercased at creation)
             String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
@@ -1203,7 +1194,10 @@ public class RedisReservationRepository {
                     }
                     pipeline.sync();
 
-                    for (String key : keys) {
+                    int startIndex = Math.min(batchOffset, keys.size());
+                    batchOffset = 0;
+                    for (int i = startIndex; i < keys.size(); i++) {
+                        String key = keys.get(i);
                         try {
                             Map<String, String> fields = responses.get(key).get();
                             if (fields.isEmpty()) continue;
@@ -1223,8 +1217,8 @@ public class RedisReservationRepository {
                             result.add(toSummary(buildReservationSummary(fields), includeFields));
 
                             if (result.size() >= limit) {
-                                String nextCursor = scan.getCursor();
-                                if ("0".equals(nextCursor)) nextCursor = null;
+                                String nextCursor = ScanPageCursor.nextCursor(
+                                    cursor, i + 1, keys.size(), scan.getCursor());
                                 // Spec: has_more is true only when next_cursor is present
                                 return ReservationListResponse.builder()
                                     .reservations(result)
@@ -1301,8 +1295,6 @@ public class RedisReservationRepository {
             String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
 
             String scanCursor = "0";
-            boolean capped = false;
-            scanLoop:
             do {
                 ScanResult<String> scan = jedis.scan(scanCursor, params);
                 List<String> keys = scan.getResult();
@@ -1315,7 +1307,6 @@ public class RedisReservationRepository {
                     pipeline.sync();
 
                     for (String key : keys) {
-                        if (matching.size() >= SORTED_HYDRATE_CAP) { capped = true; break scanLoop; }
                         try {
                             Map<String, String> fields = responses.get(key).get();
                             if (fields.isEmpty()) continue;
@@ -1341,9 +1332,9 @@ public class RedisReservationRepository {
                 scanCursor = scan.getCursor();
             } while (!"0".equals(scanCursor));
 
-            if (capped) {
-                LOG.warn("listReservationsSorted hydration capped at {} rows for tenant={} sort_by={} sort_dir={}; narrow filters to see beyond the cap",
-                    SORTED_HYDRATE_CAP, tenant, effectiveSortBy, effectiveSortDir);
+            if (matching.size() >= SORTED_HYDRATE_WARN_THRESHOLD) {
+                LOG.warn("listReservationsSorted hydrated {} rows for tenant={} sort_by={} sort_dir={}; narrow filters or add sorted indices before this grows further",
+                    matching.size(), tenant, effectiveSortBy, effectiveSortDir);
             }
 
             // Full in-memory sort. Acceptable at runtime-plane scale; metric below lets us
@@ -1540,7 +1531,9 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("budget:*").count(100);
             List<Balance> balances = new ArrayList<>();
-            String cursor = (startCursor != null && !startCursor.isBlank()) ? startCursor : "0";
+            ScanPageCursor pageCursor = ScanPageCursor.decode(startCursor);
+            String cursor = pageCursor.redisCursor();
+            int batchOffset = pageCursor.offset();
 
             // Pre-lowercase filter params once (scope paths are already lowercased at creation)
             String tenantSegment = "tenant:" + tenant.toLowerCase();
@@ -1563,7 +1556,10 @@ public class RedisReservationRepository {
                 }
                 pipeline.sync();
 
-                for (String key : keys) {
+                int startIndex = Math.min(batchOffset, keys.size());
+                batchOffset = 0;
+                for (int i = startIndex; i < keys.size(); i++) {
+                    String key = keys.get(i);
                     try {
                         Map<String, String> budget = responses.get(key).get();
                         if (budget.isEmpty()) continue;
@@ -1609,8 +1605,8 @@ public class RedisReservationRepository {
                             .build());
 
                         if (balances.size() >= limit) {
-                            String nextCursor = scan.getCursor();
-                            if ("0".equals(nextCursor)) nextCursor = null;
+                            String nextCursor = ScanPageCursor.nextCursor(
+                                cursor, i + 1, keys.size(), scan.getCursor());
                             // Spec: has_more is true only when next_cursor is present
                             return BalanceResponse.builder()
                                 .balances(balances)
@@ -1865,6 +1861,7 @@ public class RedisReservationRepository {
             // On idempotency hit, Lua returns existing event_id
             String responseEventId = response.containsKey("event_id") ?
                 (String) response.get("event_id") : eventId;
+            boolean idempotentReplay = !eventId.equals(responseEventId);
 
             // Parse balances returned atomically from Lua (no extra round-trips)
             List<Balance> balances = parseLuaBalances(response, request.getActual().getUnit());
@@ -1878,12 +1875,14 @@ public class RedisReservationRepository {
 
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
 
-            metrics.recordEvent(tenant, "APPLIED", "OK", overagePolicyTag);
+            if (!idempotentReplay) {
+                metrics.recordEvent(tenant, "APPLIED", "OK", overagePolicyTag);
+            }
             // Any scope that actually accrued debt counts as overdraft incurred
             // (event path creates debt the same way commit does).
             boolean anyDebt = scopeDebtIncurred != null
                 && scopeDebtIncurred.values().stream().anyMatch(v -> v != null && v > 0);
-            if (anyDebt) {
+            if (!idempotentReplay && anyDebt) {
                 metrics.recordOverdraftIncurred(tenant);
             }
             return EventCreateResponse.builder()
@@ -1891,6 +1890,7 @@ public class RedisReservationRepository {
                 .eventId(responseEventId)
                 .charged(charged)
                 .balances(balances)
+                .idempotentReplay(idempotentReplay)
                 .scopeDebtIncurred(scopeDebtIncurred)
                 .preRemaining(parsePreRemaining(response))
                 .preIsOverLimit(parsePreIsOverLimit(response))
@@ -2275,7 +2275,12 @@ public class RedisReservationRepository {
         if (tenantConfig != null) {
             Object defaultPolicy = tenantConfig.get("default_commit_overage_policy");
             if (defaultPolicy != null && !defaultPolicy.toString().isEmpty()) {
-                return defaultPolicy.toString();
+                try {
+                    return Enums.CommitOveragePolicy.valueOf(defaultPolicy.toString()).name();
+                } catch (IllegalArgumentException e) {
+                    throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                        "Invalid tenant default_commit_overage_policy: " + defaultPolicy, 400);
+                }
             }
         }
         return "ALLOW_IF_AVAILABLE";
@@ -2381,6 +2386,8 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.reservationExpirationNotFound();
             case "MAX_EXTENSIONS_EXCEEDED":
                 throw new CyclesProtocolException(Enums.ErrorCode.MAX_EXTENSIONS_EXCEEDED, message, 409);
+            case "INVALID_REQUEST":
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST, message, 400);
             default:
                 throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, "Script error: " + error, 500);
         }

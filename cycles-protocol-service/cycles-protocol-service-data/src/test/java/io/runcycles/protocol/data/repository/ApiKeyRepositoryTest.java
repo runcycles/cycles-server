@@ -367,7 +367,37 @@ class ApiKeyRepositoryTest {
         }
 
         @Test
-        void shouldReturnCachedResponseOnSecondCall() throws Exception {
+        void shouldRevalidateStatusOnSecondCallAfterBcryptCacheHit() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey activeKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            ApiKey revokedKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.REVOKED)
+                    .permissions(List.of("read")).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(
+                    objectMapper.writeValueAsString(activeKey),
+                    objectMapper.writeValueAsString(revokedKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+
+            // First call — hits Redis
+            ApiKeyValidationResponse result1 = repository.validate(secret);
+            assertThat(result1.isValid()).isTrue();
+
+            // Second call still reads Redis status, so revocation is not stale.
+            ApiKeyValidationResponse result2 = repository.validate(secret);
+            assertThat(result2.isValid()).isFalse();
+            assertThat(result2.getReason()).isEqualTo("KEY_REVOKED");
+
+            verify(jedisPool, times(2)).getResource();
+        }
+
+        @Test
+        void shouldReuseSuccessfulBcryptVerificationWhileStillReadingRedis() throws Exception {
             stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
@@ -378,16 +408,13 @@ class ApiKeyRepositoryTest {
             when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
             when(jedis.get("tenant:acme-corp")).thenReturn(null);
 
-            // First call — hits Redis
             ApiKeyValidationResponse result1 = repository.validate(secret);
-            assertThat(result1.isValid()).isTrue();
-
-            // Second call — should be cached, no additional Redis calls
             ApiKeyValidationResponse result2 = repository.validate(secret);
-            assertThat(result2.isValid()).isTrue();
 
-            // jedisPool.getResource() should only be called once (for the first call)
-            verify(jedisPool, times(1)).getResource();
+            assertThat(result1.isValid()).isTrue();
+            assertThat(result2.isValid()).isTrue();
+            verify(jedisPool, times(2)).getResource();
+            verify(jedis, times(2)).get("apikey:" + keyId);
         }
 
         @Test
@@ -410,22 +437,27 @@ class ApiKeyRepositoryTest {
         }
 
         @Test
-        void shouldCacheInvalidResponseAndReplayIt() throws Exception {
+        void shouldNotCacheKeyNotFoundResponse() throws Exception {
             stubJedis();
-            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null);
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read"))
+                    .build();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null, keyId);
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
 
-            // First call — key not found, cached as invalid
+            // First call — key not found.
             ApiKeyValidationResponse result1 = repository.validate(secret);
             assertThat(result1.isValid()).isFalse();
             assertThat(result1.getReason()).isEqualTo("KEY_NOT_FOUND");
 
-            // Second call — should return cached invalid response without Redis
+            // Second call sees the newly-created key instead of replaying a cached miss.
             ApiKeyValidationResponse result2 = repository.validate(secret);
-            assertThat(result2.isValid()).isFalse();
-            assertThat(result2.getReason()).isEqualTo("KEY_NOT_FOUND");
+            assertThat(result2.isValid()).isTrue();
 
-            // getResource() only called once (second is cache hit)
-            verify(jedisPool, times(1)).getResource();
+            verify(jedisPool, times(2)).getResource();
         }
     }
 }

@@ -450,9 +450,11 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             Map<String, Object> luaMap = new HashMap<>();
             luaMap.put("status", "ok");
+            luaMap.put("charged", 2500);
             luaMap.put("balances", List.of(Map.of("scope", "tenant:acme",
                     "remaining", 7000, "reserved", 0, "spent", 3000, "allocated", 10000,
-                    "debt", 0, "overdraft_limit", 0, "is_over_limit", false)));
+                    "debt", 500, "debt_incurred", 500, "overdraft_limit", 1000,
+                    "is_over_limit", true)));
             String luaResponse = objectMapper.writeValueAsString(luaMap);
             when(luaScripts.eval(eq(jedis), eq("event"), eq("EVENT_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
 
@@ -467,7 +469,11 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             assertThat(response.getStatus()).isEqualTo(Enums.EventStatus.APPLIED);
             assertThat(response.getEventId()).isNotNull();
+            assertThat(response.getCharged().getAmount()).isEqualTo(2500);
+            assertThat(response.getScopeDebtIncurred()).containsEntry("tenant:acme", 500L);
             assertThat(response.getBalances()).isNotEmpty();
+            verify(metrics).recordEvent(eq("acme"), eq("APPLIED"), eq("OK"), anyString());
+            verify(metrics).recordOverdraftIncurred("acme");
         }
 
         @Test
@@ -489,6 +495,8 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             EventCreateResponse response = repository.createEvent(request, "acme");
 
             assertThat(response.getEventId()).isEqualTo("existing-event-123");
+            assertThat(response.isIdempotentReplay()).isTrue();
+            verify(metrics, never()).recordEvent(anyString(), anyString(), anyString(), anyString());
         }
 
         @Test
