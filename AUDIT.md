@@ -5,6 +5,21 @@
 
 ---
 
+### 2026-06-24 — v0.1.25.41: log sanitization and auth-log follow-up
+
+Follow-up to the ops-focused logging PR review. The structured logs added in
+v0.1.25.40 had the right request/route/correlation context, but several fields
+still accepted raw strings from requests, config, exception messages, or stored
+operator data. Those values are now flattened before logging (`CR`/`LF` ->
+space) in the exception handler, controller request logs, side-effect failure
+logs, auth rejection logs, balance/reservation list logs, and JWKS retired-key
+config warnings.
+
+The API-key debug path no longer prints any key prefix or masked token material.
+It reports only key presence and length, while validation/auth failure logs keep
+tenant/key/reason/request/trace context in sanitized form. No HTTP status/body
+change, no Redis/Lua change, and no cycles-protocol spec change.
+
 ### 2026-06-24 — v0.1.25.40: ops-focused logging context review
 
 Follow-up to production log review after seeing `Landed in cycles exception handler: clazz=...` without enough context to diagnose the request. The logging audit covered runtime `INFO`, `WARN`, and `ERROR` call sites in the API and data modules.

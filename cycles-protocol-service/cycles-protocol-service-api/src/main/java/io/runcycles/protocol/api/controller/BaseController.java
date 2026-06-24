@@ -100,10 +100,17 @@ abstract public class BaseController {
         return TraceContextFilter.currentContext(request);
     }
 
+    protected String safeLogValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value.toString().replace('\r', ' ').replace('\n', ' ');
+    }
+
     protected void logRequest(Logger logger, HttpServletRequest request, String operation,
                               String tenant, String reservationId) {
         logger.info("{} tenant={} reservation_id={} request_id={} trace_id={} admin={}",
-                operation, tenant, reservationId, resolveRequestId(request),
+                operation, safeLogValue(tenant), safeLogValue(reservationId), resolveRequestId(request),
                 resolveTraceId(request), isAdminAuth());
     }
 
@@ -115,8 +122,9 @@ abstract public class BaseController {
     protected void logSideEffectFailure(Logger logger, HttpServletRequest request, String operation,
                                         String tenant, String reservationId, Exception e) {
         logger.warn("Non-blocking side effect failed: operation={} tenant={} reservation_id={} request_id={} trace_id={} error={}",
-                operation, tenant, reservationId, resolveRequestId(request), resolveTraceId(request),
-                e.toString(), e);
+                operation, safeLogValue(tenant), safeLogValue(reservationId),
+                resolveRequestId(request), resolveTraceId(request),
+                safeLogValue(e.toString()), e);
     }
 
     public void validateIdempotencyHeader(String headerKey, String bodyKey) {

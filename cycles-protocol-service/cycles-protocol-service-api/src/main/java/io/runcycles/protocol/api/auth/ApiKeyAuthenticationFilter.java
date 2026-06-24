@@ -43,14 +43,14 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
 
         String apiKey = request.getHeader("X-Cycles-API-Key");
-        LOG.debug("Authorization filter: apiKey={}",
-                apiKey != null && apiKey.length() > 8 ? apiKey.substring(0, 8) + "***" : "***");
+        LOG.debug("Authorization filter: api_key_present={} api_key_length={}",
+                apiKey != null && !apiKey.isBlank(), apiKey != null ? apiKey.length() : null);
 
         if (apiKey == null || apiKey.isBlank()) {
             String requestId = resolveRequestId(request);
             String traceId = resolveTraceId(request);
             LOG.warn("API key authentication failed: reason=missing_api_key method={} path={} request_id={} trace_id={}",
-                    request.getMethod(), request.getRequestURI(), requestId, traceId);
+                    safeLogValue(request.getMethod()), safeLogValue(request.getRequestURI()), requestId, traceId);
             sendErrorResponse(response, "Missing API key", requestId, traceId);
             return;
         }
@@ -60,8 +60,8 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             String requestId = resolveRequestId(request);
             String traceId = resolveTraceId(request);
             LOG.warn("API key authentication failed: reason={} tenant={} key_id={} method={} path={} request_id={} trace_id={}",
-                    result.getReason(), result.getTenantId(), result.getKeyId(),
-                    request.getMethod(), request.getRequestURI(), requestId, traceId);
+                    safeLogValue(result.getReason()), safeLogValue(result.getTenantId()), safeLogValue(result.getKeyId()),
+                    safeLogValue(request.getMethod()), safeLogValue(request.getRequestURI()), requestId, traceId);
             sendErrorResponse(response, result.getReason(), requestId, traceId);
             return;
         }
@@ -110,6 +110,13 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     private String resolveTraceId(HttpServletRequest request) {
         String traceId = TraceContextFilter.currentTraceId(request);
         return traceId != null && !traceId.isBlank() ? traceId : TraceIdGenerator.generate();
+    }
+
+    private static String safeLogValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value.toString().replace('\r', ' ').replace('\n', ' ');
     }
 
     private void sendErrorResponse(HttpServletResponse response, String reason,

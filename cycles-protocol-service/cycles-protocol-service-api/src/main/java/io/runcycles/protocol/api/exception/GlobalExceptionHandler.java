@@ -95,6 +95,13 @@ public class GlobalExceptionHandler {
         return TraceContextFilter.currentTraceId(request);
     }
 
+    private static String safeLogValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value.toString().replace('\r', ' ').replace('\n', ' ');
+    }
+
     @ExceptionHandler(CyclesProtocolException.class)
     public ResponseEntity<ErrorResponse> handleCyclesException(CyclesProtocolException ex, HttpServletRequest request) {
         String requestId = resolveRequestId(request);
@@ -122,13 +129,13 @@ public class GlobalExceptionHandler {
             requestId,
             traceId,
             reservationIdFor(request),
-            ex.getMessage());
+            safeLogValue(ex.getMessage()));
     }
 
     private void logRequestError(String message, HttpServletRequest request, int status,
                                  Enums.ErrorCode errorCode, String requestId, String traceId) {
         LOG.info("{}: method={} path={} route={} status={} error={} request_id={} trace_id={} reservation_id={}",
-            message,
+            safeLogValue(message),
             request != null ? request.getMethod() : null,
             request != null ? request.getRequestURI() : null,
             bestMatchingRoute(request),

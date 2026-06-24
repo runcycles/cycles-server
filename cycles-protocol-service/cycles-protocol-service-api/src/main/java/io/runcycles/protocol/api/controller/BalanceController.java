@@ -47,7 +47,7 @@ public class BalanceController extends BaseController{
         // If tenant provided, it must match auth context; if omitted, use auth tenant
         String effectiveTenant = tenant != null ? tenant : extractAuthTenantId();
         LOG.info("GET /v1/balances tenant={} include_children={} limit={} has_cursor={} request_id={} trace_id={} admin={}",
-                effectiveTenant, includeChildren, limit, cursor != null && !cursor.isBlank(),
+                safeLogValue(effectiveTenant), includeChildren, limit, cursor != null && !cursor.isBlank(),
                 resolveRequestId(httpRequest), resolveTraceId(httpRequest), isAdminAuth());
         authorizeTenant(effectiveTenant);
         BalanceResponse response = repository.getBalances(effectiveTenant, workspace, app, workflow, agent, toolset, includeChildren, limit, cursor);

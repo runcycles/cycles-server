@@ -253,8 +253,8 @@ public class ReservationController extends BaseController{
             // stdout (dev, incident response) see admin actions in
             // real time without having to query the audit endpoint.
             LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} request_id={} trace_id={} source_ip={} reason={}",
-                reservationId, tenant, resolveRequestId(httpRequest), resolveTraceId(httpRequest),
-                httpRequest != null ? httpRequest.getRemoteAddr() : null,
+                safeLogValue(reservationId), safeLogValue(tenant), resolveRequestId(httpRequest), resolveTraceId(httpRequest),
+                safeLogValue(httpRequest != null ? httpRequest.getRemoteAddr() : null),
                 safeReason != null ? safeReason : "(none)");
         }
         return ResponseEntity.ok(response);
@@ -383,9 +383,9 @@ public class ReservationController extends BaseController{
         // ignored (no 400). Projection-only — never bound to the cursor.
         Set<ReservationInclude> includeFields = ReservationInclude.parseCsv(include);
         LOG.info("GET /v1/reservations tenant={} admin={} limit={} has_cursor={} sort_by={} sort_dir={} from_ms={} to_ms={} expires_from_ms={} expires_to_ms={} finalized_from_ms={} finalized_to_ms={} include={} request_id={} trace_id={}",
-                effectiveTenant, isAdminAuth(), limit, cursor != null && !cursor.isBlank(),
-                sortBy, sortDir, fromMs, toMs, expiresFromMs, expiresToMs,
-                finalizedFromMs, finalizedToMs, includeFields, resolveRequestId(httpRequest),
+                safeLogValue(effectiveTenant), isAdminAuth(), limit, cursor != null && !cursor.isBlank(),
+                safeLogValue(sortBy), safeLogValue(sortDir), fromMs, toMs, expiresFromMs, expiresToMs,
+                finalizedFromMs, finalizedToMs, safeLogValue(includeFields), resolveRequestId(httpRequest),
                 resolveTraceId(httpRequest));
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
                 status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir,

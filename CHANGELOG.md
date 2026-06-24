@@ -14,6 +14,23 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.41] — 2026-06-24
+
+### Fixed
+
+- Flattened CR/LF characters in dynamic operator-log fields added by the
+  logging-context review so request/config/exception values cannot inject
+  misleading log lines.
+- Removed API-key prefix/masked-token material from debug logs; auth logging now
+  reports only key presence/length plus sanitized tenant/key/reason context on
+  failures.
+- Sanitized JWKS retired-key parsing warnings and auth rejection logs while
+  preserving method, path, request id, trace id, and error context.
+
+### Compatibility
+
+- No HTTP request/response, Redis, Lua, event, evidence, or spec change.
+
 ## [0.1.25.40] — 2026-06-24
 
 ### Fixed

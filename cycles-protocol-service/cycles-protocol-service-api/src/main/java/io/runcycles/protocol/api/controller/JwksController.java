@@ -171,7 +171,7 @@ public class JwksController {
                 if (!nbfNode.isIntegralNumber() || !nbfNode.canConvertToLong()
                         || !expNode.isIntegralNumber() || !expNode.canConvertToLong()) {
                     LOG.warn("retired key '{}' has a missing/non-integral/out-of-range nbf_ms or exp_ms; skipping",
-                            n.path("kid").asText(""));
+                            safeLogValue(n.path("kid").asText("")));
                     continue;
                 }
                 out.add(new RetiredKey(
@@ -181,7 +181,7 @@ public class JwksController {
                         expNode.asLong()));
             }
         } catch (Exception e) {
-            LOG.warn("could not parse cycles.evidence.signing.retired-keys; ignoring: {}", e.getMessage());
+            LOG.warn("could not parse cycles.evidence.signing.retired-keys; ignoring: {}", safeLogValue(e.getMessage()));
             return List.of();
         }
         return out;
@@ -199,5 +199,12 @@ public class JwksController {
                 .contentType(MediaType.APPLICATION_JSON)
                 .cacheControl(CacheControl.maxAge(5, TimeUnit.MINUTES).cachePublic())
                 .body(jwks);
+    }
+
+    private static String safeLogValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value.toString().replace('\r', ' ').replace('\n', ' ');
     }
 }

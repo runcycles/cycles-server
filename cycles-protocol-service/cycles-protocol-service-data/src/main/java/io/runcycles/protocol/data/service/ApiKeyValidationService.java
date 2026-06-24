@@ -17,11 +17,18 @@ public class ApiKeyValidationService {
     public ApiKeyValidationResponse isValid (String apiToken){
         ApiKeyValidationResponse apiKeyValidationResponse = apiKeyRepository.validate(apiToken) ;
         if (LOG.isDebugEnabled()) {
-            String masked = (apiToken != null && apiToken.length() > 8) ? apiToken.substring(0, 8) + "***" : "***";
-            LOG.debug("API key validation: apiToken={} valid={} tenant={} key_id={} reason={}",
-                    masked, apiKeyValidationResponse.isValid(), apiKeyValidationResponse.getTenantId(),
-                    apiKeyValidationResponse.getKeyId(), apiKeyValidationResponse.getReason());
+            LOG.debug("API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
+                    apiToken != null && !apiToken.isBlank(), apiToken != null ? apiToken.length() : null,
+                    apiKeyValidationResponse.isValid(), safeLogValue(apiKeyValidationResponse.getTenantId()),
+                    safeLogValue(apiKeyValidationResponse.getKeyId()), safeLogValue(apiKeyValidationResponse.getReason()));
         }
         return apiKeyValidationResponse ;
+    }
+
+    private static String safeLogValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value.toString().replace('\r', ' ').replace('\n', ' ');
     }
 }
