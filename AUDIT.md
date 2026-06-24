@@ -5,6 +5,16 @@
 
 ---
 
+### 2026-06-24 — Trivy container gate scoped to HIGH,CRITICAL (no version bump)
+
+The `pr-container-scan.yml` and `release.yml` Trivy gates were failing on the only fixable finding in the image: `jackson-databind` 2.21.4 (`CVE-2026-54515`), pulled in transitively via the Spring web stack and managed by Spring Boot 3.5.15's BOM. The failure was unrelated to any code change — it blocked every open PR and would have blocked the next release build.
+
+Two facts shaped the fix:
+1. **No fix is publishable yet.** The advisory lists fixed versions 3.1.4 / 2.18.9 / 2.21.5. For the SB 2.21 line the only forward fix is 2.21.5, and jackson 2.x ships `jackson-bom` + `jackson-core` + `jackson-databind` together — `jackson-bom:2.21.5` is absent from Maven Central, so 2.21.5 is not yet released (Trivy's "Fixed Version" is ahead of the artifact). 2.18.9 is a downgrade; 3.1.4 is jackson 3.x, incompatible with SB 3.5.x. A `<jackson-bom.version>2.21.5</jackson-bom.version>` override is non-resolvable.
+2. **The CVE is MEDIUM (CVSS 5.3)** and the gate is declared for `severity: HIGH,CRITICAL`. The block was an `aquasecurity/trivy-action` quirk: in `format: sarif` mode it builds an all-severities report and `exit-code: 1` trips on any finding, ignoring the `severity` filter.
+
+**Fix.** Set `limit-severities-for-sarif: true` on the trivy-action in both workflows so the SARIF — and therefore the gate — honors `HIGH,CRITICAL`. A fixable MEDIUM no longer blocks; HIGH/CRITICAL still fail. `CVE-2026-54515` is tracked with a NOTE in `cycles-protocol-service/pom.xml` to bump jackson once 2.21.5 ships. Workflow/config only — no image, server-code, or wire change, so no version bump. Mirrors the same fix in `cycles-server-admin` (PR #191).
+
 ### 2026-06-24 — v0.1.25.39: review fixes for pagination, replay, auth, and prod defaults
 
 Follow-up to a full static review of `cycles-server` against `cycles-protocol` v0.1.25. The fixes are deliberately mixed because the reviewed issues share one release boundary: they close correctness/spec gaps without changing the public request/response schema.

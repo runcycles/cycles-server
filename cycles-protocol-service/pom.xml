@@ -38,6 +38,13 @@
              this re-adds the same pattern at 10.1.55. Remove again once Spring
              Boot ships with 10.1.55+ as its managed version. -->
         <tomcat.version>10.1.55</tomcat.version>
+        <!-- NOTE: jackson-databind (SB-managed, currently 2.21.4) carries
+             CVE-2026-54515 (MEDIUM). The fix lands in jackson 2.21.5, which is
+             not yet published to Maven Central (jackson 2.x ships bom/core/
+             databind together; jackson-bom:2.21.5 is absent). No override is
+             possible until 2.21.5 ships; the release/PR Trivy gates are scoped
+             to HIGH,CRITICAL so this fixable MEDIUM does not block. Bump
+             jackson here once Spring Boot's BOM manages 2.21.5+. -->
     </properties>
     <dependencyManagement>
         <dependencies>
