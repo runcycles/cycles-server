@@ -91,6 +91,12 @@ elseif state ~= "ACTIVE" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = state})
 end
 
+if overage_policy ~= "REJECT"
+   and overage_policy ~= "ALLOW_IF_AVAILABLE"
+   and overage_policy ~= "ALLOW_WITH_OVERDRAFT" then
+    return cjson.encode({error = "INVALID_REQUEST", message = "Invalid overage_policy: " .. tostring(overage_policy)})
+end
+
 -- Check unit matches
 if actual_unit ~= estimate_unit then
     return cjson.encode({error = "UNIT_MISMATCH"})

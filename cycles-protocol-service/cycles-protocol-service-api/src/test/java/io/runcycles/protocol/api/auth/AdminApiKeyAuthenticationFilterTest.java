@@ -159,10 +159,18 @@ class AdminApiKeyAuthenticationFilterTest {
         request.setMethod("GET");
         request.setRequestURI("/v1/reservations");
         request.addHeader("X-Admin-API-Key", "wrong-key");
+        request.setAttribute(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-admin");
+        request.setAttribute(io.runcycles.protocol.api.filter.TraceContextFilter.TRACE_ID_ATTRIBUTE,
+            "abcdef0123456789abcdef0123456789");
 
         filter.doFilterInternal(request, response, chain);
 
         assertThat(response.getStatus()).isEqualTo(401);
+        var json = new ObjectMapper().readTree(response.getContentAsString());
+        assertThat(json.get("request_id").asText()).isEqualTo("req-admin");
+        assertThat(json.get("trace_id").asText()).isEqualTo("abcdef0123456789abcdef0123456789");
+        assertThat(response.getHeader("X-Cycles-Trace-Id"))
+            .isEqualTo("abcdef0123456789abcdef0123456789");
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
         // Did NOT fall through — admin intent was clear, reject explicitly.
         verify(chain, never()).doFilter(request, response);

@@ -26,6 +26,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -131,5 +132,23 @@ class EventControllerTest {
                         .content(eventJson(TENANT)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.charged").doesNotExist());
+    }
+
+    @Test
+    void shouldNotEmitBalanceEventsOnIdempotentReplay() throws Exception {
+        EventCreateResponse resp = EventCreateResponse.builder()
+                .status(Enums.EventStatus.APPLIED)
+                .eventId("evt_replay")
+                .idempotentReplay(true)
+                .build();
+        when(repository.createEvent(any(), eq(TENANT))).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(eventJson(TENANT)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.event_id").value("evt_replay"));
+
+        verifyNoInteractions(eventEmitter);
     }
 }

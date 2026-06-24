@@ -88,6 +88,13 @@ public class SortedListCursor {
             byte[] json = B64_DEC.decode(cursor);
             SortedListCursor decoded = MAPPER.readValue(
                 new String(json, StandardCharsets.UTF_8), SortedListCursor.class);
+            if (decoded.version != 1
+                || decoded.sortBy == null
+                || decoded.sortDir == null
+                || decoded.filterHash == null
+                || decoded.lastReservationId == null) {
+                return Optional.empty();
+            }
             return Optional.of(decoded);
         } catch (Exception e) {
             return Optional.empty();

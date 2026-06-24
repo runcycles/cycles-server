@@ -1,6 +1,8 @@
 package io.runcycles.protocol.api.auth;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.api.filter.TraceContextFilter;
+import io.runcycles.protocol.data.util.TraceIdGenerator;
 import io.runcycles.protocol.model.Enums;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -174,9 +176,17 @@ public class AdminApiKeyAuthenticationFilter extends OncePerRequestFilter {
         Object reqIdAttr = request.getAttribute(
             io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         String requestId = reqIdAttr != null ? reqIdAttr.toString() : UUID.randomUUID().toString();
+        String traceId = TraceContextFilter.currentTraceId(request);
+        if (traceId == null || traceId.isBlank()) {
+            traceId = TraceIdGenerator.generate();
+        }
+        if (!response.containsHeader(TraceContextFilter.TRACE_ID_HEADER)) {
+            response.setHeader(TraceContextFilter.TRACE_ID_HEADER, traceId);
+        }
         objectMapper.writeValue(response.getWriter(), Map.of(
             "error", code,
             "message", message,
-            "request_id", requestId));
+            "request_id", requestId,
+            "trace_id", traceId));
     }
 }

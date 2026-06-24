@@ -28,8 +28,12 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
+        local stored_response = redis.call('GET', idem_key .. ':response')
+        if stored_response then
+            return stored_response
+        end
         -- Spec MUST: replay returns original successful response payload.
-        -- Reconstruct charged + balances from stored event data.
+        -- Legacy fallback for idempotency records written before response-body caching.
         local event_key = "event:evt_" .. existing_event_id
         local evt = redis.call('HMGET', event_key,
             'charged_amount', 'amount', 'unit', 'budgeted_scopes')
@@ -64,6 +68,12 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         end
         return cjson.encode(replay)
     end
+end
+
+if overage_policy ~= "REJECT"
+   and overage_policy ~= "ALLOW_IF_AVAILABLE"
+   and overage_policy ~= "ALLOW_WITH_OVERDRAFT" then
+    return cjson.encode({error = "INVALID_REQUEST", message = "Invalid overage_policy: " .. tostring(overage_policy)})
 end
 
 -- Parse affected scopes.
@@ -294,15 +304,6 @@ redis.call('HMSET', event_key,
 redis.call('PEXPIRE', event_key, 2592000000)
 
 -- Store idempotency mapping (expire after 7 days)
-if idempotency_key ~= "" and idempotency_key ~= nil then
-    local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
-    redis.call('PSETEX', idem_key, 604800000, event_id)
-    -- Store payload hash for idempotency mismatch detection (spec MUST)
-    if payload_hash ~= "" then
-        redis.call('PSETEX', idem_key .. ':hash', 604800000, payload_hash)
-    end
-end
-
 -- Spec: charged is present when capping occurred (ALLOW_IF_AVAILABLE, or
 -- ALLOW_WITH_OVERDRAFT with overdraft_limit=0 which behaves as ALLOW_IF_AVAILABLE).
 local result = {
@@ -313,4 +314,17 @@ local result = {
 if effective_amount < amount then
     result.charged = effective_amount
 end
-return cjson.encode(result)
+local result_json = cjson.encode(result)
+
+-- Store idempotency mapping and original response payload (expire after 7 days).
+if idempotency_key ~= "" and idempotency_key ~= nil then
+    local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
+    redis.call('PSETEX', idem_key, 604800000, event_id)
+    redis.call('PSETEX', idem_key .. ':response', 604800000, result_json)
+    -- Store payload hash for idempotency mismatch detection (spec MUST)
+    if payload_hash ~= "" then
+        redis.call('PSETEX', idem_key .. ':hash', 604800000, payload_hash)
+    end
+end
+
+return result_json

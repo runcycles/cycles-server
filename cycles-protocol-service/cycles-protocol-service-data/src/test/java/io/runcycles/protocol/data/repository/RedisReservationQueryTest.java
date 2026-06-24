@@ -158,12 +158,19 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
 
             mockBudget("budget:tenant:acme:USD_MICROCENTS", b1);
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", b2);
 
             BalanceResponse response = repository.getBalances("acme", null, null, null, null, null, false, 1, null);
 
             assertThat(response.getBalances()).hasSize(1);
             assertThat(response.getHasMore()).isTrue();
-            assertThat(response.getNextCursor()).isEqualTo("55");
+            assertThat(response.getNextCursor()).isNotBlank();
+
+            BalanceResponse secondPage = repository.getBalances("acme", null, null, null, null, null, false, 1, response.getNextCursor());
+
+            assertThat(secondPage.getBalances()).hasSize(1);
+            assertThat(secondPage.getBalances().get(0).getScopePath()).isEqualTo("tenant:acme/app:myapp");
+            assertThat(secondPage.getNextCursor()).isEqualTo("55");
         }
 
         @SuppressWarnings("unchecked")
@@ -546,6 +553,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             Response<Map<String, String>> resp1 = mock(Response.class);
             Response<Map<String, String>> resp2 = mock(Response.class);
             when(resp1.get()).thenReturn(r1Fields);
+            when(resp2.get()).thenReturn(r2Fields);
 
             ScanResult<String> scanResult = mock(ScanResult.class);
             when(scanResult.getResult()).thenReturn(List.of("reservation:res_r1", "reservation:res_r2"));
@@ -553,14 +561,22 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
             when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, null, null, null, null, null, null, null, null, null);
 
             assertThat(response.getReservations()).hasSize(1);
             assertThat(response.getHasMore()).isTrue();
-            assertThat(response.getNextCursor()).isEqualTo("42");
+            assertThat(response.getNextCursor()).isNotBlank();
+
+            ReservationListResponse secondPage = repository.listReservations(
+                    "acme", null, null, null, null, null, null, null, 1,
+                    response.getNextCursor(), null, null, null, null, null, null, null, null);
+
+            assertThat(secondPage.getReservations()).extracting(ReservationSummary::getReservationId)
+                    .containsExactly("r2");
+            assertThat(secondPage.getNextCursor()).isEqualTo("42");
         }
 
         @SuppressWarnings("unchecked")
@@ -1027,18 +1043,14 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
         @SuppressWarnings("unchecked")
         @Test
-        @DisplayName("hydration stops at SORTED_HYDRATE_CAP; page still fills from capped slice")
-        void sortedHydrationStopsAtCap() {
+        @DisplayName("hydrates beyond warning threshold so sorted pagination does not truncate")
+        void sortedHydrationDoesNotStopAtWarningThreshold() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
 
-            int cap = RedisReservationRepository.SORTED_HYDRATE_CAP;
-            int total = cap + 10;
+            int threshold = RedisReservationRepository.SORTED_HYDRATE_WARN_THRESHOLD;
+            int total = threshold + 10;
 
-            // Return ALL keys from a single SCAN page. The hydration guard sits
-            // inside the per-key loop, so the break exits after exactly `cap`
-            // rows are added — remaining keys are never consulted even though
-            // they're still in the scan result.
             List<String> keys = new ArrayList<>(total);
             for (int i = 0; i < total; i++) {
                 keys.add(String.format("reservation:res_r%05d", i));
@@ -1046,17 +1058,10 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
             ScanResult<String> scanResult = mock(ScanResult.class);
             when(scanResult.getResult()).thenReturn(keys);
-            // getCursor() is never read once the hydration cap breaks out of the
-            // labeled scanLoop; stub leniently so strict-mode doesn't flag it.
-            lenient().when(scanResult.getCursor()).thenReturn("0");
+            when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
 
-            // Default pipeline.hgetAll stub from Base returns empty map; override
-            // for the first `cap` keys so they pass the tenant filter and land
-            // in the matching list. Keys beyond index `cap` are stubbed too, so
-            // if the guard is ever removed the test fails loud (page fills past
-            // the cap and the pipeline verifier trips).
             for (int i = 0; i < total; i++) {
                 String id = String.format("r%05d", i);
                 Map<String, String> f = reservationFields(id, "ACTIVE");
@@ -1067,16 +1072,15 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             }
 
             ReservationListResponse response = repository.listReservations(
-                "acme", null, null, null, null, null, null, null, 5, null,
+                "acme", null, null, null, null, null, null, null, total, null,
                 "created_at_ms", "asc", null, null, null, null, null, null);
 
-            assertThat(response.getReservations()).hasSize(5);
+            assertThat(response.getReservations()).hasSize(total);
             assertThat(response.getReservations())
                 .extracting(ReservationSummary::getReservationId)
-                .containsExactly("r00000", "r00001", "r00002", "r00003", "r00004");
-            // has_more must be true — the capped slice still has rows beyond the page.
-            assertThat(response.getHasMore()).isTrue();
-            assertThat(response.getNextCursor()).isNotNull();
+                .contains("r02009");
+            assertThat(response.getHasMore()).isFalse();
+            assertThat(response.getNextCursor()).isNull();
         }
 
         @SuppressWarnings("unchecked")

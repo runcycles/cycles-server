@@ -27,7 +27,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 @Repository
 public class ApiKeyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyRepository.class);
-    private static final long CACHE_TTL_MS = 60_000L; // 60 seconds
+    private static final long BCRYPT_CACHE_TTL_MS = 60_000L; // 60 seconds
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
             return MessageDigest.getInstance("SHA-256");
@@ -41,33 +41,12 @@ public class ApiKeyRepository {
     @Autowired
     private ObjectMapper objectMapper;
 
-    private final Cache<String, ApiKeyValidationResponse> validationCache = Caffeine.newBuilder()
-            .expireAfterWrite(Duration.ofMillis(CACHE_TTL_MS))
+    private final Cache<String, Boolean> bcryptVerificationCache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMillis(BCRYPT_CACHE_TTL_MS))
             .maximumSize(5_000)
             .build();
 
     public ApiKeyValidationResponse validate(String keySecret) {
-        // Check in-memory cache to avoid BCrypt on every request
-        String cacheKey = hashKeyForCache(keySecret);
-        if (cacheKey != null) {
-            ApiKeyValidationResponse cached = validationCache.getIfPresent(cacheKey);
-            if (cached != null) {
-                LOG.debug("API key cache hit");
-                return cached;
-            }
-        }
-
-        ApiKeyValidationResponse result = validateFromRedis(keySecret);
-
-        // Cache the result (both valid and invalid responses)
-        if (cacheKey != null) {
-            validationCache.put(cacheKey, result);
-        }
-
-        return result;
-    }
-
-    private ApiKeyValidationResponse validateFromRedis(String keySecret) {
         try (Jedis jedis = jedisPool.getResource()) {
             String prefix = extractPrefix(keySecret);
             String keyId = jedis.get("apikey:lookup:" + prefix);
@@ -85,7 +64,7 @@ public class ApiKeyRepository {
             if (key.getExpiresAt() != null && Instant.now().isAfter(key.getExpiresAt())) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId() != null ? key.getTenantId() : "").reason("KEY_EXPIRED").build();
             }
-            if (!verifyKey(keySecret, key.getKeyHash())) {
+            if (!verifyKeyWithCache(keySecret, key.getKeyHash())) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId() != null ? key.getTenantId() : "").reason("INVALID_KEY").build();
             }
             if (key.getTenantId() == null || key.getTenantId().isBlank()){
@@ -118,6 +97,22 @@ public class ApiKeyRepository {
         }
     }
 
+    private boolean verifyKeyWithCache(String keySecret, String hash) {
+        String cacheKey = hashKeyForCache(keySecret, hash);
+        if (cacheKey != null) {
+            Boolean cached = bcryptVerificationCache.getIfPresent(cacheKey);
+            if (cached != null) {
+                LOG.debug("API key bcrypt cache hit");
+                return cached;
+            }
+        }
+        boolean verified = verifyKey(keySecret, hash);
+        if (cacheKey != null) {
+            bcryptVerificationCache.put(cacheKey, verified);
+        }
+        return verified;
+    }
+
     public boolean verifyKey(String keySecret, String hash) {
         try {
             return BCrypt.checkpw(keySecret, hash);
@@ -132,11 +127,16 @@ public class ApiKeyRepository {
         return keySecret.substring(0, Math.min(PREFIX_LENGTH, keySecret.length()));
     }
 
-    private String hashKeyForCache(String keySecret) {
+    private String hashKeyForCache(String keySecret, String storedHash) {
         try {
             MessageDigest digest = SHA256_DIGEST.get();
             digest.reset();
-            byte[] hash = digest.digest(keySecret.getBytes(StandardCharsets.UTF_8));
+            digest.update(keySecret.getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) ':');
+            if (storedHash != null) {
+                digest.update(storedHash.getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] hash = digest.digest();
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
             return null;

@@ -37,9 +37,13 @@ class ApiKeyRepositoryTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        var field = ApiKeyRepository.class.getDeclaredField("objectMapper");
+        setField(repository, "objectMapper", objectMapper);
+    }
+
+    private void setField(Object target, String fieldName, Object value) throws Exception {
+        var field = ApiKeyRepository.class.getDeclaredField(fieldName);
         field.setAccessible(true);
-        field.set(repository, objectMapper);
+        field.set(target, value);
     }
 
     // ---- extractPrefix ----
@@ -367,7 +371,37 @@ class ApiKeyRepositoryTest {
         }
 
         @Test
-        void shouldReturnCachedResponseOnSecondCall() throws Exception {
+        void shouldRevalidateStatusOnSecondCallAfterBcryptCacheHit() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            ApiKey activeKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            ApiKey revokedKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.REVOKED)
+                    .permissions(List.of("read")).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(
+                    objectMapper.writeValueAsString(activeKey),
+                    objectMapper.writeValueAsString(revokedKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+
+            // First call — hits Redis
+            ApiKeyValidationResponse result1 = repository.validate(secret);
+            assertThat(result1.isValid()).isTrue();
+
+            // Second call still reads Redis status, so revocation is not stale.
+            ApiKeyValidationResponse result2 = repository.validate(secret);
+            assertThat(result2.isValid()).isFalse();
+            assertThat(result2.getReason()).isEqualTo("KEY_REVOKED");
+
+            verify(jedisPool, times(2)).getResource();
+        }
+
+        @Test
+        void shouldReuseSuccessfulBcryptVerificationWhileStillReadingRedis() throws Exception {
             stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
@@ -378,16 +412,55 @@ class ApiKeyRepositoryTest {
             when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
             when(jedis.get("tenant:acme-corp")).thenReturn(null);
 
-            // First call — hits Redis
             ApiKeyValidationResponse result1 = repository.validate(secret);
-            assertThat(result1.isValid()).isTrue();
-
-            // Second call — should be cached, no additional Redis calls
             ApiKeyValidationResponse result2 = repository.validate(secret);
-            assertThat(result2.isValid()).isTrue();
 
-            // jedisPool.getResource() should only be called once (for the first call)
-            verify(jedisPool, times(1)).getResource();
+            assertThat(result1.isValid()).isTrue();
+            assertThat(result2.isValid()).isTrue();
+            verify(jedisPool, times(2)).getResource();
+            verify(jedis, times(2)).get("apikey:" + keyId);
+        }
+
+        @Test
+        void shouldReuseFailedBcryptVerificationUntilStoredHashChanges() throws Exception {
+            ApiKeyRepository spyRepository = spy(new ApiKeyRepository());
+            setField(spyRepository, "objectMapper", objectMapper);
+            setField(spyRepository, "jedisPool", jedisPool);
+
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+
+            String staleHash = "stored-hash-v1";
+            String rotatedHash = "stored-hash-v2";
+            ApiKey staleKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(staleHash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            ApiKey rotatedKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(rotatedHash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read")).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(
+                    objectMapper.writeValueAsString(staleKey),
+                    objectMapper.writeValueAsString(staleKey),
+                    objectMapper.writeValueAsString(rotatedKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
+            doReturn(false).when(spyRepository).verifyKey(secret, staleHash);
+            doReturn(true).when(spyRepository).verifyKey(secret, rotatedHash);
+
+            ApiKeyValidationResponse result1 = spyRepository.validate(secret);
+            ApiKeyValidationResponse result2 = spyRepository.validate(secret);
+            ApiKeyValidationResponse result3 = spyRepository.validate(secret);
+
+            assertThat(result1.isValid()).isFalse();
+            assertThat(result1.getReason()).isEqualTo("INVALID_KEY");
+            assertThat(result2.isValid()).isFalse();
+            assertThat(result2.getReason()).isEqualTo("INVALID_KEY");
+            assertThat(result3.isValid()).isTrue();
+            verify(spyRepository, times(1)).verifyKey(secret, staleHash);
+            verify(spyRepository, times(1)).verifyKey(secret, rotatedHash);
+            verify(jedisPool, times(3)).getResource();
+            verify(jedis, times(3)).get("apikey:" + keyId);
         }
 
         @Test
@@ -410,22 +483,27 @@ class ApiKeyRepositoryTest {
         }
 
         @Test
-        void shouldCacheInvalidResponseAndReplayIt() throws Exception {
+        void shouldNotCacheKeyNotFoundResponse() throws Exception {
             stubJedis();
-            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null);
+            ApiKey apiKey = ApiKey.builder()
+                    .keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE)
+                    .permissions(List.of("read"))
+                    .build();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(null, keyId);
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn(null);
 
-            // First call — key not found, cached as invalid
+            // First call — key not found.
             ApiKeyValidationResponse result1 = repository.validate(secret);
             assertThat(result1.isValid()).isFalse();
             assertThat(result1.getReason()).isEqualTo("KEY_NOT_FOUND");
 
-            // Second call — should return cached invalid response without Redis
+            // Second call sees the newly-created key instead of replaying a cached miss.
             ApiKeyValidationResponse result2 = repository.validate(secret);
-            assertThat(result2.isValid()).isFalse();
-            assertThat(result2.getReason()).isEqualTo("KEY_NOT_FOUND");
+            assertThat(result2.isValid()).isTrue();
 
-            // getResource() only called once (second is cache hit)
-            verify(jedisPool, times(1)).getResource();
+            verify(jedisPool, times(2)).getResource();
         }
     }
 }

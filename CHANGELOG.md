@@ -14,6 +14,39 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.39] — 2026-06-24
+
+### Fixed
+
+- Legacy SCAN pagination for `GET /v1/reservations` and `GET /v1/balances`
+  now uses opaque intra-batch cursors when a page limit is reached mid-batch,
+  preventing deterministic skipped rows on follow-up pages for an unchanged
+  SCAN batch. As with Redis SCAN generally, pagination remains best-effort
+  under concurrent writes or Redis rehashing.
+- Sorted `GET /v1/reservations` no longer truncates matches at 2000 hydrated
+  rows. Large result sets still warn so operators can narrow filters or add
+  indexed listing support later.
+- Auth-filter error bodies now include `trace_id` and set
+  `X-Cycles-Trace-Id` when the trace filter has not already done so.
+- `POST /v1/events` idempotent replay now returns the stored original response
+  payload and skips duplicate event metrics/balance event emission.
+- Invalid tenant `default_commit_overage_policy` values now fail closed with
+  `INVALID_REQUEST`; Lua commit/event paths also reject unknown overage
+  policies defensively.
+- API key validation no longer caches full allow/deny decisions. It still
+  caches BCrypt verification results briefly, including repeated wrong-secret
+  checks keyed by the current stored hash, while status, expiry, tenant, and
+  tenant-status checks are read on every request.
+- Production Compose files require `REDIS_PASSWORD`, authenticate Redis health
+  checks, stop publishing Redis on the host port, and pin `cycles-server` to
+  `0.1.25.39`.
+
+### Documentation
+
+- Clarified idempotency status codes: header/body key mismatch is
+  `400 INVALID_REQUEST`; same-key/different-payload replay is
+  `409 IDEMPOTENCY_MISMATCH`.
+
 ## [0.1.25.38] — 2026-06-23
 
 ### Fixed

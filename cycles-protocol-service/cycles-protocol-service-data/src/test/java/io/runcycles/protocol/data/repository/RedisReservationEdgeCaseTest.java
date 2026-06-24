@@ -389,6 +389,27 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldRejectInvalidTenantDefaultOveragePolicy() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(jedis.get("tenant:acme")).thenReturn(
+                    tenantJson("ALLOW_ANYTHING", null, null, null));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-invalid-policy");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(io.runcycles.protocol.data.exception.CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INVALID_REQUEST);
+
+            verify(luaScripts, never()).eval(any(), eq("reserve"), anyString(), any(String[].class));
+        }
+
+        @Test
         void shouldHandleMaxExtensionsExceededError() throws Throwable {
             Map<String, Object> response = new HashMap<>();
             response.put("error", "MAX_EXTENSIONS_EXCEEDED");

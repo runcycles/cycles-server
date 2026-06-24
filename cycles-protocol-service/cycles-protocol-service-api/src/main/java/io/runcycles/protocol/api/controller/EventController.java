@@ -43,6 +43,9 @@ public class EventController extends BaseController {
         String tenant = extractAuthTenantId();
         EventCreateResponse response = repository.createEvent(request, tenant);
         try {
+            if (response.isIdempotentReplay()) {
+                return ResponseEntity.status(HttpStatus.CREATED).body(response);
+            }
             Actor actor = buildActor(httpRequest);
             String policy = request.getOveragePolicy() != null
                     ? request.getOveragePolicy().name() : "ALLOW_IF_AVAILABLE";

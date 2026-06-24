@@ -175,7 +175,7 @@ When `overage_policy` is omitted from the request, the server resolves it from t
 
 ### Idempotency
 
-Every mutating request requires an `idempotency_key` body field and accepts an optional `X-Idempotency-Key` header. If both are present they MUST match; a mismatch returns `409 IDEMPOTENCY_MISMATCH`.
+Every mutating request requires an `idempotency_key` body field and accepts an optional `X-Idempotency-Key` header. If both are present they MUST match; a header/body mismatch is rejected as `400 INVALID_REQUEST`. Reusing the same idempotency key with different request parameters returns `409 IDEMPOTENCY_MISMATCH`.
 
 On replay of a successful request with the same key, the server returns the original response — including any server-generated identifiers such as `reservation_id`.
 
