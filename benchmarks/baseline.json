@@ -1,1 +1,1 @@
-{"timestamp": "2026-06-23T20:37:01Z", "commit": "3cc44a7", "tag": "v0.1.25.38", "trials": 3, "reserve_p50_ms": 3.5, "reserve_p99_ms": 9.0, "commit_p50_ms": 2.8, "commit_p99_ms": 6.3, "release_p50_ms": 3.4, "event_p50_ms": 3.2, "concurrent_throughput_32t": 540.8}
+{"timestamp": "2026-06-24T12:02:08Z", "commit": "f50fe80", "tag": "v0.1.25.39", "trials": 3, "reserve_p50_ms": 2.6, "reserve_p99_ms": 6.2, "commit_p50_ms": 2.1, "commit_p99_ms": 8.5, "release_p50_ms": 2.6, "event_p50_ms": 2.4, "concurrent_throughput_32t": 665.4}
