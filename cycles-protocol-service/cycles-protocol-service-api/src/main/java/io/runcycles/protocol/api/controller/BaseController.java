@@ -73,15 +73,19 @@ abstract public class BaseController {
         // admin key; controllers handle the explicit tenant scoping
         // (e.g. listReservations requires ?tenant when admin).
         if (isAdminAuth()) return;
-        LOG.debug("Authorizing tenant: tenantFromRequest={}", safeLogValue(tenantFromRequest));
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Authorizing tenant: tenantFromRequest={}", safeLogValue(tenantFromRequest));
+        }
         String tenantFromAuthorization = extractAuthTenantId ();
         if (tenantFromRequest != null && !tenantFromRequest.isBlank()){
             if (!tenantFromRequest.equals(tenantFromAuthorization)){
                 throw new CyclesProtocolException(Enums.ErrorCode.FORBIDDEN, "Tenant provided in the request body does not match tenant resolved from authorization token",403) ;
             }
         }
-        LOG.debug("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",
-                safeLogValue(tenantFromRequest), safeLogValue(tenantFromAuthorization));
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",
+                    safeLogValue(tenantFromRequest), safeLogValue(tenantFromAuthorization));
+        }
     }
 
     /** Return the X-Request-Id attribute set by RequestIdFilter, or null. */

@@ -5,6 +5,26 @@
 
 ---
 
+### 2026-06-25 — v0.1.25.42: release benchmark gate baseline follow-up
+
+PR #212 correctly moved production per-request success logs from `INFO` to
+`DEBUG`, but the re-cut v0.1.25.41 release gate still failed on commit
+`21f542c`. The release logs showed no remaining controller request log lines, so
+the remaining CI failure was not log emission on the hot path. Benchmark history
+showed the root cause: `v0.1.25.39` was an unusually fast single release sample
+(`reserve_p50_ms=2.6`, `concurrent_throughput_32t=665.4`) compared with the
+surrounding nightly/release medians (`reserve_p50_ms` around 3.1-3.5 and
+throughput around 493-541 before `.39`, 599.6 on the next nightly). The release
+gate was treating that one fast sample as the only baseline.
+
+The release gate now keeps the strict 25% threshold but compares release
+candidates against the rolling median in `benchmarks/history.jsonl` when at
+least two history records exist; `baseline.json` remains the fallback for
+bootstrap/old data and is still updated after successful releases. This matches
+the nightly benchmark design while keeping release failures blocking.
+`BaseController.authorizeTenant()` also now guards its sanitized DEBUG logs so
+tenant-string flattening is skipped entirely when DEBUG is off.
+
 ### 2026-06-24 — v0.1.25.41: log sanitization and auth-log follow-up
 
 Follow-up to the ops-focused logging PR review. The structured logs added in
@@ -27,21 +47,15 @@ logs now sanitize concrete request paths, matched route strings, and
 `GlobalExceptionHandlerTest` assertion covers CR/LF flattening on handled
 protocol-exception logs.
 
-**Hot-path log level (release benchmark-gate fix).** The first v0.1.25.41
-release build failed the release benchmark gate: the v0.1.25.40 per-request
-controller request log was at `INFO`, so every reserve/commit/release/event call
-emitted a synchronous log line. The 3-trial median showed p50 +33–46% across
-those ops and 32-thread `concurrent_throughput` −28% — the throughput drop is
-the signature of request threads serializing on the synchronous logback appender
-lock. v0.1.25.39 passed the same gate, so the v0.1.25.40/.41 logging work was the
-only delta. Fix: `BaseController.logRequest(...)` and the inline list/balance/
-evidence request logs now emit at `DEBUG` behind an `isDebugEnabled` guard (so
-the sanitize/attribute-lookup args stay off the hot path when DEBUG is off).
-Per-request request logging at DEBUG is the conventional level anyway; the
+**Hot-path log level.** `BaseController.logRequest(...)` and the inline list/
+balance/evidence request logs now emit at `DEBUG` behind an `isDebugEnabled`
+guard (so sanitize/attribute-lookup args stay off the hot path when DEBUG is
+off). Per-request request logging at DEBUG is the conventional level; the
 high-value exception (`INFO`/`ERROR`) and side-effect-failure (`WARN`) logs are
-unchanged and are not on the success hot path. No wire/Redis/Lua/spec change. The
-v0.1.25.41 tag/release were re-cut in place on this fix since no image had been
-published (the build stopped at the gate).
+unchanged and are not on the success hot path. No wire/Redis/Lua/spec change.
+The later v0.1.25.42 release-gate audit corrected the benchmark root cause:
+the release CI failure also depended on a single fast baseline sample, not just
+runtime request-log level.
 
 The same sanitization is now also applied in the **data plane**, which the first
 pass missed: repository and service failure logs (`RedisReservationRepository`,

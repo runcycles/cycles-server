@@ -13,9 +13,11 @@ permissions: read-all
 
 jobs:
   # Performance regression gate. Runs the benchmark profile three times,
-  # medians the results, compares against benchmarks/baseline.json. On
-  # regression (> 25% worse than baseline on any headline metric), fails
-  # the release before any Docker build runs.
+  # medians the results, then compares against the benchmark-data rolling
+  # history median. On regression (> 25% worse on any headline metric),
+  # fails the release before any Docker build runs. The rolling baseline keeps
+  # a single unusually fast shared-runner sample from becoming the only release
+  # comparison point; baseline.json remains updated for reference/bootstrap.
   #
   # Bypass: include `[benchmark-skip]` anywhere in the release notes body
   # (for test-only / infra-only releases where benchmarks only measure
@@ -125,6 +127,8 @@ jobs:
           python3 scripts/check-regression.py release \
             --current /tmp/current.json \
             --baseline bench-data/benchmarks/baseline.json \
+            --history bench-data/benchmarks/history.jsonl \
+            --window 7 \
             --threshold 0.25 \
             | tee /tmp/gate-summary.md
 
