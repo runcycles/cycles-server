@@ -16,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 
 import java.time.Instant;
 import java.util.Collections;
@@ -275,6 +276,16 @@ class ApiKeyRepositoryTest {
         @Test
         void shouldReturnInternalErrorOnException() {
             when(jedisPool.getResource()).thenThrow(new RuntimeException("Redis down"));
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getReason()).isEqualTo("INTERNAL_ERROR");
+        }
+
+        @Test
+        void shouldReturnInternalErrorOnRedisConnectionException() {
+            when(jedisPool.getResource()).thenThrow(new JedisConnectionException("Redis down"));
 
             ApiKeyValidationResponse result = repository.validate(secret);
 

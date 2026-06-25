@@ -13,11 +13,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -79,6 +81,7 @@ class RedisDisconnectResilienceIntegrationTest {
     @LocalServerPort protected int port;
     @Autowired protected TestRestTemplate restTemplate;
     @Autowired protected JedisPool jedisPool;
+    @Autowired protected ApplicationContext applicationContext;
 
     private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -199,6 +202,56 @@ class RedisDisconnectResilienceIntegrationTest {
                     .as("committed reservation must not linger in the TTL sweep index")
                     .isNull();
         }
+    }
+
+    @Test
+    @DisplayName("actuator health reports DOWN while Redis is paused")
+    void healthReportsDownWhileRedisUnavailable() throws Exception {
+        ResponseEntity<Map> healthy = restTemplate.getForEntity(
+                "http://localhost:" + port + "/actuator/health", Map.class);
+        assertThat(healthy.getStatusCode().value()).isEqualTo(200);
+        assertThat(healthy.getBody()).containsEntry("status", "UP");
+
+        REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
+        try {
+            long start = System.currentTimeMillis();
+            ResponseEntity<Map> unhealthy = restTemplate.getForEntity(
+                    "http://localhost:" + port + "/actuator/health", Map.class);
+            long elapsed = System.currentTimeMillis() - start;
+
+            assertThat(unhealthy.getStatusCode().value()).isEqualTo(503);
+            assertThat(unhealthy.getBody()).containsEntry("status", "DOWN");
+            assertThat(elapsed)
+                    .as("health check against paused Redis took too long (%d ms)", elapsed)
+                    .isLessThan(10_000);
+        } finally {
+            REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
+        }
+
+        Thread.sleep(200);
+        ResponseEntity<Map> recovered = restTemplate.getForEntity(
+                "http://localhost:" + port + "/actuator/health", Map.class);
+        assertThat(recovered.getStatusCode().value()).isEqualTo(200);
+        assertThat(recovered.getBody()).containsEntry("status", "UP");
+    }
+
+    @Test
+    @DisplayName("security is stateless API-key only")
+    void securityDoesNotCreateDefaultUserBasicChallengeOrSession() {
+        assertThat(applicationContext.getBeansOfType(UserDetailsService.class)).isEmpty();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "http://localhost:" + port + "/v1/reservations",
+                HttpMethod.POST,
+                new HttpEntity<>(reservationBody(1_000), headers),
+                Map.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(401);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE)).isNull();
+        assertThat(response.getHeaders().getOrEmpty(HttpHeaders.SET_COOKIE))
+                .noneMatch(cookie -> cookie.contains("JSESSIONID"));
     }
 
     // ---- helpers ----

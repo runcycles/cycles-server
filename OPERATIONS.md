@@ -305,7 +305,9 @@ Contributions of a packaged dashboard JSON are welcome.
 ### Symptom: Redis unavailable
 
 The service is designed to return structured 5xx when Redis is down
-(enforced by `RedisDisconnectResilienceIntegrationTest`).
+(enforced by `RedisDisconnectResilienceIntegrationTest`). `/actuator/health`
+also includes a Redis `PING` health contributor, so container/orchestrator
+healthchecks should flip DOWN during the same outage.
 
 1. Confirm Redis health: `redis-cli PING`, check disk/memory on the
    Redis host.

@@ -5,6 +5,42 @@
 
 ---
 
+### 2026-06-25 — v0.1.25.43: production readiness health and log correlation
+
+Operational review found two production-readiness gaps in the merged server
+state. First, `/actuator/health` only proved that the Spring HTTP process was
+up; it did not verify Redis, even though every ledger write path depends on
+Jedis/Lua. Docker and Compose healthchecks therefore stayed green during a
+Redis outage while API operations returned structured Redis-backed 5xx errors.
+The API module now registers a `redis` `HealthIndicator` that borrows a Jedis
+connection and requires `PING -> PONG`; pool exhaustion, connection failures, or
+unexpected responses mark health DOWN. This makes existing container
+healthchecks and orchestrator probes reflect the ledger dependency without
+changing API behavior.
+
+Second, `OPERATIONS.md` documented that log lines carry both `requestId` and
+`traceId` MDC values, but only `TraceContextFilter` populated MDC. The
+`RequestIdFilter` now sets `requestId` around the request chain and clears it in
+a `finally` block, so structured console logging can join logs on either
+correlation id. Focused tests cover Redis health UP/DOWN cases and request-id
+MDC lifecycle.
+
+The same integration pass also showed Spring Boot creating a generated default
+security password. The API-key filters were handling requests, but a production
+runtime should not boot with an unused default user/basic-login path. The
+security chain now explicitly disables HTTP Basic, form login, and logout, uses
+stateless sessions, and excludes `UserDetailsServiceAutoConfiguration` so no
+generated user/password is created.
+
+Validation logs also showed API-key validation emitting a full stack trace on
+each Redis connection timeout. That is useful in development but noisy during a
+production Redis incident, especially because the auth filter already records a
+structured rejected-request warning with method, path, request id, and trace id.
+Jedis connection failures are now logged as a concise warning with
+`reason=redis_unavailable`, prefix presence/length, error type, and error
+message; unexpected validation exceptions still keep the error-level stack
+trace.
+
 ### 2026-06-25 — v0.1.25.42: release benchmark gate baseline follow-up
 
 PR #212 correctly moved production per-request success logs from `INFO` to

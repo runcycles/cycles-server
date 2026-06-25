@@ -303,6 +303,10 @@ These events are delivered by `cycles-server-events` to webhook subscribers via 
 GET /actuator/health
 ```
 
+Reports application health plus the Redis ledger dependency. If Redis is
+unreachable, the endpoint reports DOWN so container and orchestrator
+healthchecks stop treating the process as ready for traffic.
+
 ### Prometheus Metrics
 
 ```

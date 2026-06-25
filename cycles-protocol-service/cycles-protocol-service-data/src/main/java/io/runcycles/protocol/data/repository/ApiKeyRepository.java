@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -92,10 +93,15 @@ public class ApiKeyRepository {
                     .scopeFilter(key.getScopeFilter())
                     .expiresAt(key.getExpiresAt())
                     .build();
+        } catch (JedisConnectionException e) {
+            LOG.warn("API key validation failed: reason=redis_unavailable key_prefix_present={} key_prefix_length={} error_type={} error={}",
+                    prefix != null, prefix != null ? prefix.length() : null,
+                    e.getClass().getSimpleName(), e.getMessage());
+            return internalError();
         } catch (Exception e) {
             LOG.error("API key validation failed: key_prefix_present={} key_prefix_length={} error={}",
                     prefix != null, prefix != null ? prefix.length() : null, e.toString(), e);
-            return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
+            return internalError();
         }
     }
 
@@ -144,6 +150,10 @@ public class ApiKeyRepository {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static ApiKeyValidationResponse internalError() {
+        return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
     }
 
 }
