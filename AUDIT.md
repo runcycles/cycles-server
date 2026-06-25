@@ -14,9 +14,11 @@ Jedis/Lua. Docker and Compose healthchecks therefore stayed green during a
 Redis outage while API operations returned structured Redis-backed 5xx errors.
 The API module now registers a `redis` `HealthIndicator` that borrows a Jedis
 connection and requires `PING -> PONG`; pool exhaustion, connection failures, or
-unexpected responses mark health DOWN. This makes existing container
-healthchecks and orchestrator probes reflect the ledger dependency without
-changing API behavior.
+unexpected responses mark readiness DOWN. Spring Boot liveness/readiness probes
+are explicitly enabled, readiness includes `readinessState,redis`, and liveness
+stays process-only. Dockerfile, Compose, and release-smoke healthchecks now use
+`/actuator/health/readiness`, so Redis outages drain traffic instead of being
+treated as process liveness failures.
 
 Second, `OPERATIONS.md` documented that log lines carry both `requestId` and
 `traceId` MDC values, but only `TraceContextFilter` populated MDC. The

@@ -39,6 +39,6 @@ USER appuser
 EXPOSE 7878
 
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
-    CMD wget -qO- http://localhost:7878/actuator/health || exit 1
+    CMD wget -qO- http://localhost:7878/actuator/health/readiness || exit 1
 
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

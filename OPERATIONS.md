@@ -305,15 +305,17 @@ Contributions of a packaged dashboard JSON are welcome.
 ### Symptom: Redis unavailable
 
 The service is designed to return structured 5xx when Redis is down
-(enforced by `RedisDisconnectResilienceIntegrationTest`). `/actuator/health`
-also includes a Redis `PING` health contributor, so container/orchestrator
-healthchecks should flip DOWN during the same outage.
+(enforced by `RedisDisconnectResilienceIntegrationTest`).
+`/actuator/health/readiness` includes a Redis `PING` health contributor, so
+container/orchestrator readiness healthchecks should flip DOWN during the same
+outage.
 
-For Kubernetes, wire Redis-dependent health to readiness, not liveness: a Redis
-outage should drain traffic rather than restart-storm otherwise healthy API
-pods. The Redis health check uses the application `JedisPool`, so DOWN can be
-delayed by the pool wait/socket timeout during a saturated or partitioned Redis
-incident.
+For Kubernetes, wire Redis-dependent health to readiness, not liveness:
+`/actuator/health/readiness` includes Redis and `/actuator/health/liveness`
+stays process-only. A Redis outage should drain traffic rather than
+restart-storm otherwise healthy API pods. The Redis health check uses the
+application `JedisPool`, so DOWN can be delayed by the pool wait/socket timeout
+during a saturated or partitioned Redis incident.
 
 1. Confirm Redis health: `redis-cli PING`, check disk/memory on the
    Redis host.

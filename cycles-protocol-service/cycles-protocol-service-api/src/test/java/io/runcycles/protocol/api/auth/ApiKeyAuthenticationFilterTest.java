@@ -113,6 +113,12 @@ class ApiKeyAuthenticationFilterTest {
         request.setRequestURI("/actuator/health");
         assertThat(filter.shouldNotFilter(request)).isTrue();
 
+        request.setRequestURI("/actuator/health/liveness");
+        assertThat(filter.shouldNotFilter(request)).isTrue();
+
+        request.setRequestURI("/actuator/health/readiness");
+        assertThat(filter.shouldNotFilter(request)).isTrue();
+
         request.setRequestURI("/v3/api-docs/something");
         assertThat(filter.shouldNotFilter(request)).isTrue();
     }

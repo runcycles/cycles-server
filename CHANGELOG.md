@@ -18,10 +18,11 @@ called out but are not breaking to API clients.
 
 ### Fixed
 
-- `/actuator/health` now includes a Redis `PING` health contributor. Container
-  and Compose healthchecks now go unhealthy when the ledger dependency is
-  unreachable instead of reporting a live HTTP process as healthy while API
-  operations return Redis-backed 5xx errors.
+- `/actuator/health/readiness` now includes a Redis `PING` health contributor.
+  Container, Dockerfile, and release-smoke healthchecks now use readiness and go
+  unhealthy when the ledger dependency is unreachable instead of reporting a
+  live HTTP process as healthy while API operations return Redis-backed 5xx
+  errors. `/actuator/health/liveness` remains process-only.
 - `RequestIdFilter` now places `requestId` in MDC for the lifetime of each
   request, matching the operations runbook and making structured logs
   consistently joinable by both `requestId` and `traceId`.
@@ -36,7 +37,7 @@ called out but are not breaking to API clients.
 ### Compatibility
 
 - Operational readiness change only. No HTTP API schema, Redis data model, Lua,
-  event, evidence, or protocol behavior change. The unauthenticated health
+  event, evidence, or protocol behavior change. The unauthenticated readiness
   endpoint can now return DOWN/503 when Redis is unavailable.
 
 ## [0.1.25.42] — 2026-06-25

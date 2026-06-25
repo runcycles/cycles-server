@@ -20,6 +20,8 @@ public class SecurityConfig {
             "/favicon.ico",
             "/.well-known/**",
             "/actuator/health",
+            "/actuator/health/liveness",
+            "/actuator/health/readiness",
             "/actuator/prometheus",
             // CyclesEvidence retrieval is public by design (cycles-protocol-v0
             // getEvidence, security: []): the evidence_id is an unguessable

@@ -205,32 +205,37 @@ class RedisDisconnectResilienceIntegrationTest {
     }
 
     @Test
-    @DisplayName("actuator health reports DOWN while Redis is paused")
-    void healthReportsDownWhileRedisUnavailable() throws Exception {
-        ResponseEntity<Map> healthy = restTemplate.getForEntity(
-                "http://localhost:" + port + "/actuator/health", Map.class);
-        assertThat(healthy.getStatusCode().value()).isEqualTo(200);
-        assertThat(healthy.getBody()).containsEntry("status", "UP");
+    @DisplayName("readiness reports DOWN while Redis is paused and liveness stays UP")
+    void readinessReportsDownWhileRedisUnavailableAndLivenessStaysUp() throws Exception {
+        ResponseEntity<Map> healthyReadiness = getHealth("readiness");
+        assertThat(healthyReadiness.getStatusCode().value()).isEqualTo(200);
+        assertThat(healthyReadiness.getBody()).containsEntry("status", "UP");
+
+        ResponseEntity<Map> healthyLiveness = getHealth("liveness");
+        assertThat(healthyLiveness.getStatusCode().value()).isEqualTo(200);
+        assertThat(healthyLiveness.getBody()).containsEntry("status", "UP");
 
         REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
         try {
             long start = System.currentTimeMillis();
-            ResponseEntity<Map> unhealthy = restTemplate.getForEntity(
-                    "http://localhost:" + port + "/actuator/health", Map.class);
+            ResponseEntity<Map> unhealthyReadiness = getHealth("readiness");
             long elapsed = System.currentTimeMillis() - start;
 
-            assertThat(unhealthy.getStatusCode().value()).isEqualTo(503);
-            assertThat(unhealthy.getBody()).containsEntry("status", "DOWN");
+            assertThat(unhealthyReadiness.getStatusCode().value()).isEqualTo(503);
+            assertThat(unhealthyReadiness.getBody()).containsEntry("status", "DOWN");
             assertThat(elapsed)
-                    .as("health check against paused Redis took too long (%d ms)", elapsed)
+                    .as("readiness check against paused Redis took too long (%d ms)", elapsed)
                     .isLessThan(10_000);
+
+            ResponseEntity<Map> live = getHealth("liveness");
+            assertThat(live.getStatusCode().value()).isEqualTo(200);
+            assertThat(live.getBody()).containsEntry("status", "UP");
         } finally {
             REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
         }
 
         Thread.sleep(200);
-        ResponseEntity<Map> recovered = restTemplate.getForEntity(
-                "http://localhost:" + port + "/actuator/health", Map.class);
+        ResponseEntity<Map> recovered = getHealth("readiness");
         assertThat(recovered.getStatusCode().value()).isEqualTo(200);
         assertThat(recovered.getBody()).containsEntry("status", "UP");
     }
@@ -283,5 +288,10 @@ class RedisDisconnectResilienceIntegrationTest {
                 HttpMethod.POST,
                 new HttpEntity<>(body, headers),
                 Map.class);
+    }
+
+    private ResponseEntity<Map> getHealth(String group) {
+        return restTemplate.getForEntity(
+                "http://localhost:" + port + "/actuator/health/" + group, Map.class);
     }
 }
