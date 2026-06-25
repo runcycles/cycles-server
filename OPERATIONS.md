@@ -309,6 +309,12 @@ The service is designed to return structured 5xx when Redis is down
 also includes a Redis `PING` health contributor, so container/orchestrator
 healthchecks should flip DOWN during the same outage.
 
+For Kubernetes, wire Redis-dependent health to readiness, not liveness: a Redis
+outage should drain traffic rather than restart-storm otherwise healthy API
+pods. The Redis health check uses the application `JedisPool`, so DOWN can be
+delayed by the pool wait/socket timeout during a saturated or partitioned Redis
+incident.
+
 1. Confirm Redis health: `redis-cli PING`, check disk/memory on the
    Redis host.
 2. Check `jvm_memory_used_bytes` on the cycles-server side — if memory
