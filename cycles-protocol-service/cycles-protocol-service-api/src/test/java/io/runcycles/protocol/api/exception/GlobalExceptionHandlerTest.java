@@ -94,6 +94,22 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("handled CyclesProtocolException log flattens CR/LF in request-derived fields")
+    void cyclesExceptionLogSanitizesRequestDerivedFields(CapturedOutput output) {
+        request.setRequestURI("/v1/reservations/res_abc123\r\nforged=true/commit");
+        withRoute("POST", "/v1/reservations/{reservation_id}/commit",
+                Map.of("reservation_id", "res_abc123\r\nforged=true"));
+
+        handler.handleCyclesException(CyclesProtocolException.budgetExceeded("tenant:acme"), request);
+
+        assertThat(output)
+                .contains("path=/v1/reservations/res_abc123  forged=true/commit")
+                .contains("reservation_id=res_abc123  forged=true")
+                .doesNotContain("reservation_id=res_abc123\r\nforged=true");
+    }
+
+    @Test
     @DisplayName("trace_id propagates into ErrorResponse across all handler paths")
     void traceIdPropagatesAcrossHandlers() throws Exception {
         // CyclesProtocolException

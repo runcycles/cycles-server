@@ -122,13 +122,13 @@ public class GlobalExceptionHandler {
                                     String requestId, String traceId) {
         LOG.info("Cycles protocol exception handled: method={} path={} route={} status={} error={} request_id={} trace_id={} reservation_id={} message={}",
             request != null ? request.getMethod() : null,
-            request != null ? request.getRequestURI() : null,
-            bestMatchingRoute(request),
+            safeLogValue(request != null ? request.getRequestURI() : null),
+            safeLogValue(bestMatchingRoute(request)),
             ex.getHttpStatus(),
             ex.getErrorCode(),
             requestId,
             traceId,
-            reservationIdFor(request),
+            safeLogValue(reservationIdFor(request)),
             safeLogValue(ex.getMessage()));
     }
 
@@ -137,13 +137,13 @@ public class GlobalExceptionHandler {
         LOG.info("{}: method={} path={} route={} status={} error={} request_id={} trace_id={} reservation_id={}",
             safeLogValue(message),
             request != null ? request.getMethod() : null,
-            request != null ? request.getRequestURI() : null,
-            bestMatchingRoute(request),
+            safeLogValue(request != null ? request.getRequestURI() : null),
+            safeLogValue(bestMatchingRoute(request)),
             status,
             errorCode,
             requestId,
             traceId,
-            reservationIdFor(request));
+            safeLogValue(reservationIdFor(request)));
     }
 
     private String bestMatchingRoute(HttpServletRequest request) {
@@ -280,8 +280,8 @@ public class GlobalExceptionHandler {
             LOG.warn("CyclesProtocolException reached generic handler unexpectedly; check @ControllerAdvice ordering. class={} method={} path={} route={} request_id={} trace_id={}",
                 ex.getClass().getName(),
                 request != null ? request.getMethod() : null,
-                request != null ? request.getRequestURI() : null,
-                bestMatchingRoute(request),
+                safeLogValue(request != null ? request.getRequestURI() : null),
+                safeLogValue(bestMatchingRoute(request)),
                 requestId,
                 traceId);
             return handleCyclesException((CyclesProtocolException) ex, request);
@@ -290,11 +290,11 @@ public class GlobalExceptionHandler {
             LOG.error("Unhandled exception: class={} method={} path={} route={} request_id={} trace_id={} reservation_id={}",
                 ex.getClass().getName(),
                 request != null ? request.getMethod() : null,
-                request != null ? request.getRequestURI() : null,
-                bestMatchingRoute(request),
+                safeLogValue(request != null ? request.getRequestURI() : null),
+                safeLogValue(bestMatchingRoute(request)),
                 requestId,
                 traceId,
-                reservationIdFor(request),
+                safeLogValue(reservationIdFor(request)),
                 ex);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(ErrorResponse.builder()

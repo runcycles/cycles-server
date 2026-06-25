@@ -30,6 +30,9 @@ called out but are not breaking to API clients.
   logs (reservation, audit, event-emitter, evidence, expiry) via a shared
   `LogSanitizer` utility, so request-derived strings logged below the
   controller layer cannot inject log lines either.
+- Sanitized the remaining exception-handler path/route/reservation-id fields
+  and tenant-authorization DEBUG values; added a regression assertion for
+  handled protocol-exception log flattening.
 
 ### Compatibility
 

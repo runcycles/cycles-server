@@ -20,6 +20,13 @@ It reports only key presence and length, while validation/auth failure logs keep
 tenant/key/reason/request/trace context in sanitized form. No HTTP status/body
 change, no Redis/Lua change, and no cycles-protocol spec change.
 
+Final review follow-up tightened the remaining API-layer gaps: exception-handler
+logs now sanitize concrete request paths, matched route strings, and
+`reservation_id` path variables before emitting structured operator context;
+`BaseController.authorizeTenant()` also flattens tenant debug values. A focused
+`GlobalExceptionHandlerTest` assertion covers CR/LF flattening on handled
+protocol-exception logs.
+
 The same sanitization is now also applied in the **data plane**, which the first
 pass missed: repository and service failure logs (`RedisReservationRepository`,
 `AuditRepository`, `EventEmitterRepository`, `EventEmitterService`,
