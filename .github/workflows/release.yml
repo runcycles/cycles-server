@@ -308,20 +308,20 @@ jobs:
           -e ADMIN_API_KEY=smoke-test-admin-key
           ghcr.io/runcycles/cycles-server:${VERSION}
 
-      - name: Wait for /actuator/health
+      - name: Wait for /actuator/health/readiness
         run: |
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7878/actuator/health || echo "000")
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:7878/actuator/health/readiness || echo "000")
             if [ "$code" = "200" ]; then
-              echo "cycles-server healthy after $((i*2))s"
-              curl -s http://localhost:7878/actuator/health
+              echo "cycles-server ready after $((i*2))s"
+              curl -s http://localhost:7878/actuator/health/readiness
               echo
               exit 0
             fi
             echo "waiting ($i/30) — status=$code"
             sleep 2
           done
-          echo "ERROR: cycles-server did not become healthy in 60s"
+          echo "ERROR: cycles-server did not become ready in 60s"
           docker logs smoke-server | tail -50
           exit 1
 

@@ -24,7 +24,7 @@ services:
 
   cycles-server:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server:0.1.25.42
+    image: ghcr.io/runcycles/cycles-server:0.1.25.43
     restart: unless-stopped
     ports:
       - "7878:7878"
@@ -38,7 +38,7 @@ services:
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3

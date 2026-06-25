@@ -3,6 +3,7 @@ package io.runcycles.protocol.api.filter;
 import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.MDC;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
@@ -39,5 +40,22 @@ class RequestIdFilterTest {
         // Request attribute and response header should match
         assertThat(response.getHeader(RequestIdFilter.REQUEST_ID_HEADER))
                 .isEqualTo(request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString());
+    }
+
+    @Test
+    void shouldSetRequestIdMdcWhileRequestIsInFlightAndClearAfterwards() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        doAnswer(invocation -> {
+            String requestId = request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE).toString();
+            assertThat(MDC.get(RequestIdFilter.MDC_KEY)).isEqualTo(requestId);
+            return null;
+        }).when(chain).doFilter(request, response);
+
+        filter.doFilterInternal(request, response, chain);
+
+        assertThat(MDC.get(RequestIdFilter.MDC_KEY)).isNull();
     }
 }

@@ -300,8 +300,13 @@ These events are delivered by `cycles-server-events` to webhook subscribers via 
 ### Health Check
 
 ```
-GET /actuator/health
+GET /actuator/health/readiness
 ```
+
+Reports application readiness plus the Redis ledger dependency. If Redis is
+unreachable, the endpoint reports DOWN so container and orchestrator
+healthchecks stop treating the process as ready for traffic. Liveness remains
+available at `GET /actuator/health/liveness` and does not include Redis.
 
 ### Prometheus Metrics
 

@@ -14,6 +14,32 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.43] — 2026-06-25
+
+### Fixed
+
+- `/actuator/health/readiness` now includes a Redis `PING` health contributor.
+  Container, Dockerfile, and release-smoke healthchecks now use readiness and go
+  unhealthy when the ledger dependency is unreachable instead of reporting a
+  live HTTP process as healthy while API operations return Redis-backed 5xx
+  errors. `/actuator/health/liveness` remains process-only.
+- `RequestIdFilter` now places `requestId` in MDC for the lifetime of each
+  request, matching the operations runbook and making structured logs
+  consistently joinable by both `requestId` and `traceId`.
+- Spring Security is now explicitly stateless/API-key-only: HTTP Basic, form
+  login, logout, and Spring Boot's generated default user autoconfiguration are
+  disabled.
+- Redis connection failures during API-key validation now log one concise
+  `redis_unavailable` warning instead of a full stack trace per affected
+  request; unexpected validation exceptions still keep stack traces.
+- Production Compose examples now point at the `0.1.25.43` image tag.
+
+### Compatibility
+
+- Operational readiness change only. No HTTP API schema, Redis data model, Lua,
+  event, evidence, or protocol behavior change. The unauthenticated readiness
+  endpoint can now return DOWN/503 when Redis is unavailable.
+
 ## [0.1.25.42] — 2026-06-25
 
 ### Fixed

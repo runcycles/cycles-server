@@ -4,6 +4,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
@@ -19,6 +20,8 @@ public class SecurityConfig {
             "/favicon.ico",
             "/.well-known/**",
             "/actuator/health",
+            "/actuator/health/liveness",
+            "/actuator/health/readiness",
             "/actuator/prometheus",
             // CyclesEvidence retrieval is public by design (cycles-protocol-v0
             // getEvidence, security: []): the evidence_id is an unguessable
@@ -43,6 +46,10 @@ public class SecurityConfig {
         // takes over (existing tenant-key behavior unchanged).
         return http
                 .csrf(AbstractHttpConfigurer::disable)
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .formLogin(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(apiKeyFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(adminFilter, ApiKeyAuthenticationFilter.class)
                 .authorizeHttpRequests(auth -> auth

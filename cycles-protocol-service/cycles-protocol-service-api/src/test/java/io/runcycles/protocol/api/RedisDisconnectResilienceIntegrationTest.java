@@ -13,11 +13,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.ApplicationContext;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -79,6 +81,7 @@ class RedisDisconnectResilienceIntegrationTest {
     @LocalServerPort protected int port;
     @Autowired protected TestRestTemplate restTemplate;
     @Autowired protected JedisPool jedisPool;
+    @Autowired protected ApplicationContext applicationContext;
 
     private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -201,6 +204,61 @@ class RedisDisconnectResilienceIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("readiness reports DOWN while Redis is paused and liveness stays UP")
+    void readinessReportsDownWhileRedisUnavailableAndLivenessStaysUp() throws Exception {
+        ResponseEntity<Map> healthyReadiness = getHealth("readiness");
+        assertThat(healthyReadiness.getStatusCode().value()).isEqualTo(200);
+        assertThat(healthyReadiness.getBody()).containsEntry("status", "UP");
+
+        ResponseEntity<Map> healthyLiveness = getHealth("liveness");
+        assertThat(healthyLiveness.getStatusCode().value()).isEqualTo(200);
+        assertThat(healthyLiveness.getBody()).containsEntry("status", "UP");
+
+        REDIS.getDockerClient().pauseContainerCmd(REDIS.getContainerId()).exec();
+        try {
+            long start = System.currentTimeMillis();
+            ResponseEntity<Map> unhealthyReadiness = getHealth("readiness");
+            long elapsed = System.currentTimeMillis() - start;
+
+            assertThat(unhealthyReadiness.getStatusCode().value()).isEqualTo(503);
+            assertThat(unhealthyReadiness.getBody()).containsEntry("status", "DOWN");
+            assertThat(elapsed)
+                    .as("readiness check against paused Redis took too long (%d ms)", elapsed)
+                    .isLessThan(10_000);
+
+            ResponseEntity<Map> live = getHealth("liveness");
+            assertThat(live.getStatusCode().value()).isEqualTo(200);
+            assertThat(live.getBody()).containsEntry("status", "UP");
+        } finally {
+            REDIS.getDockerClient().unpauseContainerCmd(REDIS.getContainerId()).exec();
+        }
+
+        Thread.sleep(200);
+        ResponseEntity<Map> recovered = getHealth("readiness");
+        assertThat(recovered.getStatusCode().value()).isEqualTo(200);
+        assertThat(recovered.getBody()).containsEntry("status", "UP");
+    }
+
+    @Test
+    @DisplayName("security is stateless API-key only")
+    void securityDoesNotCreateDefaultUserBasicChallengeOrSession() {
+        assertThat(applicationContext.getBeansOfType(UserDetailsService.class)).isEmpty();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<Map> response = restTemplate.exchange(
+                "http://localhost:" + port + "/v1/reservations",
+                HttpMethod.POST,
+                new HttpEntity<>(reservationBody(1_000), headers),
+                Map.class);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(401);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.WWW_AUTHENTICATE)).isNull();
+        assertThat(response.getHeaders().getOrEmpty(HttpHeaders.SET_COOKIE))
+                .noneMatch(cookie -> cookie.contains("JSESSIONID"));
+    }
+
     // ---- helpers ----
 
     private Map<String, Object> reservationBody(long amount) {
@@ -230,5 +288,10 @@ class RedisDisconnectResilienceIntegrationTest {
                 HttpMethod.POST,
                 new HttpEntity<>(body, headers),
                 Map.class);
+    }
+
+    private ResponseEntity<Map> getHealth(String group) {
+        return restTemplate.getForEntity(
+                "http://localhost:" + port + "/actuator/health/" + group, Map.class);
     }
 }

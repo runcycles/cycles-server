@@ -20,6 +20,8 @@ class SecurityConfigTest {
                 "/favicon.ico",
                 "/.well-known/**",
                 "/actuator/health",
+                "/actuator/health/liveness",
+                "/actuator/health/readiness",
                 "/actuator/prometheus",
                 "/v1/evidence/**",
                 "/v1/.well-known/**"
@@ -33,7 +35,8 @@ class SecurityConfigTest {
 
     @Test
     void publicPathsShouldIncludeActuatorHealth() {
-        assertThat(SecurityConfig.PUBLIC_PATHS).contains("/actuator/health");
+        assertThat(SecurityConfig.PUBLIC_PATHS)
+                .contains("/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness");
     }
 
     @Test
