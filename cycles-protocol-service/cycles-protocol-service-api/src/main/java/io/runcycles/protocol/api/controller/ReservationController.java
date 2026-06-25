@@ -382,11 +382,13 @@ public class ReservationController extends BaseController{
         // comma-separated field-projection list. Unrecognized / empty tokens are
         // ignored (no 400). Projection-only — never bound to the cursor.
         Set<ReservationInclude> includeFields = ReservationInclude.parseCsv(include);
-        LOG.info("GET /v1/reservations tenant={} admin={} limit={} has_cursor={} sort_by={} sort_dir={} from_ms={} to_ms={} expires_from_ms={} expires_to_ms={} finalized_from_ms={} finalized_to_ms={} include={} request_id={} trace_id={}",
-                safeLogValue(effectiveTenant), isAdminAuth(), limit, cursor != null && !cursor.isBlank(),
-                safeLogValue(sortBy), safeLogValue(sortDir), fromMs, toMs, expiresFromMs, expiresToMs,
-                finalizedFromMs, finalizedToMs, safeLogValue(includeFields), resolveRequestId(httpRequest),
-                resolveTraceId(httpRequest));
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("GET /v1/reservations tenant={} admin={} limit={} has_cursor={} sort_by={} sort_dir={} from_ms={} to_ms={} expires_from_ms={} expires_to_ms={} finalized_from_ms={} finalized_to_ms={} include={} request_id={} trace_id={}",
+                    safeLogValue(effectiveTenant), isAdminAuth(), limit, cursor != null && !cursor.isBlank(),
+                    safeLogValue(sortBy), safeLogValue(sortDir), fromMs, toMs, expiresFromMs, expiresToMs,
+                    finalizedFromMs, finalizedToMs, safeLogValue(includeFields), resolveRequestId(httpRequest),
+                    resolveTraceId(httpRequest));
+        }
         return ResponseEntity.ok(repository.listReservations(effectiveTenant, idempotencyKey,
                 status, workspace, app, workflow, agent, toolset, limit, cursor, sortBy, sortDir,
                 fromMs, toMs, expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs,

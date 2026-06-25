@@ -33,10 +33,18 @@ called out but are not breaking to API clients.
 - Sanitized the remaining exception-handler path/route/reservation-id fields
   and tenant-authorization DEBUG values; added a regression assertion for
   handled protocol-exception log flattening.
+- **Per-request controller request logs are emitted at `DEBUG`, not `INFO`.**
+  The v0.1.25.40 INFO request log on the reserve/commit/release/event hot path
+  added a synchronous, lock-contending log line per call that regressed p50
+  latency ~40% and 32-thread throughput ~28% (caught by the release benchmark
+  gate). They are now `DEBUG`, guarded by `isDebugEnabled`, so the default hot
+  path is allocation/lock-free; exception and side-effect-failure logs remain at
+  `INFO`/`WARN`. Enable `DEBUG` for that logger to restore per-request lines.
 
 ### Compatibility
 
-- No HTTP request/response, Redis, Lua, event, evidence, or spec change.
+- No HTTP request/response, Redis, Lua, event, evidence, or spec change. Default
+  log volume drops (per-request request logs move from INFO to DEBUG).
 
 ## [0.1.25.40] — 2026-06-24
 

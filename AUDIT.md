@@ -27,6 +27,22 @@ logs now sanitize concrete request paths, matched route strings, and
 `GlobalExceptionHandlerTest` assertion covers CR/LF flattening on handled
 protocol-exception logs.
 
+**Hot-path log level (release benchmark-gate fix).** The first v0.1.25.41
+release build failed the release benchmark gate: the v0.1.25.40 per-request
+controller request log was at `INFO`, so every reserve/commit/release/event call
+emitted a synchronous log line. The 3-trial median showed p50 +33–46% across
+those ops and 32-thread `concurrent_throughput` −28% — the throughput drop is
+the signature of request threads serializing on the synchronous logback appender
+lock. v0.1.25.39 passed the same gate, so the v0.1.25.40/.41 logging work was the
+only delta. Fix: `BaseController.logRequest(...)` and the inline list/balance/
+evidence request logs now emit at `DEBUG` behind an `isDebugEnabled` guard (so
+the sanitize/attribute-lookup args stay off the hot path when DEBUG is off).
+Per-request request logging at DEBUG is the conventional level anyway; the
+high-value exception (`INFO`/`ERROR`) and side-effect-failure (`WARN`) logs are
+unchanged and are not on the success hot path. No wire/Redis/Lua/spec change. The
+v0.1.25.41 tag/release were re-cut in place on this fix since no image had been
+published (the build stopped at the gate).
+
 The same sanitization is now also applied in the **data plane**, which the first
 pass missed: repository and service failure logs (`RedisReservationRepository`,
 `AuditRepository`, `EventEmitterRepository`, `EventEmitterService`,
