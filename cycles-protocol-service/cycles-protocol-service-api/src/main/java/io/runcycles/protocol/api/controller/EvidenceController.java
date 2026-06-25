@@ -55,8 +55,10 @@ public class EvidenceController {
                     message = "evidence_id must be 64 lowercase hex characters")
             String evidenceId,
             HttpServletRequest request) {
-        LOG.info("GET /v1/evidence/{evidence_id} evidence_id={} request_id={} trace_id={}",
-                evidenceId, resolveRequestId(request), TraceContextFilter.currentTraceId(request));
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("GET /v1/evidence/{evidence_id} evidence_id={} request_id={} trace_id={}",
+                    evidenceId, resolveRequestId(request), TraceContextFilter.currentTraceId(request));
+        }
         String envelope = store.get(evidenceId);
         if (envelope == null) {
             throw CyclesProtocolException.notFound(evidenceId);

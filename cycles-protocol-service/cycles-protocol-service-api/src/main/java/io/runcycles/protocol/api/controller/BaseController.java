@@ -110,7 +110,15 @@ abstract public class BaseController {
 
     protected void logRequest(Logger logger, HttpServletRequest request, String operation,
                               String tenant, String reservationId) {
-        logger.info("{} tenant={} reservation_id={} request_id={} trace_id={} admin={}",
+        // Per-request logging is DEBUG, not INFO: emitting (and lock-contending on)
+        // a synchronous log line per call on the reserve/commit/release/event hot
+        // path regressed p50 ~40% and 32-thread throughput ~28%. The isDebugEnabled
+        // guard keeps the args (sanitize/attribute lookups) out of the hot path when
+        // DEBUG is off. Exception and side-effect-failure logs stay at INFO/WARN.
+        if (!logger.isDebugEnabled()) {
+            return;
+        }
+        logger.debug("{} tenant={} reservation_id={} request_id={} trace_id={} admin={}",
                 operation, safeLogValue(tenant), safeLogValue(reservationId), resolveRequestId(request),
                 resolveTraceId(request), isAdminAuth());
     }
