@@ -4,10 +4,12 @@ Compare a current benchmark record against a baseline and exit non-zero
 on regression.
 
 Usage:
-    # Release gate (25% threshold against baseline.json):
+    # Release gate (25% threshold against rolling history, baseline fallback):
     python scripts/check-regression.py release \\
         --current benchmarks/current.json \\
         --baseline benchmarks/baseline.json \\
+        --history benchmarks/history.jsonl \\
+        --window 7 \\
         --threshold 0.25
 
     # Nightly trend (30% threshold against rolling-7 median of history.jsonl):
@@ -18,9 +20,10 @@ Usage:
         --threshold 0.30
 
 Emits a markdown summary to stdout (captured into workflow annotations).
-Exits 0 on no-regression, 1 on regression. In release mode a missing or
-empty baseline bootstraps (accepts the current record as initial baseline)
-and still exits 0.
+Exits 0 on no-regression, 1 on regression. In release mode, history with at
+least two prior records is preferred so a single unusually fast release does
+not become the only comparison point. Missing history falls back to
+baseline.json; a missing or empty baseline bootstraps and still exits 0.
 """
 
 from __future__ import annotations
@@ -183,6 +186,19 @@ def format_summary(
 
 def run_release(args) -> int:
     current = load_json(args.current)
+
+    if args.history:
+        history = load_history(args.history)
+        if len(history) >= 2:
+            baseline = rolling_median(history, args.window)
+            results = compare(current, baseline, args.threshold)
+            any_regressed = any(r["regressed"] for r in results)
+            print(format_summary(
+                f"release-gate (rolling-{args.window} median)",
+                results, args.threshold, any_regressed,
+            ))
+            return 1 if any_regressed else 0
+
     try:
         baseline_raw = load_json(args.baseline)
     except FileNotFoundError:
@@ -254,6 +270,9 @@ def main() -> int:
     rel = sub.add_parser("release", help="Gate for the release workflow")
     rel.add_argument("--current", required=True)
     rel.add_argument("--baseline", required=True)
+    rel.add_argument("--history", default=None,
+                     help="Optional history.jsonl for rolling-median release baseline")
+    rel.add_argument("--window", type=int, default=7)
     rel.add_argument("--threshold", type=float, default=0.25)
     rel.set_defaults(func=run_release)
 

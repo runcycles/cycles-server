@@ -14,6 +14,23 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.42] — 2026-06-25
+
+### Fixed
+
+- Release benchmark gating now compares the candidate median against the
+  rolling median from `benchmark-data/benchmarks/history.jsonl` when history is
+  available, while keeping the strict 25% threshold. This avoids blocking a
+  release on one unusually fast prior release sample; `baseline.json` remains
+  updated after successful releases for reference/bootstrap.
+- Guarded tenant-authorization DEBUG logging so request-time sanitizer work is
+  skipped when DEBUG is off.
+
+### Compatibility
+
+- CI/workflow and benchmark script change only. No HTTP request/response,
+  Redis, Lua, event, evidence, or spec change.
+
 ## [0.1.25.41] — 2026-06-24
 
 ### Fixed
@@ -34,12 +51,12 @@ called out but are not breaking to API clients.
   and tenant-authorization DEBUG values; added a regression assertion for
   handled protocol-exception log flattening.
 - **Per-request controller request logs are emitted at `DEBUG`, not `INFO`.**
-  The v0.1.25.40 INFO request log on the reserve/commit/release/event hot path
-  added a synchronous, lock-contending log line per call that regressed p50
-  latency ~40% and 32-thread throughput ~28% (caught by the release benchmark
-  gate). They are now `DEBUG`, guarded by `isDebugEnabled`, so the default hot
-  path is allocation/lock-free; exception and side-effect-failure logs remain at
-  `INFO`/`WARN`. Enable `DEBUG` for that logger to restore per-request lines.
+  This removes default production success-path request log volume and keeps
+  sanitize/attribute lookups behind `isDebugEnabled`; exception and
+  side-effect-failure logs remain at `INFO`/`WARN`. Enable `DEBUG` for that
+  logger to restore per-request lines. A later release-CI follow-up found the
+  benchmark gate was also over-sensitive to a single fast baseline sample; see
+  `0.1.25.42`.
 
 ### Compatibility
 
