@@ -35,7 +35,8 @@ public class EventController extends BaseController {
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody EventCreateRequest request,
             HttpServletRequest httpRequest) {
-        LOG.info("POST /v1/events - tenant: {}", request.getSubject().getTenant());
+        logRequest(LOG, httpRequest, "POST /v1/events",
+                request.getSubject() != null ? request.getSubject().getTenant() : null);
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
@@ -55,7 +56,9 @@ public class EventController extends BaseController {
                     null,
                     resolveRequestId(httpRequest),
                     resolveTraceContext(httpRequest));
-        } catch (Exception e) { /* non-blocking */ }
+        } catch (Exception e) {
+            logSideEffectFailure(LOG, httpRequest, "emit event budget state events", tenant, null, e);
+        }
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 }

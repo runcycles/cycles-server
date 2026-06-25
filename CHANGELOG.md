@@ -14,6 +14,54 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.41] — 2026-06-24
+
+### Fixed
+
+- Flattened CR/LF characters in dynamic operator-log fields added by the
+  logging-context review so request/config/exception values cannot inject
+  misleading log lines.
+- Removed API-key prefix/masked-token material from debug logs; auth logging now
+  reports only key presence/length plus sanitized tenant/key/reason context on
+  failures.
+- Sanitized JWKS retired-key parsing warnings and auth rejection logs while
+  preserving method, path, request id, trace id, and error context.
+- Extended the same CR/LF flattening to data-plane repository/service failure
+  logs (reservation, audit, event-emitter, evidence, expiry) via a shared
+  `LogSanitizer` utility, so request-derived strings logged below the
+  controller layer cannot inject log lines either.
+- Sanitized the remaining exception-handler path/route/reservation-id fields
+  and tenant-authorization DEBUG values; added a regression assertion for
+  handled protocol-exception log flattening.
+
+### Compatibility
+
+- No HTTP request/response, Redis, Lua, event, evidence, or spec change.
+
+## [0.1.25.40] — 2026-06-24
+
+### Fixed
+
+- Replaced the class-only `Landed in cycles exception handler` log with
+  structured protocol-exception logs carrying method, path, matched route,
+  status, error code, `request_id`, `trace_id`, and `reservation_id`.
+- Added the same operational context to validation, malformed-body, and
+  unexpected exception handler logs so 4xx/5xx responses can be joined to
+  application logs.
+- Added request-context fields to controller request logs for reservations,
+  balances, decisions, events, and evidence retrieval.
+- Made formerly silent non-blocking controller side-effect failures visible at
+  `WARN` without changing response behavior.
+- Tightened auth and async event/evidence/audit logs to include safe identifiers
+  such as tenant, resource, event, request, and trace context while avoiding
+  full validation DTOs, request DTOs, API keys, and raw idempotency keys.
+
+### Validation
+
+- `mvn -B -pl cycles-protocol-service-api -am "-Dtest=GlobalExceptionHandlerTest,ApiKeyAuthenticationFilterTest,AdminApiKeyAuthenticationFilterTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`
+- `mvn -B -pl cycles-protocol-service-api -am "-Dtest=ReservationControllerTest,DecisionControllerTest,EventControllerTest,BalanceControllerTest,EvidenceControllerTest" "-Dsurefire.failIfNoSpecifiedTests=false" "-Dcontract.validation.enabled=false" test`
+- `mvn -B -pl cycles-protocol-service-data -am "-Dtest=ApiKeyRepositoryTest,ApiKeyValidationServiceTest,AuditRepositoryTest,EventEmitterRepositoryTest,EventEmitterServiceTest,ReservationExpiryServiceTest,EvidenceEmitterTest" "-Dsurefire.failIfNoSpecifiedTests=false" test`
+
 ## [0.1.25.39] — 2026-06-24
 
 ### Fixed

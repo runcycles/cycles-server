@@ -1,6 +1,7 @@
 package io.runcycles.protocol.data.service;
 
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
+import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.data.util.TraceIdGenerator;
 import io.runcycles.protocol.model.event.*;
@@ -71,7 +72,7 @@ public class ReservationExpiryService {
                     // Emit reservation.expired event if the Lua script actually expired this reservation
                     emitExpiredEvent(jedis, reservationId, result, batchTrace);
                 } catch (Exception e) {
-                    LOG.warn("Failed to expire reservation: {}", reservationId, e);
+                    LOG.warn("Failed to expire reservation: {}", LogSanitizer.sanitize(reservationId), e);
                 }
             }
         } catch (Exception e) {
@@ -80,6 +81,8 @@ public class ReservationExpiryService {
     }
 
     private void emitExpiredEvent(Jedis jedis, String reservationId, Object luaResult, TraceContext trace) {
+        String tenantId = null;
+        String scopePath = null;
         try {
             // Only emit if the Lua script actually expired this reservation (status == "EXPIRED")
             String resultStr = luaResult != null ? luaResult.toString() : "";
@@ -94,14 +97,14 @@ public class ReservationExpiryService {
             Map<String, String> hash = jedis.hgetAll("reservation:res_" + reservationId);
             if (hash == null || hash.isEmpty()) return;
 
-            String tenantId = hash.get("tenant");
+            tenantId = hash.get("tenant");
             if (tenantId == null) return;
 
             // Counter is bumped once per actual EXPIRED transition (SKIP results from
             // still-in-grace or already-finalised reservations are filtered out above).
             metrics.recordExpired(tenantId);
 
-            String scopePath = hash.get("scope_path");
+            scopePath = hash.get("scope_path");
             String unit = hash.get("estimate_unit");
             Long estimateAmount = parseLong(hash.get("estimate_amount"));
             Long createdAtMs = parseLong(hash.get("created_at_ms"));
@@ -124,7 +127,9 @@ public class ReservationExpiryService {
                             .build(),
                     null, null, trace);
         } catch (Exception e) {
-            LOG.debug("Failed to emit reservation.expired event for {}: {}", reservationId, e.getMessage());
+            LOG.warn("Failed to emit reservation.expired event: reservation_id={} tenant={} scope={} trace_id={} error={}",
+                    LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(tenantId), LogSanitizer.sanitize(scopePath), trace != null ? trace.traceId() : null,
+                    LogSanitizer.sanitize(e.toString()), e);
         }
     }
 

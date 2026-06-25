@@ -73,14 +73,15 @@ abstract public class BaseController {
         // admin key; controllers handle the explicit tenant scoping
         // (e.g. listReservations requires ?tenant when admin).
         if (isAdminAuth()) return;
-        LOG.debug("Authorizing tenant: tenantFromRequest={}",tenantFromRequest);
+        LOG.debug("Authorizing tenant: tenantFromRequest={}", safeLogValue(tenantFromRequest));
         String tenantFromAuthorization = extractAuthTenantId ();
         if (tenantFromRequest != null && !tenantFromRequest.isBlank()){
             if (!tenantFromRequest.equals(tenantFromAuthorization)){
                 throw new CyclesProtocolException(Enums.ErrorCode.FORBIDDEN, "Tenant provided in the request body does not match tenant resolved from authorization token",403) ;
             }
         }
-        LOG.debug("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",tenantFromRequest,tenantFromAuthorization);
+        LOG.debug("Authorization status: request is not tenant based, or tenant provided in request matches the one resolved from API key: tenantFromRequest={},tenantFromAuthorization={}",
+                safeLogValue(tenantFromRequest), safeLogValue(tenantFromAuthorization));
     }
 
     /** Return the X-Request-Id attribute set by RequestIdFilter, or null. */
@@ -98,6 +99,33 @@ abstract public class BaseController {
     /** Return the full TraceContext (trace_id + trace_flags + inbound-W3C flag) captured by the filter. */
     protected TraceContext resolveTraceContext(HttpServletRequest request) {
         return TraceContextFilter.currentContext(request);
+    }
+
+    protected String safeLogValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        return value.toString().replace('\r', ' ').replace('\n', ' ');
+    }
+
+    protected void logRequest(Logger logger, HttpServletRequest request, String operation,
+                              String tenant, String reservationId) {
+        logger.info("{} tenant={} reservation_id={} request_id={} trace_id={} admin={}",
+                operation, safeLogValue(tenant), safeLogValue(reservationId), resolveRequestId(request),
+                resolveTraceId(request), isAdminAuth());
+    }
+
+    protected void logRequest(Logger logger, HttpServletRequest request, String operation,
+                              String tenant) {
+        logRequest(logger, request, operation, tenant, null);
+    }
+
+    protected void logSideEffectFailure(Logger logger, HttpServletRequest request, String operation,
+                                        String tenant, String reservationId, Exception e) {
+        logger.warn("Non-blocking side effect failed: operation={} tenant={} reservation_id={} request_id={} trace_id={} error={}",
+                operation, safeLogValue(tenant), safeLogValue(reservationId),
+                resolveRequestId(request), resolveTraceId(request),
+                safeLogValue(e.toString()), e);
     }
 
     public void validateIdempotencyHeader(String headerKey, String bodyKey) {

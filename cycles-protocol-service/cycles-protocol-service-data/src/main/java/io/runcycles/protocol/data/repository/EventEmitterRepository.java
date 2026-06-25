@@ -2,6 +2,7 @@ package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.service.CryptoService;
+import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.event.Event;
 import io.runcycles.protocol.model.event.EventType;
 import io.runcycles.protocol.model.webhook.*;
@@ -83,13 +84,23 @@ public class EventEmitterRepository {
                         try {
                             createDelivery(jedis, event, sub);
                         } catch (Exception e) {
-                            LOG.error("Failed to create delivery for sub {}: {}", sub.getSubscriptionId(), e.getMessage());
+                            LOG.error("Failed to create webhook delivery: subscription_id={} event_id={} event_type={} tenant={} scope={} request_id={} trace_id={} error={}",
+                                    sub.getSubscriptionId(), event.getEventId(), event.getEventType(),
+                                    LogSanitizer.sanitize(event.getTenantId()), LogSanitizer.sanitize(event.getScope()), event.getRequestId(),
+                                    event.getTraceId(), LogSanitizer.sanitize(e.toString()), e);
                         }
                     }
                 }
             }
         } catch (Exception e) {
-            LOG.error("Failed to emit event {}: {}", event.getEventType(), e.getMessage());
+            LOG.error("Failed to persist or dispatch event: event_id={} event_type={} tenant={} scope={} request_id={} trace_id={} error={}",
+                    event != null ? event.getEventId() : null,
+                    event != null ? event.getEventType() : null,
+                    event != null ? LogSanitizer.sanitize(event.getTenantId()) : null,
+                    event != null ? LogSanitizer.sanitize(event.getScope()) : null,
+                    event != null ? event.getRequestId() : null,
+                    event != null ? event.getTraceId() : null,
+                    LogSanitizer.sanitize(e.toString()), e);
         }
     }
 

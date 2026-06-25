@@ -2,6 +2,7 @@ package io.runcycles.protocol.data.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.repository.EventEmitterRepository;
+import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.model.Balance;
 import io.runcycles.protocol.model.event.*;
@@ -80,7 +81,9 @@ public class EventEmitterService implements DisposableBean {
                         .build();
                 repository.emit(event);
             } catch (Exception e) {
-                LOG.error("Failed to emit event {}: {}", type, e.getMessage());
+                LOG.error("Failed to emit event: event_type={} tenant={} scope={} correlation_id={} request_id={} trace_id={} actor_type={} error={}",
+                        type, LogSanitizer.sanitize(tenantId), LogSanitizer.sanitize(scope), correlationId, requestId, traceNonNull.traceId(),
+                        actor != null ? actor.getType() : null, LogSanitizer.sanitize(e.toString()), e);
             }
         }, emitExecutor);
     }

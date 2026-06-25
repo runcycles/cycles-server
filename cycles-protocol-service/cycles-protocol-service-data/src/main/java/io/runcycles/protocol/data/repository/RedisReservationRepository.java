@@ -9,6 +9,7 @@ import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
+import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
@@ -219,7 +220,10 @@ public class RedisReservationRepository {
             metrics.recordReserve(tenant, "DENY", e.getErrorCode().name(), overagePolicyTag);
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to create reservation", e);
+            LOG.error("Failed to create reservation: tenant={} dry_run={} idempotency_key_present={} overage_policy={} trace_id={}",
+                    LogSanitizer.sanitize(tenant), request != null ? request.getDryRun() : null,
+                    request != null && request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank(),
+                    overagePolicyTag, traceId, e);
             metrics.recordReserve(tenant, "DENY", "INTERNAL_ERROR", overagePolicyTag);
             throw new RuntimeException(e);
         }
@@ -370,8 +374,8 @@ public class RedisReservationRepository {
             jedis.psetex(reserveResponseCacheKey(reservationId), ttlMs,
                     objectMapper.writeValueAsString(response));
         } catch (Exception e) {
-            LOG.warn("Failed to cache reserve response for reservation {}: {}",
-                    reservationId, e.getMessage());
+            LOG.warn("Failed to cache reserve response: reservation_id={} ttl_ms={} error={}",
+                    LogSanitizer.sanitize(reservationId), ttlMs, LogSanitizer.sanitize(e.toString()), e);
         }
     }
 
@@ -427,8 +431,8 @@ public class RedisReservationRepository {
             f.put(artifactType + "_evidence_url", ref.cyclesEvidenceUrl());
             jedis.hset("reservation:res_" + reservationId, f);
         } catch (Exception e) {
-            LOG.warn("Failed to persist {} evidence for reservation {}: {}",
-                    artifactType, reservationId, e.getMessage());
+            LOG.warn("Failed to persist reservation evidence ref: artifact_type={} reservation_id={} evidence_id={} error={}",
+                    artifactType, LogSanitizer.sanitize(reservationId), ref.evidenceId(), LogSanitizer.sanitize(e.toString()), e);
         }
     }
 
@@ -467,8 +471,8 @@ public class RedisReservationRepository {
             jedis.psetex(lifecycleBodyCacheKey(artifactType, reservationId),
                     TERMINAL_BODY_CACHE_TTL_MS, objectMapper.writeValueAsString(response));
         } catch (Exception e) {
-            LOG.warn("Failed to cache {} response body for reservation {}: {}",
-                    artifactType, reservationId, e.getMessage());
+            LOG.warn("Failed to cache lifecycle response body: artifact_type={} reservation_id={} ttl_ms={} error={}",
+                    artifactType, LogSanitizer.sanitize(reservationId), TERMINAL_BODY_CACHE_TTL_MS, LogSanitizer.sanitize(e.toString()), e);
         }
     }
 
@@ -681,8 +685,8 @@ public class RedisReservationRepository {
             pipe.sync();
             return true;
         } catch (Exception e) {
-            LOG.warn("Failed to cache {} response for idempotency_key {}: {}",
-                    kind, idempotencyKey, e.getMessage());
+            LOG.warn("Failed to cache idempotent response: kind={} tenant={} idempotency_key_present={} ttl_ms={} error={}",
+                    kind, LogSanitizer.sanitize(tenant), true, IDEMPOTENCY_CACHE_TTL_MS, LogSanitizer.sanitize(e.toString()), e);
             return false;
         }
     }
@@ -747,8 +751,9 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             clearIdempotencyClaim(jedis, idemKey, marker);
         } catch (Exception clearError) {
-            LOG.warn("Failed to clear pending idempotency claim {}: {}",
-                idemKey, clearError.getMessage());
+            LOG.warn("Failed to clear pending idempotency claim: kind={} tenant={} claim_key_present={} error={}",
+                idempotencyClaimKind(idemKey), LogSanitizer.sanitize(idempotencyClaimTenant(idemKey)), idemKey != null,
+                LogSanitizer.sanitize(clearError.toString()), clearError);
         }
     }
 
@@ -765,9 +770,27 @@ public class RedisReservationRepository {
         try {
             jedis.eval(COMPARE_AND_DELETE_SCRIPT, List.of(idemKey), List.of(marker));
         } catch (Exception clearError) {
-            LOG.warn("Failed to clear pending idempotency claim {}: {}",
-                idemKey, clearError.getMessage());
+            LOG.warn("Failed to clear pending idempotency claim: kind={} tenant={} claim_key_present={} error={}",
+                idempotencyClaimKind(idemKey), LogSanitizer.sanitize(idempotencyClaimTenant(idemKey)), idemKey != null,
+                LogSanitizer.sanitize(clearError.toString()), clearError);
         }
+    }
+
+    private String idempotencyClaimKind(String idemKey) {
+        String[] parts = idempotencyClaimParts(idemKey);
+        return parts.length >= 4 ? parts[2] : null;
+    }
+
+    private String idempotencyClaimTenant(String idemKey) {
+        String[] parts = idempotencyClaimParts(idemKey);
+        return parts.length >= 4 ? parts[1] : null;
+    }
+
+    private String[] idempotencyClaimParts(String idemKey) {
+        if (idemKey == null || !idemKey.startsWith("idem:")) {
+            return new String[0];
+        }
+        return idemKey.split(":", 5);
     }
 
     private CyclesProtocolException idempotencyStillPending() {
@@ -923,11 +946,15 @@ public class RedisReservationRepository {
             cacheLifecycleBody("commit", reservationId, committed);
             return committed;
         } catch (CyclesProtocolException e){
-            LOG.error("Failed logic to commit reservation", e);
+            LOG.debug("Commit reservation denied: reservation_id={} tenant={} error={}",
+                    reservationId, tenant, e.getErrorCode());
             metrics.recordCommit(tenant, "DENY", e.getErrorCode().name(), "UNKNOWN");
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to commit reservation", e);
+            LOG.error("Failed to commit reservation: reservation_id={} tenant={} idempotency_key_present={} trace_id={}",
+                    LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(tenant),
+                    request != null && request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank(),
+                    traceId, e);
             metrics.recordCommit(tenant, "DENY", "INTERNAL_ERROR", "UNKNOWN");
             throw new RuntimeException(e);
         } finally {
@@ -974,7 +1001,7 @@ public class RedisReservationRepository {
                 );
             } else {
                 // Spec requires released to be present; fall back to zero with the request unit context
-                LOG.warn("Reservation {} missing estimate data, defaulting released to zero", reservationId);
+                LOG.warn("Reservation {} missing estimate data, defaulting released to zero", LogSanitizer.sanitize(reservationId));
                 releasedAmount = new Amount(Enums.UnitEnum.USD_MICROCENTS, 0L);
             }
 
@@ -1022,11 +1049,15 @@ public class RedisReservationRepository {
             cacheLifecycleBody("release", reservationId, releasedResponse);
             return releasedResponse;
         } catch (CyclesProtocolException e){
-            LOG.error("Failed logic to release reservation:reservationId={},req={}",reservationId,request,e);
+            LOG.debug("Release reservation denied: reservation_id={} tenant={} actor_type={} error={}",
+                    reservationId, tenant, actorType, e.getErrorCode());
             metrics.recordRelease(tenant, actorType, "DENY", e.getErrorCode().name());
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to release reservation:reservationId={},req={}",reservationId,request,e);
+            LOG.error("Failed to release reservation: reservation_id={} tenant={} actor_type={} idempotency_key_present={} trace_id={}",
+                    LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(tenant), actorType,
+                    request != null && request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank(),
+                    traceId, e);
             metrics.recordRelease(tenant, actorType, "DENY", "INTERNAL_ERROR");
             throw new RuntimeException(e);
         } finally {
@@ -1072,11 +1103,15 @@ public class RedisReservationRepository {
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e){
-            LOG.error("Failed logic to extend reservation:reservationId={},req={}",reservationId,request,e);
+            LOG.debug("Extend reservation denied: reservation_id={} tenant={} error={}",
+                    reservationId, tenant, e.getErrorCode());
             metrics.recordExtend(tenant, "DENY", e.getErrorCode().name());
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to extend reservation: reservationId={},request={},msg={}",reservationId,request,e.getMessage(),e);
+            LOG.error("Failed to extend reservation: reservation_id={} tenant={} extend_by_ms={} idempotency_key_present={}",
+                    LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(tenant), request != null ? request.getExtendByMs() : null,
+                    request != null && request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank(),
+                    e);
             metrics.recordExtend(tenant, "DENY", "INTERNAL_ERROR");
             throw new RuntimeException(e);
         }
@@ -1099,7 +1134,7 @@ public class RedisReservationRepository {
         } catch (CyclesProtocolException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to get reservation by id: {}", reservationId, e);
+            LOG.error("Failed to get reservation by id: {}", LogSanitizer.sanitize(reservationId), e);
             throw new RuntimeException(e);
         }
     }
@@ -1227,7 +1262,7 @@ public class RedisReservationRepository {
                                     .build();
                             }
                         } catch (Exception e) {
-                            LOG.warn("Failed to parse reservation: {}", key, e);
+                            LOG.warn("Failed to parse reservation: {}", LogSanitizer.sanitize(key), e);
                         }
                     }
                 }
@@ -1325,7 +1360,7 @@ public class RedisReservationRepository {
 
                             matching.add(toSummary(buildReservationSummary(fields), include));
                         } catch (Exception e) {
-                            LOG.warn("Failed to parse reservation: {}", key, e);
+                            LOG.warn("Failed to parse reservation: {}", LogSanitizer.sanitize(key), e);
                         }
                     }
                 }
@@ -1334,7 +1369,7 @@ public class RedisReservationRepository {
 
             if (matching.size() >= SORTED_HYDRATE_WARN_THRESHOLD) {
                 LOG.warn("listReservationsSorted hydrated {} rows for tenant={} sort_by={} sort_dir={}; narrow filters or add sorted indices before this grows further",
-                    matching.size(), tenant, effectiveSortBy, effectiveSortDir);
+                    matching.size(), LogSanitizer.sanitize(tenant), effectiveSortBy, effectiveSortDir);
             }
 
             // Full in-memory sort. Acceptable at runtime-plane scale; metric below lets us
@@ -1616,9 +1651,9 @@ public class RedisReservationRepository {
                         }
 
                     } catch (IllegalArgumentException e) {
-                        LOG.warn("Invalid enum value in budget key: {}", key, e);
+                        LOG.warn("Invalid enum value in budget key: {}", LogSanitizer.sanitize(key), e);
                     } catch (Exception e) {
-                        LOG.warn("Failed to parse budget: {}", key, e);
+                        LOG.warn("Failed to parse budget: {}", LogSanitizer.sanitize(key), e);
                     }
                 }
                 }
@@ -1701,7 +1736,8 @@ public class RedisReservationRepository {
         } catch (RuntimeException e) {
             throw e;   // already unchecked (incl. the eval-catch rethrow) — don't double-wrap
         } catch (Exception e) {
-            LOG.error("Failed to evaluate decision", e);
+            LOG.error("Failed to evaluate decision: tenant={} idempotency_key_present={} trace_id={}",
+                    LogSanitizer.sanitize(tenant), idempotencyKey != null && !idempotencyKey.isBlank(), traceId, e);
             throw new RuntimeException(e);
         }
     }
@@ -1899,7 +1935,10 @@ public class RedisReservationRepository {
             metrics.recordEvent(tenant, "DENY", e.getErrorCode().name(), overagePolicyTag);
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to create event", e);
+            LOG.error("Failed to create event: tenant={} idempotency_key_present={} overage_policy={}",
+                    LogSanitizer.sanitize(tenant),
+                    request != null && request.getIdempotencyKey() != null && !request.getIdempotencyKey().isBlank(),
+                    overagePolicyTag, e);
             metrics.recordEvent(tenant, "DENY", "INTERNAL_ERROR", overagePolicyTag);
             throw new RuntimeException(e);
         }
@@ -1917,7 +1956,7 @@ public class RedisReservationRepository {
         } catch (CyclesProtocolException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Failed to search for reservation by id: reservationId={}",reservationId,e);
+            LOG.error("Failed to search for reservation by id: reservationId={}",LogSanitizer.sanitize(reservationId),e);
             throw new RuntimeException("Failed to resolve reservation tenant", e);
         }
     }
@@ -2259,7 +2298,7 @@ public class RedisReservationRepository {
             }
             return config;
         } catch (Exception e) {
-            LOG.warn("Failed to read tenant config for tenant: {}", tenant, e);
+            LOG.warn("Failed to read tenant config for tenant: {}", LogSanitizer.sanitize(tenant), e);
         }
         return null;
     }

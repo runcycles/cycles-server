@@ -5,6 +5,54 @@
 
 ---
 
+### 2026-06-24 — v0.1.25.41: log sanitization and auth-log follow-up
+
+Follow-up to the ops-focused logging PR review. The structured logs added in
+v0.1.25.40 had the right request/route/correlation context, but several fields
+still accepted raw strings from requests, config, exception messages, or stored
+operator data. Those values are now flattened before logging (`CR`/`LF` ->
+space) in the exception handler, controller request logs, side-effect failure
+logs, auth rejection logs, balance/reservation list logs, and JWKS retired-key
+config warnings.
+
+The API-key debug path no longer prints any key prefix or masked token material.
+It reports only key presence and length, while validation/auth failure logs keep
+tenant/key/reason/request/trace context in sanitized form. No HTTP status/body
+change, no Redis/Lua change, and no cycles-protocol spec change.
+
+Final review follow-up tightened the remaining API-layer gaps: exception-handler
+logs now sanitize concrete request paths, matched route strings, and
+`reservation_id` path variables before emitting structured operator context;
+`BaseController.authorizeTenant()` also flattens tenant debug values. A focused
+`GlobalExceptionHandlerTest` assertion covers CR/LF flattening on handled
+protocol-exception logs.
+
+The same sanitization is now also applied in the **data plane**, which the first
+pass missed: repository and service failure logs (`RedisReservationRepository`,
+`AuditRepository`, `EventEmitterRepository`, `EventEmitterService`,
+`EvidenceEmitter`, `ReservationExpiryService`) flattened request-derived strings
+(tenant, reservation id, scope, resource keys, exception messages) only after
+this follow-up. The CR/LF flatten previously lived in three private copies
+(`BaseController`, `GlobalExceptionHandler`, `ApiKeyValidationService`); a shared
+`io.runcycles.protocol.data.util.LogSanitizer.sanitize(Object)` (null-safe) is
+now the single source the data plane uses, covered by a focused
+`LogSanitizerTest`. The trailing SLF4J throwable argument is never sanitized
+(stack traces are preserved) and DEBUG one-arg traces are left as-is. The
+existing API-module copies still behave identically and can fold into
+`LogSanitizer` in a later cleanup.
+
+### 2026-06-24 — v0.1.25.40: ops-focused logging context review
+
+Follow-up to production log review after seeing `Landed in cycles exception handler: clazz=...` without enough context to diagnose the request. The logging audit covered runtime `INFO`, `WARN`, and `ERROR` call sites in the API and data modules.
+
+**Exception handling.** `GlobalExceptionHandler` now logs handled protocol exceptions with method, concrete path, matched route pattern, HTTP status, protocol error code, `request_id`, `trace_id`, and `reservation_id` when present. Validation and malformed-body handlers now emit the same request context at `INFO`; unexpected 500s log class plus request/route/correlation fields at `ERROR`. The null-request fallback remains safe.
+
+**Request and side-effect visibility.** Reservation, balance, decision, event, and evidence controllers now include request/trace context in request logs. Previously swallowed non-blocking event side-effect failures now log at `WARN` with operation, tenant, reservation id where available, request id, trace id, and stack trace; response behavior remains fail-open.
+
+**Auth, event, evidence, audit, and repository logs.** Client auth failures now log safe failure context at `WARN` instead of dumping the full validation DTO at `ERROR`; admin-key server misconfiguration remains `ERROR`. Async event/evidence/audit failure logs now carry tenant/resource/event/request/trace identifiers. Repository failure logs avoid whole request DTOs and raw idempotency keys, replacing them with operation/resource identifiers and key-presence booleans.
+
+**Validation.** Focused handler/auth tests pass; WebMvc controller tests pass with contract validation disabled because this sandbox cannot fetch the protocol spec; data-layer tests for API keys, audit, event emission, evidence emission, and expiry pass. Commands are recorded in `CHANGELOG.md` under `0.1.25.40`.
+
 ### 2026-06-24 — Trivy container gate scoped to HIGH,CRITICAL (no version bump)
 
 The `pr-container-scan.yml` and `release.yml` Trivy gates were failing on the only fixable finding in the image: `jackson-databind` 2.21.4 (`CVE-2026-54515`), pulled in transitively via the Spring web stack and managed by Spring Boot 3.5.15's BOM. The failure was unrelated to any code change — it blocked every open PR and would have blocked the next release build.
