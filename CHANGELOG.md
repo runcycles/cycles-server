@@ -28,7 +28,7 @@ called out but are not breaking to API clients.
   server, because the runtime service does not consume that variable. The
   admin service still owns dashboard CORS in the full-stack deployment.
 - Full-stack production Compose now references current sibling service images:
-  `cycles-server-admin:0.1.25.46` and `cycles-server-events:0.1.25.19`.
+  `cycles-server-admin:0.1.25.47` and `cycles-server-events:0.1.25.20`.
 - Full-stack production Compose now probes admin/events readiness endpoints
   instead of aggregate health, matching the sibling services' Redis-aware
   readiness split. The events worker is published on its management port

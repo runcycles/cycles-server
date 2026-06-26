@@ -27,7 +27,7 @@ it; dashboard CORS remains an admin-service concern.
 
 Finally, the full-stack production Compose file lagged sibling releases after
 the admin/events readiness hardening work. It now references
-`cycles-server-admin:0.1.25.46` and `cycles-server-events:0.1.25.19`, and probes
+`cycles-server-admin:0.1.25.47` and `cycles-server-events:0.1.25.20`, and probes
 their `/actuator/health/readiness` endpoints instead of aggregate health. The
 events worker now publishes only its management port `9980` in this full-stack
 file; port `7980` remains the worker's internal app port and should not be
