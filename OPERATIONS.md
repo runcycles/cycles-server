@@ -419,7 +419,7 @@ don't fit.
 
 | Property | Default | When to change |
 |---|---|---|
-| `cycles.metrics.tenant-tag.enabled` | `true` | Set `false` if you have 1000s of tenants and your Prometheus is stressed. |
+| `cycles.metrics.tenant-tag.enabled` | `true` | Set `false` for internet-adjacent or high-tenant-count production Prometheus targets. Production Compose sets `CYCLES_METRICS_TENANT_TAG_ENABLED=false` to avoid tenant-id disclosure and high-cardinality series. |
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
 | `cycles.tenant-config.cache-ttl-ms` | `60000` | Lower if admin tenant config changes need to take effect faster than 60s. |
@@ -427,6 +427,13 @@ don't fit.
 | `audit.retention.days` | `400` | Retention for runtime-written audit rows (v0.1.25.15+). Default matches admin's `audit.retention.authenticated.days` — SOC2 Type II 12-month lookback + 1-month auditor-lag buffer. Set `0` for indefinite retention (legal hold, archive-store deployments). |
 | `audit.sweep.cron` | `0 0 3 * * *` | Daily cron for pruning stale ZSET index pointers (v0.1.25.15+). Lower cadence if audit write volume is very high; leave as-is otherwise. Skipped when `audit.retention.days=0`. |
 | `management.endpoints.web.exposure.include` | `health,info,prometheus` | Add more actuator endpoints if you need them, but `prometheus` is the one ops cares about. |
+| `springdoc.api-docs.enabled` | `true` | Set `false` in production unless API docs are protected by trusted ingress. Production Compose disables it. |
+| `springdoc.swagger-ui.enabled` | `true` | Set `false` in production unless Swagger UI is protected by trusted ingress. Production Compose disables it. |
+
+In `docker-compose.full-stack.prod.yml`, `WEBHOOK_SECRET_ENCRYPTION_KEY` is
+required because admin writes webhook signing secrets and events decrypts them
+for delivery signing. The events worker is exposed on management port `9980`;
+do not publish its internal worker port `7980` on ingress.
 
 ## Reservation list sorting (v0.1.25.12+)
 

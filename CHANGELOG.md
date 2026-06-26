@@ -14,6 +14,41 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.44] — 2026-06-26
+
+### Fixed
+
+- Production Compose now disables tenant labels on custom Prometheus domain
+  metrics via `CYCLES_METRICS_TENANT_TAG_ENABLED=false`, avoiding tenant-id
+  disclosure and high-cardinality series when `/actuator/prometheus` is exposed
+  to a shared scrape path.
+- Production Compose now disables public SpringDoc API docs and Swagger UI by
+  default. Local/developer defaults remain unchanged.
+- Production Compose no longer sets `DASHBOARD_CORS_ORIGIN` on the runtime
+  server, because the runtime service does not consume that variable. The
+  admin service still owns dashboard CORS in the full-stack deployment.
+- Full-stack production Compose now references current sibling service images:
+  `cycles-server-admin:0.1.25.46` and `cycles-server-events:0.1.25.19`.
+- Full-stack production Compose now probes admin/events readiness endpoints
+  instead of aggregate health, matching the sibling services' Redis-aware
+  readiness split. The events worker is published on its management port
+  `9980`, not the internal worker port `7980`.
+- Full-stack production Compose now requires `WEBHOOK_SECRET_ENCRYPTION_KEY`
+  for the admin/events deployment path and sets
+  `WEBHOOK_SECRET_ENCRYPTION_REQUIRED=true` for admin.
+- Production Compose examples now point at the `cycles-server:0.1.25.44` image
+  tag.
+- The runtime image entrypoint now uses `exec java ...` so the JVM is PID 1 and
+  receives container SIGTERM directly for Spring Boot graceful shutdown.
+
+### Compatibility
+
+- Deployment hardening only. No HTTP API schema, Redis data model, Lua, event,
+  evidence, or protocol behavior change. Custom Prometheus metrics emitted from
+  the production Compose deployment no longer include the `tenant` label unless
+  explicitly re-enabled. Full-stack production deployments now fail fast if the
+  webhook secret encryption key is missing.
+
 ## [0.1.25.43] — 2026-06-25
 
 ### Fixed
