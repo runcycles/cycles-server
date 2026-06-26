@@ -24,7 +24,7 @@ services:
 
   cycles-server:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server:0.1.25.43
+    image: ghcr.io/runcycles/cycles-server:0.1.25.44
     restart: unless-stopped
     ports:
       - "7878:7878"
@@ -33,10 +33,12 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
-      DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-}
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
-      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      CYCLES_METRICS_TENANT_TAG_ENABLED: "false"
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?WEBHOOK_SECRET_ENCRYPTION_KEY must be set}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health/readiness"]
       interval: 10s
@@ -49,7 +51,7 @@ services:
 
   cycles-admin:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.38
+    image: ghcr.io/runcycles/cycles-server-admin:0.1.25.46
     restart: unless-stopped
     ports:
       - "7979:7979"
@@ -61,9 +63,10 @@ services:
       DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-}
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
-      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?WEBHOOK_SECRET_ENCRYPTION_KEY must be set}
+      WEBHOOK_SECRET_ENCRYPTION_REQUIRED: "true"
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -74,19 +77,20 @@ services:
 
   cycles-events:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server-events:0.1.25.10
+    image: ghcr.io/runcycles/cycles-server-events:0.1.25.19
     restart: unless-stopped
     ports:
-      - "7980:7980"
+      - "9980:9980"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      MANAGEMENT_PORT: 9980
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
-      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?WEBHOOK_SECRET_ENCRYPTION_KEY must be set}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7980/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9980/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3

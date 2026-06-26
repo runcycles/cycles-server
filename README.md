@@ -269,6 +269,9 @@ The property annotation deliberately does **not** set `tries` — the count come
 | `cycles.expiry.interval-ms` | `5000` | Background expiry sweep interval (ms) |
 | `JAVA_OPTS` | *(empty)* | JVM options (e.g. `-XX:MaxRAMPercentage=75 -XX:+UseG1GC`) |
 | `LOGGING_STRUCTURED_FORMAT_CONSOLE` | *(unset)* | Set to `ecs` or `logstash` for JSON logging in production |
+| `CYCLES_METRICS_TENANT_TAG_ENABLED` | `true` | Include tenant labels on custom domain metrics. Production Compose sets this to `false` to avoid tenant-id disclosure and high-cardinality series on the public Prometheus endpoint. |
+| `SPRINGDOC_API_DOCS_ENABLED` | `true` | Expose `/api-docs`. Production Compose sets this to `false`; enable only behind trusted access. |
+| `SPRINGDOC_SWAGGER_UI_ENABLED` | `true` | Expose `/swagger-ui.html`. Production Compose sets this to `false`; enable only behind trusted access. |
 | `redis.pool.max-total` | `128` | Max Redis connections |
 | `redis.pool.max-idle` | `32` | Max idle Redis connections |
 | `redis.pool.min-idle` | `16` | Min idle Redis connections |
@@ -295,6 +298,12 @@ These events are delivered by `cycles-server-events` to webhook subscribers via 
 
 **If the events service is down:** Events and deliveries accumulate in Redis with TTL (90d/14d). When the events service restarts, deliveries older than 24h are auto-failed. The admin and runtime servers continue operating normally.
 
+In the full-stack production Compose deployment, `WEBHOOK_SECRET_ENCRYPTION_KEY`
+is required because admin stores webhook secrets and events decrypts them for
+delivery signing. The events worker exposes management endpoints on port `9980`;
+its internal worker port `7980` is not published by the production full-stack
+file.
+
 ## Monitoring
 
 ### Health Check
@@ -314,7 +323,10 @@ available at `GET /actuator/health/liveness` and does not include Redis.
 GET /actuator/prometheus
 ```
 
-Exposes JVM, HTTP, and Spring Boot metrics in Prometheus format. Both endpoints are unauthenticated. Configure your Prometheus scrape target to `http://<host>:7878/actuator/prometheus`.
+Exposes JVM, HTTP, and Spring Boot metrics in Prometheus format. Prometheus is
+unauthenticated, so expose it only on a trusted network or behind ingress
+controls. Production Compose disables tenant labels on custom domain metrics by
+setting `CYCLES_METRICS_TENANT_TAG_ENABLED=false`.
 
 #### Domain counters (v0.1.25.11+)
 

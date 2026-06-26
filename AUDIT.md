@@ -5,6 +5,41 @@
 
 ---
 
+### 2026-06-26 — v0.1.25.44: production deployment hardening follow-up
+
+Production-readiness review of the merged server found remaining deployment
+surface issues rather than protocol-code defects. `/actuator/prometheus` is
+intentionally unauthenticated for Prometheus scraping, but custom domain metrics
+included a tenant label by default. That is useful in private observability
+stacks but risky for internet-adjacent deployments and high-cardinality tenant
+fleets. Production Compose now sets
+`CYCLES_METRICS_TENANT_TAG_ENABLED=false`; developer defaults remain unchanged
+so local metrics still include tenant labels unless disabled.
+
+The same review found public SpringDoc API docs and Swagger UI enabled in the
+production Compose path. These are fine for local development but unnecessary
+production exposure. Production Compose now sets
+`SPRINGDOC_API_DOCS_ENABLED=false` and `SPRINGDOC_SWAGGER_UI_ENABLED=false`;
+operators that intentionally publish docs can re-enable them behind trusted
+ingress. The stale `DASHBOARD_CORS_ORIGIN` runtime-service environment variable
+was also removed from production Compose because cycles-server does not consume
+it; dashboard CORS remains an admin-service concern.
+
+Finally, the full-stack production Compose file lagged sibling releases after
+the admin/events readiness hardening work. It now references
+`cycles-server-admin:0.1.25.46` and `cycles-server-events:0.1.25.19`, and probes
+their `/actuator/health/readiness` endpoints instead of aggregate health. The
+events worker now publishes only its management port `9980` in this full-stack
+file; port `7980` remains the worker's internal app port and should not be
+published on ingress. Because the full-stack deployment includes admin/events,
+`WEBHOOK_SECRET_ENCRYPTION_KEY` is now required there and admin is configured
+with `WEBHOOK_SECRET_ENCRYPTION_REQUIRED=true`.
+
+Container shutdown was also tightened: the runtime image previously launched
+Java through `sh -c "java ..."`, leaving the shell as PID 1. The entrypoint now
+uses `exec java ...` so the JVM receives SIGTERM directly and Spring Boot's
+configured graceful shutdown window can run reliably during rolling deploys.
+
 ### 2026-06-25 — v0.1.25.43: production readiness health and log correlation
 
 Operational review found two production-readiness gaps in the merged server

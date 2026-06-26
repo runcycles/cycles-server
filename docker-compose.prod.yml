@@ -24,7 +24,7 @@ services:
 
   cycles-server:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server:0.1.25.43
+    image: ghcr.io/runcycles/cycles-server:0.1.25.44
     restart: unless-stopped
     ports:
       - "7878:7878"
@@ -36,11 +36,11 @@ services:
       # paths (listReservations / getReservation / releaseReservation).
       # Fails fast if unset rather than defaulting to a well-known key.
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set}
-      # CORS origin(s) for browser clients (dashboard). Comma-separated.
-      # Same var name as cycles-server-admin for one-knob rotation.
-      DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-}
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
+      CYCLES_METRICS_TENANT_TAG_ENABLED: "false"
+      SPRINGDOC_API_DOCS_ENABLED: "false"
+      SPRINGDOC_SWAGGER_UI_ENABLED: "false"
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health/readiness"]
