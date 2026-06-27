@@ -38,7 +38,7 @@ services:
       DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-http://localhost:5173,http://localhost:5174,http://localhost:5175}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7878/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7878/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -62,7 +62,7 @@ services:
       DASHBOARD_CORS_ORIGIN: ${DASHBOARD_CORS_ORIGIN:-http://localhost:5173,http://localhost:5174,http://localhost:5175}
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7979/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7979/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -77,14 +77,15 @@ services:
       context: ../cycles-server-events
       dockerfile: Dockerfile
     ports:
-      - "7980:7980"
+      - "9980:9980"
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ""
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-}
+      MANAGEMENT_PORT: 9980
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7980/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9980/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 3

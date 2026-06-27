@@ -8,13 +8,15 @@ import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.event.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
@@ -27,7 +29,14 @@ class EventEmitterServiceTest {
         registerModule(new JavaTimeModule());
         disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }};
-    @InjectMocks private EventEmitterService service;
+    private EventEmitterService service;
+
+    @org.junit.jupiter.api.BeforeEach
+    void setUp() throws Exception {
+        service = new EventEmitterService(0, 10_000);
+        setField(service, "repository", repository);
+        setField(service, "objectMapper", objectMapper);
+    }
 
     @Test
     void emit_createsEventAndDelegates() {
@@ -65,6 +74,39 @@ class EventEmitterServiceTest {
         // catch branch was exercised. If the exception leaked, this verify would still pass
         // but the test would have thrown synchronously above.
         verify(repository, timeout(5000)).emit(any());
+    }
+
+    @Test
+    void emit_queueFull_dropsNonBlockingEventWithoutThrowing() throws Exception {
+        EventEmitterService bounded = new EventEmitterService(1, 1);
+        setField(bounded, "repository", repository);
+        setField(bounded, "objectMapper", objectMapper);
+
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            firstStarted.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return null;
+        }).when(repository).emit(any());
+
+        bounded.emit(EventType.RESERVATION_DENIED, "t1", null, null, null, "corr-1", "req-1");
+        firstStarted.await(5, TimeUnit.SECONDS);
+        bounded.emit(EventType.RESERVATION_DENIED, "t1", null, null, null, "corr-2", "req-2");
+
+        // Worker is busy and the single queue slot is full; this must fail open
+        // without blocking or throwing from the request path.
+        bounded.emit(EventType.RESERVATION_DENIED, "t1", null, null, null, "corr-3", "req-3");
+
+        release.countDown();
+        verify(repository, timeout(5000).times(2)).emit(any());
+        bounded.destroy();
+    }
+
+    private static void setField(Object target, String name, Object value) throws Exception {
+        Field field = EventEmitterService.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
     }
 
     @Test

@@ -125,6 +125,9 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
 
+        if (!response.containsHeader(RequestIdFilter.REQUEST_ID_HEADER)) {
+            response.setHeader(RequestIdFilter.REQUEST_ID_HEADER, requestId);
+        }
         if (!response.containsHeader(TraceContextFilter.TRACE_ID_HEADER)) {
             response.setHeader(TraceContextFilter.TRACE_ID_HEADER, traceId);
         }

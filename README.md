@@ -44,7 +44,8 @@ Starts the full stack (Redis + Cycles Server + Admin Server), creates a tenant, 
 docker compose up --build
 ```
 
-Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
+Server starts on **port 7878**. API docs are available when SpringDoc is
+enabled and require `X-Admin-API-Key`.
 
 ### Pre-built image (no source code needed)
 
@@ -75,7 +76,8 @@ REDIS_HOST=localhost REDIS_PORT=6379 \
   java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-*.jar
 ```
 
-Server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
+Server starts on **port 7878**. API docs are available when SpringDoc is
+enabled and require `X-Admin-API-Key`.
 
 ## Architecture
 
@@ -108,7 +110,7 @@ Webhook receivers
 
 ## API Endpoints
 
-All endpoints require `X-Cycles-API-Key` header authentication — **except `GET /v1/evidence/{id}`**, a public capability URL (the unguessable `evidence_id` is the bearer secret), and **`GET /v1/.well-known/cycles-jwks.json`**, which publishes public verification keys for CyclesEvidence signer resolution (see [CyclesEvidence](#cyclesevidence)).
+All protocol endpoints require `X-Cycles-API-Key` header authentication — **except `GET /v1/evidence/{id}`**, a public capability URL (the unguessable `evidence_id` is the bearer secret), and **`GET /v1/.well-known/cycles-jwks.json`**, which publishes public verification keys for CyclesEvidence signer resolution (see [CyclesEvidence](#cyclesevidence)). Operational endpoints are separate: liveness/readiness are public for probes, while aggregate actuator, Prometheus, API docs, and Swagger require `X-Admin-API-Key` when enabled.
 
 | Endpoint | Method | Description |
 |---|---|---|
@@ -201,7 +203,7 @@ The cycles-server itself doesn't need to know it's behind a proxy. Standard `X-F
 ### Required environment variables for production
 
 - `REDIS_PASSWORD` — never run Redis without one in production
-- `ADMIN_API_KEY` — the bootstrap admin key for the admin server (32+ random bytes recommended)
+- `ADMIN_API_KEY` — the bootstrap admin key for the admin server and cycles-server operational endpoints (32+ random bytes recommended)
 - `WEBHOOK_SECRET_ENCRYPTION_KEY` — encrypts webhook subscriber secrets at rest in Redis (32 bytes, base64)
 - `EVIDENCE_SERVER_ID` + `EVIDENCE_SIGNING_SIGNER_DID` — (optional) the public [CyclesEvidence](#cyclesevidence) identity; set both to enable evidence, **byte-identical to the `cycles-server-events` values**. `cycles-server` holds only the public half — the private signing key lives in `cycles-server-events`. Leave unset to run without evidence. See the [enablement runbook](https://github.com/runcycles/cycles-server-events/blob/main/docs/evidence-identity-enablement.md).
 - `EVIDENCE_SIGNING_KID` — (optional) public JWK `kid` label for `GET /v1/.well-known/cycles-jwks.json`; defaults to the first 16 hex chars of `EVIDENCE_SIGNING_SIGNER_DID`. Not a signing key.
@@ -269,9 +271,12 @@ The property annotation deliberately does **not** set `tries` — the count come
 | `cycles.expiry.interval-ms` | `5000` | Background expiry sweep interval (ms) |
 | `JAVA_OPTS` | *(empty)* | JVM options (e.g. `-XX:MaxRAMPercentage=75 -XX:+UseG1GC`) |
 | `LOGGING_STRUCTURED_FORMAT_CONSOLE` | *(unset)* | Set to `ecs` or `logstash` for JSON logging in production |
-| `CYCLES_METRICS_TENANT_TAG_ENABLED` | `true` | Include tenant labels on custom domain metrics. Production Compose sets this to `false` to avoid tenant-id disclosure and high-cardinality series on the public Prometheus endpoint. |
-| `SPRINGDOC_API_DOCS_ENABLED` | `true` | Expose `/api-docs`. Production Compose sets this to `false`; enable only behind trusted access. |
-| `SPRINGDOC_SWAGGER_UI_ENABLED` | `true` | Expose `/swagger-ui.html`. Production Compose sets this to `false`; enable only behind trusted access. |
+| `ADMIN_API_KEY` | *(empty)* | Admin key for admin-on-behalf-of runtime paths and operational endpoints (`/actuator/prometheus`, aggregate actuator, docs). Production Compose requires it. |
+| `CYCLES_METRICS_TENANT_TAG_ENABLED` | `true` | Include tenant labels on custom domain metrics. Production Compose sets this to `false` to avoid tenant-id disclosure and high-cardinality series. |
+| `CYCLES_EVENTS_EMIT_THREADS` | `0` | Worker count for non-blocking runtime event emission. `0` uses a CPU-derived default. |
+| `CYCLES_EVENTS_EMIT_QUEUE_CAPACITY` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, only the event side effect is dropped and logged; API ledger mutations are unchanged. |
+| `SPRINGDOC_API_DOCS_ENABLED` | `true` | Expose `/api-docs`. Production Compose sets this to `false`; when enabled, access requires `X-Admin-API-Key`. |
+| `SPRINGDOC_SWAGGER_UI_ENABLED` | `true` | Expose `/swagger-ui.html`. Production Compose sets this to `false`; when enabled, access requires `X-Admin-API-Key`. |
 | `redis.pool.max-total` | `128` | Max Redis connections |
 | `redis.pool.max-idle` | `32` | Max idle Redis connections |
 | `redis.pool.min-idle` | `16` | Min idle Redis connections |
@@ -324,9 +329,9 @@ GET /actuator/prometheus
 ```
 
 Exposes JVM, HTTP, and Spring Boot metrics in Prometheus format. Prometheus is
-unauthenticated, so expose it only on a trusted network or behind ingress
-controls. Production Compose disables tenant labels on custom domain metrics by
-setting `CYCLES_METRICS_TENANT_TAG_ENABLED=false`.
+protected with `X-Admin-API-Key`; configure Prometheus to send that header or
+inject it at trusted ingress. Production Compose also disables tenant labels on
+custom domain metrics by setting `CYCLES_METRICS_TENANT_TAG_ENABLED=false`.
 
 #### Domain counters (v0.1.25.11+)
 

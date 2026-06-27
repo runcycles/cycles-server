@@ -5,6 +5,7 @@ import io.runcycles.protocol.data.util.TraceIdGenerator;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import org.slf4j.MDC;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -28,7 +29,7 @@ import java.util.regex.Pattern;
  * can read the trace context from the request.
  */
 @Component
-@Order(0)
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class TraceContextFilter extends OncePerRequestFilter {
 
     public static final String TRACE_ID_HEADER = "X-Cycles-Trace-Id";

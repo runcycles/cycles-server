@@ -55,7 +55,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "redis.port=6379",
         "redis.password=",
         "cycles.expiry.initial-delay-ms=999999999",
-        "webhook.secret.encryption-key="
+        "webhook.secret.encryption-key=",
+        "admin.api-key=contract-test-admin-key"
 })
 class OpenApiContractDiffTest {
 
@@ -106,7 +107,9 @@ class OpenApiContractDiffTest {
 
     private String fetchApiDocs() throws Exception {
         for (String path : new String[]{"/api-docs", "/v3/api-docs"}) {
-            var result = mockMvc.perform(get(path)).andReturn();
+            var result = mockMvc.perform(get(path)
+                    .header("X-Admin-API-Key", "contract-test-admin-key"))
+                    .andReturn();
             if (result.getResponse().getStatus() == 200) {
                 return result.getResponse().getContentAsString();
             }
