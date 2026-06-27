@@ -83,6 +83,27 @@ class OperationalEndpointAuthFilterTest {
     }
 
     @Test
+    void protectedEndpoint_withoutCorrelationAttributes_generatesIds() throws Exception {
+        request.removeAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
+        request.removeAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE);
+        request.setRequestURI("/actuator/prometheus");
+
+        filter.doFilterInternal(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getHeader(RequestIdFilter.REQUEST_ID_HEADER)).isNotBlank();
+        assertThat(response.getHeader(TraceContextFilter.TRACE_ID_HEADER)).isNotBlank();
+        assertThat(request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE))
+                .isEqualTo(response.getHeader(RequestIdFilter.REQUEST_ID_HEADER));
+        var body = new ObjectMapper().readTree(response.getContentAsString());
+        assertThat(body.get("request_id").asText())
+                .isEqualTo(response.getHeader(RequestIdFilter.REQUEST_ID_HEADER));
+        assertThat(body.get("trace_id").asText())
+                .isEqualTo(response.getHeader(TraceContextFilter.TRACE_ID_HEADER));
+        verify(chain, never()).doFilter(request, response);
+    }
+
+    @Test
     void apiDocs_withValidAdminKey_passesThrough() throws Exception {
         request.setRequestURI("/api-docs");
         request.addHeader("X-Admin-API-Key", "admin-secret");
