@@ -5,6 +5,45 @@
 
 ---
 
+### 2026-06-27 — v0.1.25.45: production quality/security audit
+
+Full production-readiness pass across bugs, leaks, performance, logging,
+deployment defaults, and the runtime protocol surface found no new
+cycles-protocol wire drift: the runtime endpoints remain covered by the
+contract tests against `cycles-protocol-v0.yaml`, and this release makes no Lua,
+Redis data-model, event-schema, evidence-schema, or HTTP body change.
+
+The main security gap was operational exposure. `SecurityConfig` deliberately
+kept infrastructure paths outside tenant API-key auth, but the runtime plane did
+not have the admin service's second filter protecting aggregate actuator,
+Prometheus, and docs. That meant a deployment that published port `7878` could
+serve `/actuator/prometheus`, `/actuator/info`, `/actuator/health`, and
+SpringDoc if docs were enabled. `OperationalEndpointAuthFilter` now requires
+`X-Admin-API-Key` for those endpoints while leaving
+`/actuator/health/liveness`, `/actuator/health/readiness`, `GET /v1/evidence/*`,
+and `GET /v1/.well-known/cycles-jwks.json` public as required for probes and
+CyclesEvidence. Contract tests fetch `/api-docs` with the admin key.
+
+The same pass found an in-process memory risk in `EventEmitterService`: the
+fixed thread pool used Java's unbounded executor queue. If Redis/event
+persistence stalled while request traffic continued, non-blocking event
+emission could accumulate heap indefinitely. The executor now uses a bounded
+queue (`CYCLES_EVENTS_EMIT_QUEUE_CAPACITY`, default 10000) and a configurable
+worker count (`CYCLES_EVENTS_EMIT_THREADS`, default CPU-derived). Queue
+saturation logs a structured warning and drops only the non-blocking side
+effect; ledger mutations and API responses remain unchanged. Focused tests
+cover the drop path.
+
+Logging/correlation also tightened: trace/request MDC filters now run at highest
+precedence so even security-rejected requests carry the same correlation fields
+as controller-handled requests, and auth-filter error responses set both
+`X-Request-Id` and `X-Cycles-Trace-Id`. Container probes now use
+`127.0.0.1` readiness endpoints everywhere to avoid BusyBox/IPv6 `localhost`
+false negatives. Full-stack development Compose now probes the events worker on
+management port `9980`, matching production. Finally, the accidentally tracked
+root `dump.rdb` Redis snapshot was removed and `*.rdb` ignored so local Redis
+state cannot be committed again.
+
 ### 2026-06-26 — v0.1.25.44: production deployment hardening follow-up
 
 Production-readiness review of the merged server found remaining deployment
@@ -1595,10 +1634,10 @@ Operational readiness improvements added in v0.1.24.3:
 
 | # | Item | Status |
 |---|------|--------|
-| 1 | **Prometheus metrics** — Micrometer + Prometheus registry, `/actuator/prometheus` endpoint (unauthenticated) | Done |
+| 1 | **Prometheus metrics** — Micrometer + Prometheus registry, `/actuator/prometheus` endpoint (admin-key protected as of v0.1.25.45) | Done |
 | 2 | **Structured JSON logging** — Spring Boot 3.4+ native structured logging; set `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` for ECS JSON in production | Done |
 | 3 | **Graceful shutdown** — `server.shutdown=graceful` with 30s drain timeout | Done |
-| 4 | **Docker HEALTHCHECK** — `/actuator/health` probe with 15s interval | Done |
+| 4 | **Docker HEALTHCHECK** — `/actuator/health/readiness` probe with 15s interval | Done |
 | 5 | **JVM production flags** — `JAVA_OPTS` entrypoint with G1GC, 75% RAM, string deduplication | Done |
 | 6 | **Input sanitization** — `@Pattern` on Subject scope fields prevents Redis key path injection | Done |
 | 7 | **Error logging** — ApiKeyRepository catch blocks now log errors instead of silently swallowing | Done |

@@ -14,6 +14,41 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.45] — 2026-06-27
+
+### Fixed
+
+- Protected operational endpoints with the configured admin key:
+  `/actuator/prometheus`, `/actuator/info`, aggregate `/actuator/health`, API
+  docs, and Swagger now require `X-Admin-API-Key`. Liveness/readiness probes and
+  the protocol-public CyclesEvidence/JWKS endpoints remain unauthenticated.
+- Auth-filter error responses now set both `X-Request-Id` and
+  `X-Cycles-Trace-Id`, and trace/request MDC filters run before security so
+  rejected requests keep the same correlation fields as controller-handled
+  requests.
+- Bounded the non-blocking runtime event-emission executor queue. If Redis/event
+  persistence stalls and the queue saturates, the API still fails open for the
+  side effect and logs a structured drop warning instead of growing heap without
+  limit. Queue size and worker count are configurable with
+  `CYCLES_EVENTS_EMIT_QUEUE_CAPACITY` and `CYCLES_EVENTS_EMIT_THREADS`.
+- Healthchecks now probe `127.0.0.1` readiness endpoints instead of `localhost`
+  or aggregate health, avoiding IPv6 localhost ambiguity and keeping Redis-aware
+  readiness consistent across Dockerfile and Compose files.
+- Full-stack development Compose now probes the events worker on its management
+  port `9980` readiness endpoint, matching the production full-stack topology.
+- Removed the accidentally tracked root `dump.rdb` Redis snapshot and ignored
+  future `*.rdb` files.
+- Production Compose examples now point at the `cycles-server:0.1.25.45` image
+  tag.
+
+### Compatibility
+
+- No protocol wire, Redis data-model, Lua, event schema, or evidence schema
+  change. Operators scraping Prometheus directly must add `X-Admin-API-Key` to
+  the scrape request, or inject it at trusted ingress. Under sustained event
+  persistence outage, non-blocking webhook/event side effects may be dropped
+  once the bounded in-process queue is full; ledger mutations remain unchanged.
+
 ## [0.1.25.44] — 2026-06-26
 
 ### Fixed

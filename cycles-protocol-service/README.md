@@ -58,7 +58,9 @@ Or pull the pre-built image (no source code needed):
 docker compose -f docker-compose.prod.yml up
 ```
 
-The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
+The server starts on **port 7878**. API docs are served from
+`/api-docs` and `/swagger-ui.html` when SpringDoc is enabled; operational docs
+endpoints require `X-Admin-API-Key`.
 
 ### Manual build
 
@@ -79,7 +81,9 @@ REDIS_HOST=localhost REDIS_PORT=6379 \
   java -jar cycles-protocol-service-api/target/cycles-protocol-service-api-*.jar
 ```
 
-The server starts on **port 7878**. Interactive API docs: http://localhost:7878/swagger-ui.html
+The server starts on **port 7878**. API docs are served from
+`/api-docs` and `/swagger-ui.html` when SpringDoc is enabled; operational docs
+endpoints require `X-Admin-API-Key`.
 
 ---
 
@@ -92,6 +96,9 @@ All settings are via environment variables (with defaults):
 | `REDIS_HOST` | `localhost` | Redis hostname |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | *(empty)* | Redis password (omit for no auth) |
+| `ADMIN_API_KEY` | *(empty)* | Admin key for admin-on-behalf-of runtime paths and operational endpoints (`/actuator/prometheus`, aggregate actuator, docs). |
+| `CYCLES_EVENTS_EMIT_THREADS` | `0` | Worker count for non-blocking runtime event emission. `0` uses a CPU-derived default. |
+| `CYCLES_EVENTS_EMIT_QUEUE_CAPACITY` | `10000` | Bounded queue for non-blocking runtime event emission; saturated queues drop/log only the event side effect. |
 | `EVIDENCE_SERVER_ID` | *(empty)* | Public CyclesEvidence issuer base including `/v1`; set with `EVIDENCE_SIGNING_SIGNER_DID` to emit `cycles_evidence` refs. Must match `cycles-server-events`. |
 | `EVIDENCE_SIGNING_SIGNER_DID` | *(empty)* | Public raw Ed25519 key (64 hex) stamped as `signer_did`; the private key lives only in `cycles-server-events`. |
 | `EVIDENCE_SIGNING_KID` | *(empty)* | Optional public JWK `kid` label for `GET /v1/.well-known/cycles-jwks.json`; defaults to the first 16 hex chars of `EVIDENCE_SIGNING_SIGNER_DID`. |

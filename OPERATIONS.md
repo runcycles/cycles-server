@@ -5,8 +5,8 @@ metrics, alerting recipes, SLOs, and an incident playbook.
 
 Assumes you are already deploying via the published Docker image
 (`ghcr.io/runcycles/cycles-server:<version>`) with Prometheus scraping
-`/actuator/prometheus`. If you haven't set that up yet, see the Monitoring
-section of [`README.md`](README.md) first.
+`/actuator/prometheus` using `X-Admin-API-Key`. If you haven't set that up yet,
+see the Monitoring section of [`README.md`](README.md) first.
 
 ## Table of contents
 
@@ -317,6 +317,10 @@ restart-storm otherwise healthy API pods. The Redis health check uses the
 application `JedisPool`, so DOWN can be delayed by the pool wait/socket timeout
 during a saturated or partitioned Redis incident.
 
+Only liveness/readiness are anonymous. Aggregate `/actuator/health`,
+`/actuator/info`, `/actuator/prometheus`, API docs, and Swagger require
+`X-Admin-API-Key`; configure Prometheus scrapes or trusted ingress to supply it.
+
 1. Confirm Redis health: `redis-cli PING`, check disk/memory on the
    Redis host.
 2. Check `jvm_memory_used_bytes` on the cycles-server side — if memory
@@ -420,15 +424,17 @@ don't fit.
 | Property | Default | When to change |
 |---|---|---|
 | `cycles.metrics.tenant-tag.enabled` | `true` | Set `false` for internet-adjacent or high-tenant-count production Prometheus targets. Production Compose sets `CYCLES_METRICS_TENANT_TAG_ENABLED=false` to avoid tenant-id disclosure and high-cardinality series. |
+| `cycles.events.emit.threads` | `0` | Non-blocking runtime event-emission worker count. `0` uses a CPU-derived default. Raise only if event persistence is healthy but emission backlog is observed. |
+| `cycles.events.emit.queue-capacity` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, the API drops only the event side effect and logs a structured warning instead of growing heap without limit. |
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
 | `cycles.tenant-config.cache-ttl-ms` | `60000` | Lower if admin tenant config changes need to take effect faster than 60s. |
-| `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+). Leave empty to disable. |
+| `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+) and operational endpoint access. Production Compose requires it. |
 | `audit.retention.days` | `400` | Retention for runtime-written audit rows (v0.1.25.15+). Default matches admin's `audit.retention.authenticated.days` — SOC2 Type II 12-month lookback + 1-month auditor-lag buffer. Set `0` for indefinite retention (legal hold, archive-store deployments). |
 | `audit.sweep.cron` | `0 0 3 * * *` | Daily cron for pruning stale ZSET index pointers (v0.1.25.15+). Lower cadence if audit write volume is very high; leave as-is otherwise. Skipped when `audit.retention.days=0`. |
 | `management.endpoints.web.exposure.include` | `health,info,prometheus` | Add more actuator endpoints if you need them, but `prometheus` is the one ops cares about. |
-| `springdoc.api-docs.enabled` | `true` | Set `false` in production unless API docs are protected by trusted ingress. Production Compose disables it. |
-| `springdoc.swagger-ui.enabled` | `true` | Set `false` in production unless Swagger UI is protected by trusted ingress. Production Compose disables it. |
+| `springdoc.api-docs.enabled` | `true` | Set `false` in production unless API docs are intentionally exposed to callers with `X-Admin-API-Key`. Production Compose disables it. |
+| `springdoc.swagger-ui.enabled` | `true` | Set `false` in production unless Swagger UI is intentionally exposed to callers with `X-Admin-API-Key`. Production Compose disables it. |
 
 In `docker-compose.full-stack.prod.yml`, `WEBHOOK_SECRET_ENCRYPTION_KEY` is
 required because admin writes webhook signing secrets and events decrypts them

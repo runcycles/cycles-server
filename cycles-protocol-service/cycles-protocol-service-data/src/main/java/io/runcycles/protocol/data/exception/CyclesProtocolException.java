@@ -23,6 +23,18 @@ public class CyclesProtocolException extends RuntimeException {
         this.httpStatus = httpStatus;
         this.details = details;
     }
+
+    public Enums.ErrorCode getErrorCode() {
+        return errorCode;
+    }
+
+    public int getHttpStatus() {
+        return httpStatus;
+    }
+
+    public Map<String, Object> getDetails() {
+        return details;
+    }
     
     public static CyclesProtocolException notFound(String resourceId) {
         return new CyclesProtocolException(Enums.ErrorCode.NOT_FOUND, "Resource not found: " + resourceId, 404);

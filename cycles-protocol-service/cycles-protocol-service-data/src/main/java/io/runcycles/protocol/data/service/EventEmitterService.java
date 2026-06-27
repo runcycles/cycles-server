@@ -10,15 +10,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Async event emission for runtime controllers.
@@ -30,13 +33,19 @@ public class EventEmitterService implements DisposableBean {
 
     private static final Logger LOG = LoggerFactory.getLogger(EventEmitterService.class);
     private static final String SOURCE = "cycles-server";
+    private static final int DEFAULT_QUEUE_CAPACITY = 10_000;
 
-    private final ExecutorService emitExecutor = Executors.newFixedThreadPool(
-            Math.max(2, Runtime.getRuntime().availableProcessors() / 4),
-            r -> { Thread t = new Thread(r, "event-emit"); t.setDaemon(true); return t; });
+    private final ThreadPoolExecutor emitExecutor;
 
     @Autowired private EventEmitterRepository repository;
     @Autowired private ObjectMapper objectMapper;
+
+    @Autowired
+    public EventEmitterService(
+            @Value("${cycles.events.emit.threads:0}") int configuredThreads,
+            @Value("${cycles.events.emit.queue-capacity:" + DEFAULT_QUEUE_CAPACITY + "}") int queueCapacity) {
+        this.emitExecutor = buildExecutor(configuredThreads, queueCapacity);
+    }
 
     @Override
     public void destroy() {
@@ -60,32 +69,40 @@ public class EventEmitterService implements DisposableBean {
     public void emit(EventType type, String tenantId, String scope, Actor actor,
                      Object eventData, String correlationId, String requestId, TraceContext trace) {
         TraceContext traceNonNull = trace != null ? trace : TraceContext.EMPTY;
-        CompletableFuture.runAsync(() -> {
-            try {
-                Map<String, Object> data = eventData != null
-                        ? objectMapper.convertValue(eventData, new com.fasterxml.jackson.core.type.TypeReference<>() {})
-                        : null;
-                Event event = Event.builder()
-                        .eventType(type)
-                        .category(type.getCategory())
-                        .tenantId(tenantId)
-                        .scope(scope)
-                        .source(SOURCE)
-                        .actor(actor)
-                        .data(data)
-                        .correlationId(correlationId)
-                        .requestId(requestId)
-                        .traceId(traceNonNull.traceId())
-                        .traceFlags(traceNonNull.traceFlags())
-                        .traceparentInboundValid(traceNonNull.traceparentInboundValid())
-                        .build();
-                repository.emit(event);
-            } catch (Exception e) {
-                LOG.error("Failed to emit event: event_type={} tenant={} scope={} correlation_id={} request_id={} trace_id={} actor_type={} error={}",
-                        type, LogSanitizer.sanitize(tenantId), LogSanitizer.sanitize(scope), correlationId, requestId, traceNonNull.traceId(),
-                        actor != null ? actor.getType() : null, LogSanitizer.sanitize(e.toString()), e);
-            }
-        }, emitExecutor);
+        try {
+            emitExecutor.execute(() -> {
+                try {
+                    Map<String, Object> data = eventData != null
+                            ? objectMapper.convertValue(eventData, new com.fasterxml.jackson.core.type.TypeReference<>() {})
+                            : null;
+                    Event event = Event.builder()
+                            .eventType(type)
+                            .category(type.getCategory())
+                            .tenantId(tenantId)
+                            .scope(scope)
+                            .source(SOURCE)
+                            .actor(actor)
+                            .data(data)
+                            .correlationId(correlationId)
+                            .requestId(requestId)
+                            .traceId(traceNonNull.traceId())
+                            .traceFlags(traceNonNull.traceFlags())
+                            .traceparentInboundValid(traceNonNull.traceparentInboundValid())
+                            .build();
+                    repository.emit(event);
+                } catch (Exception e) {
+                    LOG.error("Failed to emit event: event_type={} tenant={} scope={} correlation_id={} request_id={} trace_id={} actor_type={} error={}",
+                            type, LogSanitizer.sanitize(tenantId), LogSanitizer.sanitize(scope), correlationId, requestId, traceNonNull.traceId(),
+                            actor != null ? actor.getType() : null, LogSanitizer.sanitize(e.toString()), e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            LOG.warn("Event emission queue saturated; dropping non-blocking event: event_type={} tenant={} scope={} correlation_id={} request_id={} trace_id={} actor_type={} active_threads={} queued={} queue_capacity={}",
+                    type, LogSanitizer.sanitize(tenantId), LogSanitizer.sanitize(scope), correlationId, requestId,
+                    traceNonNull.traceId(), actor != null ? actor.getType() : null,
+                    emitExecutor.getActiveCount(), emitExecutor.getQueue().size(),
+                    emitExecutor.getQueue().remainingCapacity() + emitExecutor.getQueue().size());
+        }
     }
 
     /**
@@ -211,5 +228,29 @@ public class EventEmitterService implements DisposableBean {
                         correlationId, requestId, trace);
             }
         }
+    }
+
+    private static ThreadPoolExecutor buildExecutor(int configuredThreads, int queueCapacity) {
+        int threads = configuredThreads > 0
+                ? configuredThreads
+                : Math.max(2, Runtime.getRuntime().availableProcessors() / 4);
+        int capacity = Math.max(1, queueCapacity);
+        return new ThreadPoolExecutor(
+                threads,
+                threads,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(capacity),
+                eventThreadFactory(),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    private static ThreadFactory eventThreadFactory() {
+        AtomicInteger seq = new AtomicInteger();
+        return r -> {
+            Thread t = new Thread(r, "event-emit-" + seq.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
     }
 }
