@@ -5,6 +5,21 @@
 
 ---
 
+### 2026-07-03 — spec-conformance audit vs cycles-protocol-v0.yaml v0.1.25.10: no drift
+
+End-to-end audit of the runtime API surface against the protocol spec at
+`cycles-protocol@main` (c3e7b99, spec `info.version` 0.1.25.10) found zero
+discrepancies — no code changes. All 11 operations, DTO field names/types,
+required markers, `additionalProperties: false` enforcement, the 15-value
+ErrorCode enum and its HTTP mappings, response headers, idempotency/tenancy
+rules, decide 200-DENY semantics, dry-run rules, list window filters
+(including the blank-string-is-unset carve-out), `include=` projection, and
+detail/summary evidence hydration were verified by hand and by the full suite
+(`mvn verify -Pintegration-tests`, 491 tests green, spec coverage 11/11,
+JaCoCo ≥95% met). Known deliberate strictness retained: Subject field
+`@Pattern` (scope-delimiter safety), `@NotBlank` on Action.kind/name, 410 on
+`GET /v1/reservations/{id}` for EXPIRED (settled by Issue 10 below).
+
 ### 2026-06-27 — v0.1.25.45: production quality/security audit
 
 Full production-readiness pass across bugs, leaks, performance, logging,
