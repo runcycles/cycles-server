@@ -155,6 +155,26 @@ class PublicEndpointRateLimitFilterTest {
     }
 
     @Test
+    void uniqueClientFlood_withinOneWindow_mapStaysHardBounded() throws Exception {
+        // Review finding: stale-window eviction alone cannot shrink the map
+        // when the flood is all CURRENT-window keys — the cap must hold via
+        // a full reset. 10_001 unique client IPs in one window.
+        for (int i = 0; i <= 10_000; i++) {
+            MockHttpServletRequest req = new MockHttpServletRequest("GET",
+                    "/v1/.well-known/cycles-jwks.json");
+            req.setRequestURI("/v1/.well-known/cycles-jwks.json");
+            req.setRemoteAddr("client-" + i); // unique key per request
+            filter.doFilter(req, new MockHttpServletResponse(), chain);
+        }
+        assertThat(filter.trackedClients()).isLessThanOrEqualTo(10_000);
+
+        // Filter remains functional after the reset
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(evidenceRequest(), response, chain);
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    @Test
     void staleClientEntries_evictedWhenMapGrows() throws Exception {
         // Not size-driven here (cap is 10k); prove rollover replaces the window
         // object rather than leaking counts across windows for the same key.

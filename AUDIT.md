@@ -28,10 +28,15 @@ conformant ErrorResponse with the new `LIMIT_EXCEEDED` code (spec
 v0.1.25.12 — the runtime enum previously had no throttling code, making a
 conformant 429 impossible) plus `Retry-After`/`X-RateLimit-Reset` per the
 spec's 429 response declaration; overrides the sentinel headers from
-`RateLimitHeaderFilter` on that response. Bounded client map (10k, stale
-windows dropped). Injectable clock for deterministic window tests; unit
-suite covers limits, rollover, per-client isolation, both paths, disabled
-flag, and header/body conformance.
+`RateLimitHeaderFilter` on that response. Client map is HARD-bounded (10k):
+stale-window entries evicted first; a unique-key flood within one window
+resets the map entirely (review hardening — stale eviction alone could not
+shrink a current-window flood; per-IP limiting cannot constrain an
+address-rotating attacker, so the cap protects heap and a one-time counter
+reset for legitimate clients is the accepted cost). Injectable clock for
+deterministic window tests; unit suite covers limits, rollover, per-client
+isolation, both paths, disabled flag, header/body conformance, and the
+unique-key flood bound.
 
 ### 2026-07-03 — spec-conformance audit vs cycles-protocol-v0.yaml v0.1.25.10: no drift
 

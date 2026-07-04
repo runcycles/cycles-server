@@ -49,7 +49,14 @@ public class PublicEndpointRateLimitFilter extends OncePerRequestFilter {
     private static final Logger LOG = LoggerFactory.getLogger(PublicEndpointRateLimitFilter.class);
     private static final String JWKS_PATH = "/v1/.well-known/cycles-jwks.json";
     private static final String EVIDENCE_PREFIX = "/v1/evidence/";
-    /** Bound on tracked client entries; exceeded → drop stale windows. */
+    /**
+     * Hard bound on tracked client entries. When exceeded: first drop
+     * stale-window entries; if the map is STILL over the cap (a unique-key
+     * flood within a single window), reset it entirely. Per-IP limiting
+     * cannot meaningfully constrain an attacker rotating source addresses —
+     * this cap exists to protect heap, and a one-time counter reset for
+     * legitimate clients is the acceptable cost of staying bounded.
+     */
     private static final int MAX_TRACKED_CLIENTS = 10_000;
 
     private final ObjectMapper objectMapper;
@@ -96,6 +103,16 @@ public class PublicEndpointRateLimitFilter extends OncePerRequestFilter {
 
         if (windows.size() > MAX_TRACKED_CLIENTS) {
             windows.entrySet().removeIf(e -> e.getValue().windowStartMs() != windowStart);
+            if (windows.size() > MAX_TRACKED_CLIENTS) {
+                // Unique-key flood within the CURRENT window — stale eviction
+                // alone cannot shrink the map. Reset it to stay heap-bounded;
+                // legitimate clients get one fresh window budget, which is
+                // acceptable (per-IP limiting cannot constrain an address-
+                // rotating attacker anyway; the cap protects memory).
+                windows.clear();
+                LOG.warn("Public rate limiter tracked-client cap exceeded within one window; counters reset: cap={} limit_per_minute={}",
+                        MAX_TRACKED_CLIENTS, requestsPerMinute);
+            }
         }
 
         if (count > requestsPerMinute) {
@@ -109,6 +126,11 @@ public class PublicEndpointRateLimitFilter extends OncePerRequestFilter {
 
     private static boolean isPublicThrottledPath(String path) {
         return path != null && (path.startsWith(EVIDENCE_PREFIX) || JWKS_PATH.equals(path));
+    }
+
+    /** Test visibility: current number of tracked client windows. */
+    int trackedClients() {
+        return windows.size();
     }
 
     private void sendRateLimited(HttpServletRequest request, HttpServletResponse response,
