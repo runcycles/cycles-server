@@ -79,8 +79,11 @@ services:
     logging: *default-logging
     image: ghcr.io/runcycles/cycles-server-events:0.1.25.20
     restart: unless-stopped
-    ports:
-      - "9980:9980"
+    # Management port 9980 (health + Prometheus) is deliberately NOT published
+    # to the host: the events worker's actuator is unauthenticated by design
+    # (the separate management port is its isolation mechanism - see
+    # cycles-server-events OPERATIONS.md). Prometheus scrapes over the compose
+    # network; the container healthcheck probes in-container.
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379

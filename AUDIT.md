@@ -5,6 +5,18 @@
 
 ---
 
+### 2026-07-04 — full-stack prod compose: stop host-publishing events management port (no version bump)
+
+`docker-compose.full-stack.prod.yml` published the events worker's 9980 to
+the host — an unauthenticated actuator surface (health + Prometheus), the
+exposure class v0.1.25.45 closed for this server's own actuator. The events
+worker's isolation mechanism is its separate management port on an internal
+network (see cycles-server-events OPERATIONS.md); the container healthcheck
+probes in-container and Prometheus scrapes over the compose network, so the
+publish served nothing. Removed, with an inline comment recording the
+posture. (Lands after v0.1.25.46; the compose file here retains that
+release's image pin.)
+
 ### 2026-07-04 — v0.1.25.46: 429 throttling on public evidence/JWKS endpoints
 
 Implements the spec's SHOULD-level rate limiting on the only anonymous
