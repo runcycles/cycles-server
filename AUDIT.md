@@ -5,6 +5,22 @@
 
 ---
 
+### 2026-07-04 — v0.1.25.46: 429 throttling on public evidence/JWKS endpoints
+
+Implements the spec's SHOULD-level rate limiting on the only anonymous
+surface (`GET /v1/evidence/*`, JWKS). `PublicEndpointRateLimitFilter`:
+fixed 60s window per client IP, in-process (abuse damping, not a
+distributed quota — behind N instances the effective limit is N×; behind a
+connection-terminating ingress, prefer ingress limiting). 429 body is a
+conformant ErrorResponse with the new `LIMIT_EXCEEDED` code (spec
+v0.1.25.12 — the runtime enum previously had no throttling code, making a
+conformant 429 impossible) plus `Retry-After`/`X-RateLimit-Reset` per the
+spec's 429 response declaration; overrides the sentinel headers from
+`RateLimitHeaderFilter` on that response. Bounded client map (10k, stale
+windows dropped). Injectable clock for deterministic window tests; unit
+suite covers limits, rollover, per-client isolation, both paths, disabled
+flag, and header/body conformance.
+
 ### 2026-07-03 — spec-conformance audit vs cycles-protocol-v0.yaml v0.1.25.10: no drift
 
 End-to-end audit of the runtime API surface against the protocol spec at
