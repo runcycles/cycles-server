@@ -639,6 +639,7 @@ All errors use this envelope:
 | `DEBT_OUTSTANDING` | 409 | Scope has unresolved debt with no overdraft limit; new reservations blocked |
 | `MAX_EXTENSIONS_EXCEEDED` | 409 | Tenant's `max_reservation_extensions` limit reached |
 | `RESERVATION_EXPIRED` | 410 | Operation attempted after expiry window |
+| `LIMIT_EXCEEDED` | 429 | Public-endpoint rate limit hit (`GET /v1/evidence/*`, JWKS); response carries `Retry-After` + `X-RateLimit-Reset`. Configure with `CYCLES_PUBLIC_RATE_LIMIT_ENABLED` / `CYCLES_PUBLIC_RATE_LIMIT_REQUESTS_PER_MINUTE` (default on, 300/min per client IP, per instance) |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
 **Precedence:** when `is_over_limit=true`, `OVERDRAFT_LIMIT_EXCEEDED` takes precedence over `DEBT_OUTSTANDING`.

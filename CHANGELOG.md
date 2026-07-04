@@ -14,6 +14,30 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.46] — 2026-07-04
+
+### Added
+
+- **429 rate limiting on the public endpoints** (`GET /v1/evidence/*` and the
+  CyclesEvidence JWKS), implementing the spec's SHOULD-level throttling.
+  Fixed 60s window per client IP, per instance; over-limit requests get
+  `429` with `error=LIMIT_EXCEEDED` (new ErrorCode, spec v0.1.25.12),
+  `Retry-After`, `X-RateLimit-Reset`, and `X-RateLimit-Remaining: 0` — plus
+  the standard correlation headers. Authenticated `/v1` endpoints are not
+  covered (abuse there is key-attributable). Configure with
+  `CYCLES_PUBLIC_RATE_LIMIT_ENABLED` (default `true`) and
+  `CYCLES_PUBLIC_RATE_LIMIT_REQUESTS_PER_MINUTE` (default `300`).
+
+### Compatibility
+
+- New behavior only for anonymous callers exceeding 300 req/min/IP on the
+  two public endpoints; normal evidence verification traffic is far below
+  the limit. The limiter is per instance and keyed on the socket peer —
+  deployments behind a connection-terminating ingress should rate-limit at
+  the ingress and/or raise the limit. No wire, Redis, Lua, event, or
+  evidence schema change. `Enums.ErrorCode` gains `LIMIT_EXCEEDED`
+  (additive; mirrors the governance code).
+
 ## [0.1.25.45] — 2026-06-27
 
 ### Fixed
