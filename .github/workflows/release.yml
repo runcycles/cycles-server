@@ -198,7 +198,7 @@ jobs:
       # if scan passes. Second build-push-action call is a cache hit (~5-10s
       # rebuild + push) thanks to type=gha cache from the first call.
       - name: Build image (no push, load for scan)
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           push: false
@@ -234,7 +234,7 @@ jobs:
           category: trivy-container
 
       - name: Push image (cache hit from first build)
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           push: true
