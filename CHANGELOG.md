@@ -14,6 +14,36 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.47] — 2026-07-10
+
+### Fixed
+
+- **Webhook `scope_filter` matching now byte-identical to the admin plane's
+  spec-conformant matcher** (cycles-server-admin PR #206). Two refinements to
+  the runtime dispatch matcher (`EventEmitterRepository.matchesScope`):
+  - *Blank scope is unscoped:* an event whose scope is blank/whitespace-only
+    is now treated like a null-scope event — excluded from every
+    scope-filtered subscription. Previously the bare `*` filter (empty-prefix
+    `startsWith`) delivered blank-scope events.
+  - *Trailing-`*` filters match children only:* `tenant:acme-corp/*` now
+    requires a non-empty remainder after the prefix — the degenerate
+    empty-child scope `tenant:acme-corp/` no longer matches (the spec says
+    "all scopes **under** acme-corp"). Unchanged: the bare base scope
+    `tenant:acme-corp` never matched a `…/*` filter on this plane.
+
+  Everything else is unchanged (null/blank filter matches all events
+  including unscoped ones; no trailing `*` = exact, case-sensitive match).
+  The runtime and admin matchers are now pinned to the same table of
+  (filter, scope, expected) test cases so live dispatch and admin-plane
+  dispatch/replay cannot drift.
+
+### Compatibility
+
+- Delivery-selection change only for the two edge cases above (blank event
+  scopes against `*`, empty-child scopes against `…/*`). Normal scopes and
+  filters are unaffected. No wire, Redis, Lua, event, or evidence schema
+  change.
+
 ## [0.1.25.46] — 2026-07-04
 
 ### Added

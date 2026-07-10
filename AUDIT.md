@@ -5,6 +5,29 @@
 
 ---
 
+### 2026-07-10 — v0.1.25.47: webhook scope-filter matcher parity with the admin plane
+
+The admin server fixed its `scope_filter` matcher for spec conformance
+(cycles-server-admin PR #206); the runtime dispatch matcher
+(`EventEmitterRepository.matchesScope`) already had the trailing-`*`/exact
+split but lacked two of the admin refinements, so the two planes could
+disagree on the same (filter, scope) pair — a subscription could receive an
+event live (runtime dispatch) that admin-plane replay would skip, or vice
+versa. Ported both refinements 1:1 so the matchers are byte-identical:
+(1) blank/whitespace-only event scope is unscoped — excluded from any
+scope-filtered subscription (previously bare `*`, an empty-prefix
+`startsWith`, matched a blank `""` scope); (2) trailing-`*` filters require
+a non-empty child segment after the prefix (`tenant:a/*` no longer matches
+the degenerate `tenant:a/`; spec text is "all scopes *under*" the base).
+The matcher was made `public static` (mirroring the admin's) and the
+admin's full matcher test table — null/blank filters, bare `*`, trailing
+`*` child/base/sibling/empty-segment cases, exact match, literal
+mid-string `*`, case sensitivity, blank-scope edges — was ported into
+`EventEmitterRepositoryTest`, pinning both planes to the same
+(filter, scope, expected) table. One dispatch-level test pins the
+blank-scope refinement end-to-end through `emit()`. No wire or storage
+change; delivery selection shifts only on the two edge cases.
+
 ### 2026-07-04 — full-stack prod compose: stop host-publishing events management port (no version bump)
 
 `docker-compose.full-stack.prod.yml` published the events worker's 9980 to
