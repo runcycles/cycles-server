@@ -108,10 +108,13 @@ Design decisions:
   TENANT_CLOSED is the direct sibling of BUDGET_CLOSED (owner-level
   instead of ledger-level), so excluding it was inconsistent — the signed
   denial receipt is exactly what a closed-tenant enforcement event should
-  produce. Emission follows the endpoint allowlist as-is: decide/create/
-  commit/release emit (reservation_id hoisted on commit/release); extend
-  is not an evidence endpoint and emits nothing, same as every other
-  code (pinned by test). SUSPENDED tenants: existing runtime semantics
+  produce. Error-evidence emission applies to the mutation-surface 409s
+  (persisting create, commit, release; reservation_id hoisted on
+  commit/release). /v1/decide never 409s for a closed tenant — it (and
+  dry_run create) returns 200 DENY/TENANT_CLOSED and emits its normal
+  decide/reserve decision evidence via the round-4 gate; extend is not
+  an evidence endpoint and emits nothing, same as every other code
+  (pinned by test). SUSPENDED tenants: existing runtime semantics
   live in the AUTH layer only (tenant keys 401 — pre-existing, unchanged,
   pinned); the mutation-layer guard is deliberately CLOSED-only per
   Rule 2 / spec v0.1.25.13.
