@@ -52,7 +52,15 @@ Design decisions:
   **fails closed** (500 INTERNAL_ERROR, no mutation) — matching the admin
   plane's TenantRepository, which propagates parse failures rather than
   treating a corrupt governance record as an open tenant (codex round 2;
-  the first cut fell through open on decode failure).
+  the first cut fell through open on decode failure). Round 3 extended
+  fail-closed to unknown status STRINGS via a whitelist (CLOSED → 409;
+  ACTIVE/SUSPENDED → proceed; anything else → 500): the governance
+  TenantStatus enum is a closed set and the cascade revision explicitly
+  introduces no new status values as a wire-compat guarantee, so an
+  unknown status (e.g. "CLOZED", lowercase "closed") cannot be a
+  legitimate future value under the current contract — it is corruption.
+  Pinned per op with "CLOZED" and lowercase "closed" records in the
+  malformed matrix.
 - **Precedence.** Same-key idempotent replay first (a replay re-observes
   a pre-flip mutation — not a new mutation; Rule 2(b) idempotency;
   mirrors how the budget status guards sit after replay), then the

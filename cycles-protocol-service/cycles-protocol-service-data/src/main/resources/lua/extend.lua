@@ -46,8 +46,9 @@ end
 -- the idempotent-replay block at the top of the script: a replay
 -- re-observes an extend that succeeded BEFORE the flip.
 -- Absent tenant record (runtime-only deployment) = no restriction; a
--- PRESENT record that cannot be decoded into an object with a string
--- status FAILS CLOSED (INTERNAL_ERROR, no mutation) — matching the admin
+-- PRESENT record that cannot be decoded into an object with a valid
+-- TenantStatus (ACTIVE|SUSPENDED|CLOSED) FAILS CLOSED (INTERNAL_ERROR,
+-- no mutation) — matching the admin
 -- plane's TenantRepository, which propagates parse failures instead of
 -- treating a corrupt governance record as an open tenant.
 local owner_tenant = vals[5]
@@ -60,6 +61,16 @@ if owner_tenant and owner_tenant ~= "" then
         end
         if tenant_rec['status'] == 'CLOSED' then
             return cjson.encode({error = "TENANT_CLOSED", tenant = owner_tenant})
+        end
+        if tenant_rec['status'] ~= 'ACTIVE' and tenant_rec['status'] ~= 'SUSPENDED' then
+            -- The governance TenantStatus enum is a closed set (ACTIVE|
+            -- SUSPENDED|CLOSED) and the cascade revision explicitly
+            -- introduces no new status values as a wire-compat guarantee,
+            -- so an unknown status (e.g. "CLOZED", lowercase "closed")
+            -- cannot be a legitimate future value under the current
+            -- contract - it is corruption. Fail closed like the other
+            -- malformed shapes.
+            return cjson.encode({error = "INTERNAL_ERROR", message = "Malformed tenant record: tenant:" .. owner_tenant})
         end
     end
 end

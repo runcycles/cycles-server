@@ -387,7 +387,9 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
      * failures instead of treating a corrupt governance record as an open
      * tenant. Absent key stays no-guard (covered elsewhere). Shapes per op:
      * malformed JSON, non-object JSON (bare string / number), object missing
-     * status.
+     * status, and object with an unknown status string (TenantStatus is a
+     * closed enum, so "CLOZED" or lowercase "closed" is corruption, not a
+     * future value).
      */
     @Nested
     @DisplayName("malformed tenant record fails closed (500, no mutation)")
@@ -397,7 +399,13 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
                 "{not-json",                       // malformed JSON
                 "\"CLOSED\"",                      // valid JSON, but not an object
                 "42",                              // valid JSON, but not an object
-                "{\"tenant_id\":\"tenant-a\"}"     // object, but no status field
+                "{\"tenant_id\":\"tenant-a\"}",    // object, but no status field
+                // TenantStatus is a CLOSED enum (ACTIVE|SUSPENDED|CLOSED) and the
+                // governance cascade revision introduces no new status values as a
+                // wire-compat guarantee - an unknown status string is corruption,
+                // not a future value, so it must fail closed too:
+                "{\"tenant_id\":\"tenant-a\",\"status\":\"CLOZED\"}",  // unknown status
+                "{\"tenant_id\":\"tenant-a\",\"status\":\"closed\"}"   // case-sensitivity pin
         };
 
         @Test

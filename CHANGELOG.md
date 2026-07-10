@@ -44,9 +44,11 @@ called out but are not breaking to API clients.
     just after it).
   - **No tenant record ⇒ no restriction:** runtime-only deployments without
     a governance plane are unaffected. A present-but-malformed tenant record
-    (undecodable JSON, non-object, or missing `status`) **fails closed**:
-    500 `INTERNAL_ERROR`, no mutation — a corrupt governance record is never
-    treated as an open tenant.
+    (undecodable JSON, non-object, missing `status`, or a status outside
+    the closed `ACTIVE|SUSPENDED|CLOSED` TenantStatus enum — e.g. `"CLOZED"`
+    or lowercase `"closed"`) **fails closed**: 500 `INTERNAL_ERROR`, no
+    mutation — a corrupt governance record is never treated as an open
+    tenant.
   - **Precedence:** same-key idempotent replays return their original
     response; any other mutation on a closed tenant is `TENANT_CLOSED` even
     when the reservation is already finalized/expired (takes precedence over
