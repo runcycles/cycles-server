@@ -47,15 +47,25 @@ Design decisions:
   the reservation hash (the authoritative owner; reserve.lua has always
   written it) — added to the scripts' existing HMGETs, no new commands.
 - **No tenant record ⇒ no restriction** (runtime-only deployments), same
-  contract as the admin plane's `TerminalOwnerMutationGuard`.
-- **Precedence.** The guard sits after idempotent-replay handling (a
-  replay re-observes a pre-flip mutation — not a new mutation; mirrors
-  how the budget status guards sit after replay) and before the
-  state/expiry/budget checks, honoring the spec's "regardless of that
-  child's own current status". Accepted edge: commit/release with a
-  non-matching key on an already-terminal reservation still returns
-  RESERVATION_FINALIZED (also a rejection; the replay/finalized split is
-  one block).
+  contract as the admin plane's `TerminalOwnerMutationGuard`. A PRESENT
+  record that cannot be decoded into an object with a string `status`
+  **fails closed** (500 INTERNAL_ERROR, no mutation) — matching the admin
+  plane's TenantRepository, which propagates parse failures rather than
+  treating a corrupt governance record as an open tenant (codex round 2;
+  the first cut fell through open on decode failure).
+- **Precedence.** Same-key idempotent replay first (a replay re-observes
+  a pre-flip mutation — not a new mutation; Rule 2(b) idempotency;
+  mirrors how the budget status guards sit after replay), then the
+  closed-tenant guard, then every reservation-state/expiry/budget check —
+  honoring the spec's "regardless of that child's own current status"
+  (precedence sentence added to spec PR runcycles/cycles-protocol#125
+  ERROR SEMANTICS). Codex round 2 resolved the first cut's accepted edge:
+  commit.lua/release.lua previously returned RESERVATION_FINALIZED for a
+  different-key attempt on a finalized reservation before the guard ran;
+  the replay branches were narrowed to true same-key replays so
+  different-key attempts fall through to the guard, and release.lua's
+  post-guard state check widened from `== "COMMITTED"` to `~= "ACTIVE"`
+  to keep the open-tenant RESERVATION_FINALIZED response identical.
 - **Scope.** Exactly the four reservation mutations Rule 2 names. `GET`
   /list stay available on closed tenants (spec: post-mortem reads);
   dry_run and `/v1/decide` are non-mutating evaluations and stay
@@ -89,6 +99,22 @@ validating client checks response enums against cycles-protocol@main);
 response shape is asserted explicitly. Unit tests: handleScriptError
 token mapping, `tenantClosed` factory, GlobalExceptionHandler 409
 envelope (+ no-evidence pin).
+
+Codex review round 2 (both applied against real-Lua tests): (1)
+fail-closed on malformed tenant records — all four guards return
+INTERNAL_ERROR (500, message preserved through a new explicit
+handleScriptError case) when a present `tenant:<id>` row fails
+cjson.decode, decodes to a non-object, or lacks a string `status`;
+pinned per op with malformed / non-object (string, number) /
+missing-status shapes and no-partial-mutation assertions. (2)
+TENANT_CLOSED precedence over RESERVATION_FINALIZED for non-replay
+mutations (see the Precedence bullet); pinned: closed tenant +
+finalized reservation + different key → 409 TENANT_CLOSED on commit,
+release, and extend; same-key replay still returns the original
+response; open tenant + different key still RESERVATION_FINALIZED
+(no-regression pin). Codex also confirmed the matcher port is
+byte-identical to admin main and that the in-script `GET tenant:<id>`
+matches the repo's existing standalone-Redis posture — no changes.
 
 ### 2026-07-10 — v0.1.25.47: webhook scope-filter matcher parity with the admin plane
 

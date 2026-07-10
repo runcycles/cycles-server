@@ -47,7 +47,11 @@ end
 -- serially, so a request observed after the flip can never partially
 -- succeed. The tenant record is written by the admin plane to the shared
 -- Redis ("tenant:<id>" JSON, status field); ABSENCE of the record
--- (runtime-only deployment, no governance plane) means no restriction.
+-- (runtime-only deployment, no governance plane) means no restriction,
+-- but a PRESENT record that cannot be decoded into an object with a
+-- string status FAILS CLOSED (INTERNAL_ERROR, no mutation) — matching the
+-- admin plane's TenantRepository, which propagates parse failures instead
+-- of treating a corrupt governance record as an open tenant.
 -- Sits after the idempotency block above: a replay re-observes a mutation
 -- that succeeded BEFORE the flip, mirroring how the budget status guards
 -- also sit after replay handling.
@@ -55,7 +59,10 @@ if tenant ~= nil and tenant ~= "" then
     local tenant_json = redis.call('GET', 'tenant:' .. tenant)
     if tenant_json then
         local ok_tenant, tenant_rec = pcall(cjson.decode, tenant_json)
-        if ok_tenant and type(tenant_rec) == 'table' and tenant_rec['status'] == 'CLOSED' then
+        if not ok_tenant or type(tenant_rec) ~= 'table' or type(tenant_rec['status']) ~= 'string' then
+            return cjson.encode({error = "INTERNAL_ERROR", message = "Malformed tenant record: tenant:" .. tenant})
+        end
+        if tenant_rec['status'] == 'CLOSED' then
             return cjson.encode({error = "TENANT_CLOSED", tenant = tenant})
         end
     end

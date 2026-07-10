@@ -364,6 +364,218 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
         }
     }
 
+    // ---- fail-closed on malformed tenant records ----
+
+    /** Write a RAW (possibly invalid) value at the admin-plane tenant key. */
+    private void seedRawTenantRecord(String tenantId, String rawValue) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set("tenant:" + tenantId, rawValue);
+        }
+    }
+
+    private static void assertMalformedTenantFailsClosed(Throwable thrown) {
+        assertThat(thrown).isInstanceOf(CyclesProtocolException.class)
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                .hasFieldOrPropertyWithValue("httpStatus", 500)
+                .hasMessageContaining("Malformed tenant record");
+    }
+
+    /**
+     * A PRESENT {@code tenant:<id>} row that cannot be decoded into an object
+     * with a string status must FAIL CLOSED (500 INTERNAL_ERROR, no mutation)
+     * — matching the admin plane's TenantRepository, which propagates parse
+     * failures instead of treating a corrupt governance record as an open
+     * tenant. Absent key stays no-guard (covered elsewhere). Shapes per op:
+     * malformed JSON, non-object JSON (bare string / number), object missing
+     * status.
+     */
+    @Nested
+    @DisplayName("malformed tenant record fails closed (500, no mutation)")
+    class MalformedTenantRecordFailsClosed {
+
+        private static final String[] BAD_RECORDS = {
+                "{not-json",                       // malformed JSON
+                "\"CLOSED\"",                      // valid JSON, but not an object
+                "42",                              // valid JSON, but not an object
+                "{\"tenant_id\":\"tenant-a\"}"     // object, but no status field
+        };
+
+        @Test
+        void reserve_failsClosed_noBudgetMutation() {
+            Map<String, String> budgetBefore = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            for (String bad : BAD_RECORDS) {
+                seedRawTenantRecord(TENANT_A, bad);
+
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.createReservation(createRequest(100), TENANT_A)));
+
+                Map<String, String> budgetAfter = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+                assertThat(budgetAfter.get("reserved")).as(bad).isEqualTo(budgetBefore.get("reserved"));
+                assertThat(budgetAfter.get("remaining")).as(bad).isEqualTo(budgetBefore.get("remaining"));
+                assertThat(scanReservationKeys()).as(bad).isEmpty();
+            }
+        }
+
+        @Test
+        void commit_failsClosed_reservationAndBudgetUntouched() {
+            String reservationId = reserveViaRepository(100);
+            for (String bad : BAD_RECORDS) {
+                seedRawTenantRecord(TENANT_A, bad);
+
+                CommitRequest commit = new CommitRequest();
+                commit.setActual(new Amount(Enums.UnitEnum.TOKENS, 80L));
+                commit.setIdempotencyKey(UUID.randomUUID().toString());
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.commitReservation(reservationId, commit, TENANT_A)));
+
+                assertThat(getReservationStateFromRedis(reservationId).get("state")).as(bad).isEqualTo("ACTIVE");
+                Map<String, String> budget = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+                assertThat(budget.get("reserved")).as(bad).isEqualTo("100");
+                assertThat(budget.get("spent")).as(bad).isEqualTo("0");
+            }
+        }
+
+        @Test
+        void release_failsClosed_reservationStaysActive() {
+            String reservationId = reserveViaRepository(100);
+            for (String bad : BAD_RECORDS) {
+                seedRawTenantRecord(TENANT_A, bad);
+
+                ReleaseRequest release = ReleaseRequest.builder()
+                        .idempotencyKey(UUID.randomUUID().toString()).build();
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.releaseReservation(reservationId, release, TENANT_A, "tenant")));
+
+                assertThat(getReservationStateFromRedis(reservationId).get("state")).as(bad).isEqualTo("ACTIVE");
+                assertThat(getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS").get("reserved")).as(bad).isEqualTo("100");
+            }
+        }
+
+        @Test
+        void extend_failsClosed_expiryUnchanged() {
+            String reservationId = reserveViaRepository(100);
+            String expiresBefore = getReservationStateFromRedis(reservationId).get("expires_at");
+            for (String bad : BAD_RECORDS) {
+                seedRawTenantRecord(TENANT_A, bad);
+
+                ReservationExtendRequest extend = new ReservationExtendRequest();
+                extend.setExtendByMs(30000L);
+                extend.setIdempotencyKey(UUID.randomUUID().toString());
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.extendReservation(reservationId, extend, TENANT_A)));
+
+                Map<String, String> reservation = getReservationStateFromRedis(reservationId);
+                assertThat(reservation.get("expires_at")).as(bad).isEqualTo(expiresBefore);
+                assertThat(reservation.get("extension_count")).as(bad).isEqualTo("0");
+            }
+        }
+    }
+
+    // ---- TENANT_CLOSED precedence over reservation-state errors ----
+
+    /**
+     * Rule 2: closed-owner mutations reject with TENANT_CLOSED "regardless of
+     * that child's own current status" (spec PR runcycles/cycles-protocol#125
+     * ERROR SEMANTICS: the closed-tenant rejection takes precedence over
+     * reservation-state errors). Same-key idempotent replays keep their
+     * original response (Rule 2(b) idempotency); everything else on a closed
+     * tenant — including a different-key attempt on a FINALIZED reservation —
+     * is TENANT_CLOSED, not RESERVATION_FINALIZED.
+     */
+    @Nested
+    @DisplayName("TENANT_CLOSED precedence over RESERVATION_FINALIZED")
+    class TenantClosedPrecedence {
+
+        @Test
+        void commit_differentKeyOnCommitted_closedTenant_isTenantClosed() {
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            String reservationId = reserveViaRepository(100);
+            CommitRequest first = new CommitRequest();
+            first.setActual(new Amount(Enums.UnitEnum.TOKENS, 80L));
+            first.setIdempotencyKey(UUID.randomUUID().toString());
+            reservationRepository.commitReservation(reservationId, first, TENANT_A);
+
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            // Different key on a finalized reservation of a CLOSED tenant:
+            // Rule 2 wins over RESERVATION_FINALIZED.
+            CommitRequest second = new CommitRequest();
+            second.setActual(new Amount(Enums.UnitEnum.TOKENS, 80L));
+            second.setIdempotencyKey(UUID.randomUUID().toString());
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.commitReservation(reservationId, second, TENANT_A)));
+
+            // Same key = idempotent replay: still returns the original response.
+            assertThat(reservationRepository.commitReservation(reservationId, first, TENANT_A)
+                    .isIdempotentReplay()).isTrue();
+        }
+
+        @Test
+        void release_differentKeyOnReleased_closedTenant_isTenantClosed() {
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            String reservationId = reserveViaRepository(100);
+            ReleaseRequest first = ReleaseRequest.builder()
+                    .idempotencyKey(UUID.randomUUID().toString()).build();
+            reservationRepository.releaseReservation(reservationId, first, TENANT_A, "tenant");
+
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            ReleaseRequest second = ReleaseRequest.builder()
+                    .idempotencyKey(UUID.randomUUID().toString()).build();
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.releaseReservation(reservationId, second, TENANT_A, "tenant")));
+
+            assertThat(reservationRepository.releaseReservation(reservationId, first, TENANT_A, "tenant")
+                    .isIdempotentReplay()).isTrue();
+        }
+
+        @Test
+        void extend_onFinalizedReservation_closedTenant_isTenantClosed() {
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            String reservationId = reserveViaRepository(100);
+            ReleaseRequest release = ReleaseRequest.builder()
+                    .idempotencyKey(UUID.randomUUID().toString()).build();
+            reservationRepository.releaseReservation(reservationId, release, TENANT_A, "tenant");
+
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            ReservationExtendRequest extend = new ReservationExtendRequest();
+            extend.setExtendByMs(30000L);
+            extend.setIdempotencyKey(UUID.randomUUID().toString());
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.extendReservation(reservationId, extend, TENANT_A)));
+        }
+
+        @Test
+        void differentKeyOnFinalized_openTenant_staysReservationFinalized() {
+            // No-regression pin for the reorder: with the tenant OPEN, a
+            // different-key attempt on a finalized reservation still returns
+            // RESERVATION_FINALIZED exactly as before.
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            String reservationId = reserveViaRepository(100);
+            CommitRequest first = new CommitRequest();
+            first.setActual(new Amount(Enums.UnitEnum.TOKENS, 80L));
+            first.setIdempotencyKey(UUID.randomUUID().toString());
+            reservationRepository.commitReservation(reservationId, first, TENANT_A);
+
+            CommitRequest second = new CommitRequest();
+            second.setActual(new Amount(Enums.UnitEnum.TOKENS, 80L));
+            second.setIdempotencyKey(UUID.randomUUID().toString());
+            assertThat(catchThrowable(
+                    () -> reservationRepository.commitReservation(reservationId, second, TENANT_A)))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.RESERVATION_FINALIZED)
+                    .hasFieldOrPropertyWithValue("httpStatus", 409);
+
+            ReleaseRequest releaseAttempt = ReleaseRequest.builder()
+                    .idempotencyKey(UUID.randomUUID().toString()).build();
+            assertThat(catchThrowable(
+                    () -> reservationRepository.releaseReservation(reservationId, releaseAttempt, TENANT_A, "tenant")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.RESERVATION_FINALIZED);
+        }
+    }
+
     // ---- idempotent replay semantics across the flip ----
 
     @Nested

@@ -447,6 +447,22 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldPreserveMessageForScriptInternalError() throws Throwable {
+            // Explicit INTERNAL_ERROR mapping keeps the script's diagnostic
+            // message (e.g. the fail-closed malformed-tenant-record guard)
+            // instead of the generic "Script error: INTERNAL_ERROR".
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "INTERNAL_ERROR");
+            response.put("message", "Malformed tenant record: tenant:acme");
+
+            assertThatThrownBy(() -> invokeHandleScriptError(response))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasFieldOrPropertyWithValue("httpStatus", 500)
+                    .hasMessageContaining("Malformed tenant record: tenant:acme");
+        }
+
+        @Test
         void shouldGracefullyHandleMalformedTenantJson() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();

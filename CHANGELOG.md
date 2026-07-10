@@ -43,7 +43,15 @@ called out but are not breaking to API clients.
     (a request that passed auth just before the flip can no longer mutate
     just after it).
   - **No tenant record ⇒ no restriction:** runtime-only deployments without
-    a governance plane are unaffected.
+    a governance plane are unaffected. A present-but-malformed tenant record
+    (undecodable JSON, non-object, or missing `status`) **fails closed**:
+    500 `INTERNAL_ERROR`, no mutation — a corrupt governance record is never
+    treated as an open tenant.
+  - **Precedence:** same-key idempotent replays return their original
+    response; any other mutation on a closed tenant is `TENANT_CLOSED` even
+    when the reservation is already finalized/expired (takes precedence over
+    `RESERVATION_FINALIZED`/`RESERVATION_EXPIRED`, per the spec revision's
+    ERROR SEMANTICS). Open-tenant error responses are unchanged.
   - **Reads unaffected:** `GET /v1/reservations/{id}` and the list endpoint
     keep working on closed tenants (spec: post-mortem read access via admin
     keys; tenant keys remain subject to the existing auth-layer 401).

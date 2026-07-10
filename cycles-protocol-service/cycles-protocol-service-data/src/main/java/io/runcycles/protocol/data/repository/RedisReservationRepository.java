@@ -2433,6 +2433,12 @@ public class RedisReservationRepository {
                 throw new CyclesProtocolException(Enums.ErrorCode.MAX_EXTENSIONS_EXCEEDED, message, 409);
             case "INVALID_REQUEST":
                 throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST, message, 400);
+            case "INTERNAL_ERROR":
+                // Explicit mapping so script-side INTERNAL_ERROR tokens (e.g. the
+                // fail-closed malformed-tenant-record guard, corrupted reservation
+                // data) keep their diagnostic message instead of the generic
+                // "Script error: INTERNAL_ERROR" default below.
+                throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, message, 500);
             default:
                 throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, "Script error: " + error, 500);
         }
