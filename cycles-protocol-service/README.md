@@ -255,7 +255,7 @@ All responses include `X-Request-Id` and `X-Cycles-Trace-Id` headers. All timest
 
 ### POST /v1/decide
 
-Evaluate whether a budget operation would be allowed **without** reserving. Returns `ALLOW`, `ALLOW_WITH_CAPS`, or `DENY`. Never returns `409` — debt and over-limit states surface as `DENY` with a `reason_code`.
+Evaluate whether a budget operation would be allowed **without** reserving. Returns `ALLOW`, `ALLOW_WITH_CAPS`, or `DENY`. Never returns `409` — debt, over-limit, frozen/closed-budget, and closed-tenant states all surface as `DENY` with a `reason_code`.
 
 **Request**
 ```json
@@ -278,7 +278,7 @@ Evaluate whether a budget operation would be allowed **without** reserving. Retu
 
 Only `decision` is required. `affected_scopes`, `reason_code`, `retry_after_ms`, and `caps` are optional.
 
-On `DENY` (insufficient budget, debt, or over-limit). Possible `reason_code` values: `NOT_FOUND`, `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`:
+On `DENY`. Possible `reason_code` values: `BUDGET_EXCEEDED`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `BUDGET_NOT_FOUND`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, and `TENANT_CLOSED` — the last appears on fresh (non-replay) `/v1/decide` and `dry_run` evaluations when the owning tenant's status is `CLOSED` (spec revision v0.1.25.13); cached pre-close replays keep their original payload:
 ```json
 {
   "decision": "DENY",
@@ -365,7 +365,7 @@ On `ALLOW_WITH_CAPS` (budget exists but soft constraints apply):
 - `reason_code` SHOULD be populated when `decision=DENY`
 - `balances` MAY be included
 
-On budget denial (insufficient budget, over-limit, outstanding debt), the server returns `409` — `decision=DENY` never appears in a non-dry-run successful response.
+On budget denial (insufficient budget, over-limit, outstanding debt) — and on a closed owning tenant (`409 TENANT_CLOSED`) — the server returns `409`: `decision=DENY` never appears in a non-dry-run successful response.
 
 ---
 
@@ -452,7 +452,7 @@ Extend the reservation TTL. Only allowed while `server_time ≤ expires_at_ms` (
 
 `extend_by_ms` is added to the current `expires_at_ms` (not to request time). Does not change reserved amount, unit, subject, action, or scope.
 
-**Error conditions:** `409 RESERVATION_FINALIZED` if the reservation is already COMMITTED or RELEASED; `410 RESERVATION_EXPIRED` if `server_time > expires_at_ms`; `409 MAX_EXTENSIONS_EXCEEDED` if the tenant's `max_reservation_extensions` limit has been reached; `404 NOT_FOUND` if the reservation does not exist.
+**Error conditions:** `409 TENANT_CLOSED` if the owning tenant's status is `CLOSED` (takes precedence over the reservation-state errors below); `409 RESERVATION_FINALIZED` if the reservation is already COMMITTED or RELEASED; `410 RESERVATION_EXPIRED` if `server_time > expires_at_ms`; `409 MAX_EXTENSIONS_EXCEEDED` if the tenant's `max_reservation_extensions` limit has been reached; `404 NOT_FOUND` if the reservation does not exist.
 
 ---
 
@@ -638,13 +638,14 @@ All errors use this envelope:
 | `OVERDRAFT_LIMIT_EXCEEDED` | 409 | `debt + delta > overdraft_limit`; or scope is over-limit |
 | `DEBT_OUTSTANDING` | 409 | Scope has unresolved debt with no overdraft limit; new reservations blocked |
 | `MAX_EXTENSIONS_EXCEEDED` | 409 | Tenant's `max_reservation_extensions` limit reached |
+| `TENANT_CLOSED` | 409 | Owning tenant's status is `CLOSED` (governance CASCADE SEMANTICS Rule 2 terminal-owner guard; spec revision v0.1.25.13). Rejects the persisting mutation surface — reservation create/commit/release/extend — and takes precedence over reservation-state errors for non-replay attempts (same-key idempotent replays return their original response). Emits `error` CyclesEvidence on the evidence endpoints (create/commit/release; extend is not an evidence endpoint). No tenant record in Redis = no restriction (runtime-only deployments); `/v1/decide` and `dry_run` never 409 for this — they return `decision=DENY` with `reason_code=TENANT_CLOSED` |
 | `RESERVATION_EXPIRED` | 410 | Operation attempted after expiry window |
 | `LIMIT_EXCEEDED` | 429 | Public-endpoint rate limit hit (`GET /v1/evidence/*`, JWKS); response carries `Retry-After` + `X-RateLimit-Reset`. Configure with `CYCLES_PUBLIC_RATE_LIMIT_ENABLED` / `CYCLES_PUBLIC_RATE_LIMIT_REQUESTS_PER_MINUTE` (default on, 300/min per client IP, per instance) |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
 **Precedence:** when `is_over_limit=true`, `OVERDRAFT_LIMIT_EXCEEDED` takes precedence over `DEBT_OUTSTANDING`.
 
-`/v1/decide` MUST NOT return `409` for budget conditions — it returns `decision=DENY` with a `reason_code` instead.
+`/v1/decide` MUST NOT return `409` for budget conditions — it returns `decision=DENY` with a `reason_code` instead (likewise `decision=DENY` + `reason_code=TENANT_CLOSED` for a closed owning tenant, never `409 TENANT_CLOSED`).
 
 ---
 

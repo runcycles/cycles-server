@@ -60,6 +60,8 @@ counters is:
 - Budget denials: `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`,
   `DEBT_OUTSTANDING`
 - Budget state: `BUDGET_FROZEN`, `BUDGET_CLOSED`
+- Tenant state: `TENANT_CLOSED` (owning tenant closed — governance
+  Rule 2 terminal-owner guard on reservation create/commit/release/extend)
 - Reservation state: `RESERVATION_EXPIRED`, `RESERVATION_FINALIZED`
 - Request issues: `IDEMPOTENCY_MISMATCH`, `UNIT_MISMATCH`,
   `MAX_EXTENSIONS_EXCEEDED`, `NOT_FOUND`
