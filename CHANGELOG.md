@@ -61,6 +61,15 @@ called out but are not breaking to API clients.
     pre-existing auth-layer 401 for suspended tenants is untouched.
   - **Idempotent replays unaffected:** replaying a mutation that succeeded
     before the flip still returns its original response.
+  - **Non-persisting evaluations answer truthfully instead of 409ing:** a
+    FRESH `dry_run` or `POST /v1/decide` evaluation on a CLOSED tenant
+    returns 200 `decision=DENY` with `reason_code=TENANT_CLOSED` (new
+    DecisionReasonCode value, spec revision v0.1.25.13) — previously a
+    post-flip dry_run could produce a signed ALLOW attestation for a
+    request whose live execution must fail. Malformed tenant records fail
+    these evaluations closed (500, before any evidence is stamped); absent
+    records and ACTIVE/SUSPENDED tenants evaluate exactly as before, and
+    cached pre-close replays keep their original payload.
 
 ### Fixed
 
@@ -86,7 +95,9 @@ called out but are not breaking to API clients.
 ### Compatibility
 
 - `Enums.ErrorCode` gains `TENANT_CLOSED` (additive; mirrors the governance
-  code of the same name — runtime spec revision v0.1.25.13, runcycles/cycles-protocol#125).
+  code of the same name — runtime spec revision v0.1.25.13, runcycles/cycles-protocol#125),
+  and `Enums.ReasonCode` gains `TENANT_CLOSED` (additive; same spec revision —
+  the 200-DENY reason for non-persisting evaluations on closed tenants).
   New 409 behavior appears only for tenants a governance plane has closed;
   deployments without tenant records see no change. The reserve/commit/
   release/extend Lua scripts gain a read-only tenant-status check before

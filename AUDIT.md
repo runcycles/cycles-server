@@ -74,10 +74,28 @@ Design decisions:
   different-key attempts fall through to the guard, and release.lua's
   post-guard state check widened from `== "COMMITTED"` to `~= "ACTIVE"`
   to keep the open-tenant RESERVATION_FINALIZED response identical.
-- **Scope.** Exactly the four reservation mutations Rule 2 names. `GET`
-  /list stay available on closed tenants (spec: post-mortem reads);
-  dry_run and `/v1/decide` are non-mutating evaluations and stay
-  unguarded; `POST /v1/events` also mutates budgets and Rule 2's list is
+- **Scope.** Exactly the four reservation mutations Rule 2 names get the
+  409 guard. `GET`/list stay available on closed tenants (spec:
+  post-mortem reads). The non-persisting evaluations (dry_run +
+  `/v1/decide`) were initially left unguarded; an external review round
+  (round 4) flagged that a post-flip dry_run could stamp a SIGNED ALLOW
+  attestation for a request whose live execution MUST fail — resolved
+  per the amended spec PR runcycles/cycles-protocol#125: a FRESH
+  evaluation on a CLOSED tenant now returns 200 decision=DENY with
+  reason_code=TENANT_CLOSED (new `Enums.ReasonCode` value, typed,
+  mirroring the documented DecisionReasonCode vocabulary) via a single
+  shared gate (`evaluateTenantStatusGate`) called from both evaluation
+  paths, after replay handling and before any budget read. The gate
+  reads `tenant:<id>` fresh (never the 60 s config cache) and applies
+  the same fail-closed whitelist as the Lua guards — malformed record
+  (undecodable / non-object / missing or non-string status / unknown
+  status string) → 500 INTERNAL_ERROR BEFORE evidence stamping (the
+  server cannot attest against corrupt governance state; no
+  reserve/decide evidence row and no error-evidence row is written,
+  consistent with the existing convention that evidence is emitted only
+  for decisions actually reached — INTERNAL_ERROR is likewise excluded
+  from EVIDENCE_DENIAL_CODES). Cached pre-close replays keep their
+  original payload. `POST /v1/events` also mutates budgets and Rule 2's list is
   "non-exhaustive" — flagged as an open spec question rather than guarded
   ahead of the spec. `TENANT_CLOSED` is not yet in
   `EVIDENCE_DENIAL_CODES` (error-evidence emission deferred until runtime

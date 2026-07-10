@@ -68,7 +68,14 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * these calls can move to the validating client once the revision merges.
  */
 @DisplayName("Tenant CLOSED guard (governance Rule 2) — reservation mutations")
-@TestPropertySource(properties = "admin.api-key=tenant-closed-guard-admin-key")
+@TestPropertySource(properties = {
+        "admin.api-key=tenant-closed-guard-admin-key",
+        // Evidence identity configured so the non-persisting-evaluation tests can
+        // assert that a DENY/TENANT_CLOSED outcome IS stamped as signed evidence
+        // (and that a malformed-record 500 is NOT).
+        "cycles.evidence.server-id=https://cycles.test.local/v1",
+        "cycles.evidence.signing.signer-did=did:key:test-tenant-closed-guard"
+})
 class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
 
     private static final String ADMIN_KEY = "tenant-closed-guard-admin-key";
@@ -364,6 +371,22 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
         }
     }
 
+    /**
+     * Tenant records that must FAIL CLOSED on every guard surface (the four
+     * Lua mutation guards AND the shared dry_run/decide evaluation gate):
+     * malformed JSON, non-object JSON, object missing status, and an unknown
+     * status string (TenantStatus is a closed enum - ACTIVE|SUSPENDED|CLOSED -
+     * so "CLOZED" or lowercase "closed" is corruption, not a future value).
+     */
+    private static final String[] BAD_RECORDS = {
+            "{not-json",                       // malformed JSON
+            "\"CLOSED\"",                      // valid JSON, but not an object
+            "42",                              // valid JSON, but not an object
+            "{\"tenant_id\":\"tenant-a\"}",    // object, but no status field
+            "{\"tenant_id\":\"tenant-a\",\"status\":\"CLOZED\"}",  // unknown status
+            "{\"tenant_id\":\"tenant-a\",\"status\":\"closed\"}"   // case-sensitivity pin
+    };
+
     // ---- fail-closed on malformed tenant records ----
 
     /** Write a RAW (possibly invalid) value at the admin-plane tenant key. */
@@ -394,19 +417,6 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
     @Nested
     @DisplayName("malformed tenant record fails closed (500, no mutation)")
     class MalformedTenantRecordFailsClosed {
-
-        private static final String[] BAD_RECORDS = {
-                "{not-json",                       // malformed JSON
-                "\"CLOSED\"",                      // valid JSON, but not an object
-                "42",                              // valid JSON, but not an object
-                "{\"tenant_id\":\"tenant-a\"}",    // object, but no status field
-                // TenantStatus is a CLOSED enum (ACTIVE|SUSPENDED|CLOSED) and the
-                // governance cascade revision introduces no new status values as a
-                // wire-compat guarantee - an unknown status string is corruption,
-                // not a future value, so it must fail closed too:
-                "{\"tenant_id\":\"tenant-a\",\"status\":\"CLOZED\"}",  // unknown status
-                "{\"tenant_id\":\"tenant-a\",\"status\":\"closed\"}"   // case-sensitivity pin
-        };
 
         @Test
         void reserve_failsClosed_noBudgetMutation() {
@@ -581,6 +591,159 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
                     () -> reservationRepository.releaseReservation(reservationId, releaseAttempt, TENANT_A, "tenant")))
                     .isInstanceOf(CyclesProtocolException.class)
                     .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.RESERVATION_FINALIZED);
+        }
+    }
+
+    // ---- non-persisting evaluations: dry_run + /v1/decide ----
+
+    private ReservationCreateRequest dryRunRequest(long amount) {
+        ReservationCreateRequest request = createRequest(amount);
+        request.setDryRun(true);
+        return request;
+    }
+
+    private io.runcycles.protocol.model.DecisionRequest decisionRequest(long amount) {
+        Subject subject = new Subject();
+        subject.setTenant(TENANT_A);
+        Action action = new Action();
+        action.setKind("llm.completion");
+        action.setName("test-model");
+        return io.runcycles.protocol.model.DecisionRequest.builder()
+                .idempotencyKey(UUID.randomUUID().toString())
+                .subject(subject)
+                .action(action)
+                .estimate(new Amount(Enums.UnitEnum.TOKENS, amount))
+                .build();
+    }
+
+    private long evidenceQueueLength() {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.llen("evidence:pending");
+        }
+    }
+
+    /**
+     * Reviewer finding (round 4): dry_run bypassed the tenant guard entirely,
+     * so a closed tenant's dry_run could stamp a SIGNED ALLOW attestation for
+     * a request whose live execution MUST fail with 409 TENANT_CLOSED.
+     * Resolution (spec PR runcycles/cycles-protocol#125, amended): the
+     * non-persisting evaluations - POST /v1/reservations dry_run=true and
+     * POST /v1/decide - do NOT 409; a FRESH evaluation on a CLOSED tenant
+     * returns 200 decision=DENY, reason_code=TENANT_CLOSED (non-mutating, and
+     * the DENY is the truthful signed attestation). Malformed records fail
+     * closed with 500 BEFORE any evidence is stamped (the server cannot attest
+     * against corrupt governance state); absent records evaluate normally;
+     * cached pre-close replays keep their original payload.
+     */
+    @Nested
+    @DisplayName("non-persisting evaluations (dry_run + decide) on a CLOSED tenant")
+    class NonPersistingEvaluations {
+
+        @Test
+        void freshDryRunOnClosedTenant_denies_withTenantClosed_andStampsEvidence() {
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+            Map<String, String> budgetBefore = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+
+            ReservationCreateResponse response =
+                    reservationRepository.createReservation(dryRunRequest(100), TENANT_A);
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_CLOSED);
+            assertThat(response.getReservationId()).isNull();
+            // Non-mutating, as always for dry_run.
+            Map<String, String> budgetAfter = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            assertThat(budgetAfter.get("reserved")).isEqualTo(budgetBefore.get("reserved"));
+            assertThat(budgetAfter.get("remaining")).isEqualTo(budgetBefore.get("remaining"));
+            assertThat(scanReservationKeys()).isEmpty();
+            // The DENY outcome IS the signed attestation - evidence stamped + queued.
+            assertThat(response.getCyclesEvidence()).isNotNull();
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isNotBlank();
+            assertThat(evidenceQueueLength()).isEqualTo(1);
+        }
+
+        @Test
+        void freshDecideOnClosedTenant_denies_withTenantClosed_andStampsEvidence() {
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            io.runcycles.protocol.model.DecisionResponse response =
+                    reservationRepository.decide(decisionRequest(100), TENANT_A);
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_CLOSED);
+            assertThat(response.getCyclesEvidence()).isNotNull();
+            assertThat(evidenceQueueLength()).isEqualTo(1);
+        }
+
+        @Test
+        void dryRunReplayAcrossFlip_returnsOriginalAllow_freshEvaluationDenies() {
+            // Replay precedence unchanged: a cached PRE-close dry_run replays its
+            // original (ALLOW) payload after the flip; only FRESH evaluations DENY.
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            ReservationCreateRequest request = dryRunRequest(100);
+            ReservationCreateResponse original =
+                    reservationRepository.createReservation(request, TENANT_A);
+            assertThat(original.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            ReservationCreateResponse replay =
+                    reservationRepository.createReservation(request, TENANT_A);
+            assertThat(replay.isIdempotentReplay()).isTrue();
+            assertThat(replay.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+
+            ReservationCreateResponse fresh =
+                    reservationRepository.createReservation(dryRunRequest(100), TENANT_A);
+            assertThat(fresh.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(fresh.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_CLOSED);
+        }
+
+        @Test
+        void malformedTenantRecord_dryRunAndDecide_fail500_beforeEvidence() {
+            // Fail-closed BEFORE evidence stamping: the server must not attest
+            // against corrupt governance state. Convention followed: evidence is
+            // emitted only for decisions actually reached (same reason
+            // INTERNAL_ERROR is not in GlobalExceptionHandler's
+            // EVIDENCE_DENIAL_CODES) - so no reserve/decide evidence row and no
+            // error-evidence row is written for the failed evaluation.
+            for (String bad : BAD_RECORDS) {
+                seedRawTenantRecord(TENANT_A, bad);
+
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.createReservation(dryRunRequest(100), TENANT_A)));
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.decide(decisionRequest(100), TENANT_A)));
+            }
+            assertThat(evidenceQueueLength()).as("no evidence for failed evaluations").isZero();
+            assertThat(scanReservationKeys()).isEmpty();
+        }
+
+        @Test
+        void absentTenantRecord_dryRunEvaluatesNormally_viaHttp() {
+            // No governance plane: evaluation is unchanged. HTTP + validating
+            // client on purpose - an ALLOW body carries no TENANT_CLOSED value.
+            Map<String, Object> body = reservationBody(TENANT_A, 100);
+            body.put("dry_run", true);
+
+            ResponseEntity<Map> response = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(response.getStatusCode().value()).isEqualTo(200);
+            assertThat(response.getBody().get("decision")).isEqualTo("ALLOW");
+            assertThat(response.getBody().get("reservation_id")).isNull();
+        }
+
+        @Test
+        void activeAndSuspendedTenants_evaluationsUnchanged() {
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            assertThat(reservationRepository.createReservation(dryRunRequest(100), TENANT_A)
+                    .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+
+            // SUSPENDED is not gated at the evaluation layer (spec covers CLOSED
+            // only; SUSPENDED semantics live in tenant-key auth - pinned elsewhere).
+            seedTenantWithStatus(TENANT_A, "SUSPENDED");
+            assertThat(reservationRepository.createReservation(dryRunRequest(100), TENANT_A)
+                    .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            assertThat(reservationRepository.decide(decisionRequest(100), TENANT_A)
+                    .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
         }
     }
 
