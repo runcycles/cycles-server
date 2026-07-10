@@ -61,6 +61,13 @@ called out but are not breaking to API clients.
     pre-existing auth-layer 401 for suspended tenants is untouched.
   - **Idempotent replays unaffected:** replaying a mutation that succeeded
     before the flip still returns its original response.
+  - **Signed denial receipts:** 409 `TENANT_CLOSED` on the evidence
+    endpoints (decide, create, commit, release) emits an `error`
+    CyclesEvidence envelope and stamps `cycles_evidence` on the response,
+    like the other budget/lifecycle denial codes (it is the owner-level
+    sibling of `BUDGET_CLOSED`; declared in the evidence
+    ErrorResponseMirror, cycles-evidence-v0.2.yaml 0.2.1). Extend is not
+    an evidence endpoint and is unchanged.
   - **Non-persisting evaluations answer truthfully instead of 409ing:** a
     FRESH `dry_run` or `POST /v1/decide` evaluation on a CLOSED tenant
     returns 200 `decision=DENY` with `reason_code=TENANT_CLOSED` (new

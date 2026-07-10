@@ -97,9 +97,21 @@ Design decisions:
   from EVIDENCE_DENIAL_CODES). Cached pre-close replays keep their
   original payload. `POST /v1/events` also mutates budgets and Rule 2's list is
   "non-exhaustive" — flagged as an open spec question rather than guarded
-  ahead of the spec. `TENANT_CLOSED` is not yet in
-  `EVIDENCE_DENIAL_CODES` (error-evidence emission deferred until runtime
-  spec v0.1.25.13 lands). SUSPENDED tenants: existing runtime semantics
+  ahead of the spec. `TENANT_CLOSED` error-evidence emission was initially
+  deferred "until spec v0.1.25.13 lands"; resolved in review round 5 —
+  spec PR runcycles/cycles-protocol#125 added TENANT_CLOSED to the
+  evidence ErrorResponseMirror (cycles-evidence-v0.2.yaml 0.2.1) and both
+  PRs merge together, so `TENANT_CLOSED` is now IN
+  `EVIDENCE_DENIAL_CODES`. Rationale: the set's criterion is "decision
+  reached and denied" and it already contains the governance-state
+  denials BUDGET_FROZEN/BUDGET_CLOSED; a mutation-surface 409
+  TENANT_CLOSED is the direct sibling of BUDGET_CLOSED (owner-level
+  instead of ledger-level), so excluding it was inconsistent — the signed
+  denial receipt is exactly what a closed-tenant enforcement event should
+  produce. Emission follows the endpoint allowlist as-is: decide/create/
+  commit/release emit (reservation_id hoisted on commit/release); extend
+  is not an evidence endpoint and emits nothing, same as every other
+  code (pinned by test). SUSPENDED tenants: existing runtime semantics
   live in the AUTH layer only (tenant keys 401 — pre-existing, unchanged,
   pinned); the mutation-layer guard is deliberately CLOSED-only per
   Rule 2 / spec v0.1.25.13.

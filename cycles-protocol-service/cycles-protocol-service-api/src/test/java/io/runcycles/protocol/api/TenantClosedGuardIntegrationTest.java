@@ -227,6 +227,11 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
             Map<String, String> reservation = getReservationStateFromRedis(reservationId);
             assertThat(reservation.get("expires_at")).isEqualTo(expiresBefore);
             assertThat(reservation.get("extension_count")).isEqualTo("0");
+            // Extend is NOT in EVIDENCE_ENDPOINTS: a TENANT_CLOSED denial on
+            // extend carries no error evidence, same as every other denial
+            // code there (pinned at the handler level in
+            // GlobalExceptionHandlerTest.tenantClosedOnExtendRouteDoesNotEmit).
+            assertThat(evidenceRecords("error")).isEmpty();
         }
     }
 
@@ -260,6 +265,22 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
 
             assertThat(getReservationStateFromRedis(reservationId).get("state")).isEqualTo("ACTIVE");
             assertThat(getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS").get("reserved")).isEqualTo("100");
+
+            // Round 5: TENANT_CLOSED is in EVIDENCE_DENIAL_CODES (evidence
+            // ErrorResponseMirror, cycles-evidence-v0.2.yaml 0.2.1, spec PR
+            // runcycles/cycles-protocol#125) — the signed denial receipt is
+            // exactly what a closed-tenant enforcement event should produce.
+            // Wire proof: the 409 body is stamped and EXACTLY ONE error-
+            // evidence record is queued (the reserve record from the setup
+            // create is a separate artifact_type), carrying the TENANT_CLOSED
+            // code and the hoisted reservation_id.
+            assertThat(body.get("cycles_evidence")).isNotNull();
+            java.util.List<String> errorRecords = evidenceRecords("error");
+            assertThat(errorRecords).hasSize(1);
+            assertThat(errorRecords.get(0))
+                    .contains("\"TENANT_CLOSED\"")
+                    .contains("\"reservation_id\":\"" + reservationId + "\"")
+                    .contains("/release");
         }
 
         @Test
@@ -619,6 +640,15 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
     private long evidenceQueueLength() {
         try (Jedis jedis = jedisPool.getResource()) {
             return jedis.llen("evidence:pending");
+        }
+    }
+
+    /** All queued evidence-source records of the given artifact_type. */
+    private java.util.List<String> evidenceRecords(String artifactType) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            return jedis.lrange("evidence:pending", 0, -1).stream()
+                    .filter(r -> r.contains("\"artifact_type\":\"" + artifactType + "\""))
+                    .toList();
         }
     }
 
