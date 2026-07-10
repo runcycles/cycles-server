@@ -75,6 +75,10 @@ public class Enums {
         OVERDRAFT_LIMIT_EXCEEDED, DEBT_OUTSTANDING, MAX_EXTENSIONS_EXCEEDED,
         // 429 throttling (spec v0.1.25.12; mirrors the governance code of the same name)
         LIMIT_EXCEEDED,
+        // 409 terminal-owner mutation guard: reservation create/commit/release/extend
+        // on a CLOSED tenant (governance spec CASCADE SEMANTICS Rule 2; runtime spec
+        // revision v0.1.25.13, runcycles/cycles-protocol#125; mirrors the governance code of the same name)
+        TENANT_CLOSED,
         INTERNAL_ERROR
     }
 

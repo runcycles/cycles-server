@@ -147,6 +147,16 @@ class CyclesProtocolExceptionTest {
     }
 
     @Test
+    void shouldCreateTenantClosed() {
+        CyclesProtocolException ex = CyclesProtocolException.tenantClosed("acme");
+
+        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.TENANT_CLOSED);
+        assertThat(ex.getHttpStatus()).isEqualTo(409);
+        assertThat(ex.getMessage()).contains("acme");
+        assertThat(ex.getMessage()).contains("closed");
+    }
+
+    @Test
     void shouldCreateReservationExpirationNotFound() {
         CyclesProtocolException ex = CyclesProtocolException.reservationExpirationNotFound();
 

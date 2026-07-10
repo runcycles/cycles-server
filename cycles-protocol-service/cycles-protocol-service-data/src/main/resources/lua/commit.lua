@@ -16,7 +16,7 @@ local reservation_key = "reservation:res_" .. reservation_id
 local rdata = redis.call('HMGET', reservation_key,
     'state', 'estimate_amount', 'estimate_unit', 'affected_scopes',
     'budgeted_scopes', 'committed_idempotency_key', 'overage_policy',
-    'expires_at', 'grace_ms', 'scope_path')
+    'expires_at', 'grace_ms', 'scope_path', 'tenant')
 
 local state = rdata[1]
 if not state then
@@ -81,6 +81,28 @@ if state == "COMMITTED" then
     else
         -- Different key on already-committed reservation = finalized, not idempotency mismatch
         return cjson.encode({error = "RESERVATION_FINALIZED", state = "COMMITTED"})
+    end
+end
+
+-- Governance CASCADE SEMANTICS Rule 2: reject commit when the owning tenant
+-- (from the reservation hash — authoritative owner) is CLOSED, regardless of
+-- the reservation's own state ("regardless of that child's own current
+-- status"), even before the close cascade reaches this reservation or
+-- revokes API keys (Mode B invariant (a)). In-script like the reserve.lua
+-- budget status guards, so the guard is atomic with the budget mutations.
+-- No tenant record (runtime-only deployment) = no restriction. Sits after
+-- the idempotent-replay block above: a replay re-observes a commit that
+-- succeeded BEFORE the flip. (Accepted edge: a non-matching key on an
+-- already-COMMITTED reservation returns RESERVATION_FINALIZED above — also
+-- a rejection; the reservation was finalized pre-close.)
+local owner_tenant = rdata[11]
+if owner_tenant and owner_tenant ~= "" then
+    local tenant_json = redis.call('GET', 'tenant:' .. owner_tenant)
+    if tenant_json then
+        local ok_tenant, tenant_rec = pcall(cjson.decode, tenant_json)
+        if ok_tenant and type(tenant_rec) == 'table' and tenant_rec['status'] == 'CLOSED' then
+            return cjson.encode({error = "TENANT_CLOSED", tenant = owner_tenant})
+        end
     end
 end
 

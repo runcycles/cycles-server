@@ -27,11 +27,31 @@ end
 local reservation_key = "reservation:res_" .. reservation_id
 
 -- Fetch all validation fields in one round-trip (also serves as existence check)
-local vals = redis.call('HMGET', reservation_key, 'state', 'expires_at', 'extension_count', 'max_extensions')
+local vals = redis.call('HMGET', reservation_key, 'state', 'expires_at', 'extension_count', 'max_extensions', 'tenant')
 local state = vals[1]
 
 if not state then
     return cjson.encode({error = "NOT_FOUND"})
+end
+
+-- Governance CASCADE SEMANTICS Rule 2: reject extend when the owning tenant
+-- (from the reservation hash — authoritative owner) is CLOSED, regardless of
+-- the reservation's own state ("regardless of that child's own current
+-- status"), even before the close cascade reaches this reservation or
+-- revokes API keys (Mode B invariant (a)). In-script like the reserve.lua
+-- budget status guards, so the guard is atomic with the reservation
+-- mutation. No tenant record (runtime-only deployment) = no restriction.
+-- Sits after the idempotent-replay block at the top of the script: a replay
+-- re-observes an extend that succeeded BEFORE the flip.
+local owner_tenant = vals[5]
+if owner_tenant and owner_tenant ~= "" then
+    local tenant_json = redis.call('GET', 'tenant:' .. owner_tenant)
+    if tenant_json then
+        local ok_tenant, tenant_rec = pcall(cjson.decode, tenant_json)
+        if ok_tenant and type(tenant_rec) == 'table' and tenant_rec['status'] == 'CLOSED' then
+            return cjson.encode({error = "TENANT_CLOSED", tenant = owner_tenant})
+        end
+    end
 end
 
 if state == "EXPIRED" then

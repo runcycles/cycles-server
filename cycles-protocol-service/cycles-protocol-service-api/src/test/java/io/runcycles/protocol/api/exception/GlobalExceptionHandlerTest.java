@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @DisplayName("GlobalExceptionHandler")
@@ -70,6 +71,27 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.BUDGET_EXCEEDED);
         assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
         assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    void tenantClosedMapsTo409WithStandardErrorShape() {
+        // Governance Rule 2 terminal-owner guard: 409 TENANT_CLOSED must ride
+        // the same ErrorResponse envelope as every other 409 (error/message/
+        // request_id/trace_id).
+        CyclesProtocolException ex = CyclesProtocolException.tenantClosed("acme");
+
+        ResponseEntity<ErrorResponse> response = handler.handleCyclesException(ex, request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.TENANT_CLOSED);
+        assertThat(response.getBody().getMessage()).contains("acme").contains("closed");
+        assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
+        assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+        // TENANT_CLOSED is deliberately NOT in EVIDENCE_DENIAL_CODES yet
+        // (deferred until runtime spec revision v0.1.25.13 lands) — no error
+        // evidence is emitted or stamped.
+        verifyNoInteractions(evidenceEmitter);
+        assertThat(response.getBody().getCyclesEvidence()).isNull();
     }
 
     @Test

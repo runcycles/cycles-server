@@ -2403,6 +2403,12 @@ public class RedisReservationRepository {
             case "BUDGET_CLOSED":
                 String closedScope = response.containsKey("scope") ? response.get("scope").toString() : "unknown";
                 throw CyclesProtocolException.budgetClosed(closedScope);
+            case "TENANT_CLOSED":
+                // Governance Rule 2 terminal-owner guard: the owning tenant's
+                // CLOSED flip is durable — reservation mutations are rejected
+                // (reserve/commit/release/extend .lua all return this token).
+                String closedTenant = response.containsKey("tenant") ? response.get("tenant").toString() : "unknown";
+                throw CyclesProtocolException.tenantClosed(closedTenant);
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
             case "UNIT_MISMATCH": {

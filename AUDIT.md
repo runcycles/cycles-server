@@ -5,6 +5,91 @@
 
 ---
 
+### 2026-07-10 — v0.1.25.47: TENANT_CLOSED Rule 2 guard on reservation mutations
+
+Adopts the governance spec's CASCADE SEMANTICS Rule 2 (terminal-owner
+mutation guard, `cycles-governance-admin-v0.1.25.yaml`) on the runtime
+plane: once the owning tenant's CLOSED flip is durable, reservation
+create/commit/release/extend return 409 `TENANT_CLOSED` (Mode B
+invariant (a): a mutation observed after the flip MUST NOT succeed, even
+before the cascade touches the child or revokes keys).
+
+What the guard actually closes, layer by layer (audited during
+implementation): `ApiKeyRepository.validate` ALREADY reads `tenant:<id>`
+fresh per request and 401s tenant keys of SUSPENDED/CLOSED tenants at
+the auth filter — so for tenant-key HTTP traffic the post-flip window
+was already shut (with 401, the pending runtime spec revision's "a
+closed tenant usually surfaces on this plane as 401", not the Rule 2
+409). Two real gaps remained, both now closed: (1) **admin-key
+mutations** — the runtime's admin-on-behalf-of auth (`X-Admin-API-Key`;
+allowlist GET list/single + POST release) carries no tenant-status
+check, so an admin release on a closed tenant SUCCEEDED, mutating
+budgets post-flip; it now returns 409 `TENANT_CLOSED`. (2) **the
+auth-check→script race** — the filter reads tenant status at auth time
+and the CLOSED flip can land between that read and the Lua execution;
+only an in-script check is atomic with the mutation. The guard also
+covers any future path that reaches the repository without the
+tenant-key filter.
+
+Design decisions:
+- **Guard placement — inside the Lua scripts.** The codebase's precedent
+  for status guards (BUDGET_FROZEN/BUDGET_CLOSED in reserve.lua) is
+  in-script, and only in-script placement is atomic with the budget
+  mutations (Redis executes scripts serially): a Java pre-check would
+  leave a flip-vs-mutation race, and piggybacking on
+  `getTenantConfig()` would inherit its 60 s Caffeine cache
+  (`cycles.tenant-config.cache-ttl-ms`), violating invariant (a)'s
+  "durable to readers" requirement. Cost: one extra Redis `GET
+  tenant:<id>` + `cjson.decode` inside each mutation script — no extra
+  network round-trip.
+- **Owning-tenant resolution.** reserve.lua uses the auth-derived tenant
+  already in ARGV[10]; commit/release/extend read the `tenant` field from
+  the reservation hash (the authoritative owner; reserve.lua has always
+  written it) — added to the scripts' existing HMGETs, no new commands.
+- **No tenant record ⇒ no restriction** (runtime-only deployments), same
+  contract as the admin plane's `TerminalOwnerMutationGuard`.
+- **Precedence.** The guard sits after idempotent-replay handling (a
+  replay re-observes a pre-flip mutation — not a new mutation; mirrors
+  how the budget status guards sit after replay) and before the
+  state/expiry/budget checks, honoring the spec's "regardless of that
+  child's own current status". Accepted edge: commit/release with a
+  non-matching key on an already-terminal reservation still returns
+  RESERVATION_FINALIZED (also a rejection; the replay/finalized split is
+  one block).
+- **Scope.** Exactly the four reservation mutations Rule 2 names. `GET`
+  /list stay available on closed tenants (spec: post-mortem reads);
+  dry_run and `/v1/decide` are non-mutating evaluations and stay
+  unguarded; `POST /v1/events` also mutates budgets and Rule 2's list is
+  "non-exhaustive" — flagged as an open spec question rather than guarded
+  ahead of the spec. `TENANT_CLOSED` is not yet in
+  `EVIDENCE_DENIAL_CODES` (error-evidence emission deferred until runtime
+  spec v0.1.25.13 lands). SUSPENDED tenants: existing runtime semantics
+  live in the AUTH layer only (tenant keys 401 — pre-existing, unchanged,
+  pinned); the mutation-layer guard is deliberately CLOSED-only per
+  Rule 2 / spec v0.1.25.13.
+- **Wire.** `Enums.ErrorCode` gains `TENANT_CLOSED` (additive; runtime
+  spec revision v0.1.25.13, runcycles/cycles-protocol#125 — mirrors the pre-existing
+  governance code).
+
+Tests: `TenantClosedGuardIntegrationTest` (Testcontainers Redis, real
+Lua). All four ops are exercised at the repository layer — a repository
+call is exactly "a request already past auth", i.e. the
+filter-check→script race — with no-partial-mutation assertions (budget
+`reserved`/`remaining`/`spent`, reservation state, `expires_at`
+unchanged). HTTP layer: admin-key release on a closed tenant → 409
+TENANT_CLOSED with the full ErrorResponse envelope (previously 200 —
+the reachable hole); tenant-key mutation on a closed tenant → 401
+pinned (pre-existing auth behavior, unchanged); admin GET + list on a
+closed tenant → 200 (Rule 2 read access). Plus record-absent / ACTIVE
+pass-through, SUSPENDED (repo-level ops proceed — mutation guard is
+CLOSED-only; auth-layer 401 pinned as pre-existing), cross-tenant
+isolation, and replay-across-the-flip semantics. The 409 HTTP calls use
+a non-validating client until spec v0.1.25.13 merges (the shared
+validating client checks response enums against cycles-protocol@main);
+response shape is asserted explicitly. Unit tests: handleScriptError
+token mapping, `tenantClosed` factory, GlobalExceptionHandler 409
+envelope (+ no-evidence pin).
+
 ### 2026-07-10 — v0.1.25.47: webhook scope-filter matcher parity with the admin plane
 
 The admin server fixed its `scope_filter` matcher for spec conformance

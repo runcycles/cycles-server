@@ -61,6 +61,28 @@ if state == "RELEASED" then
     end
 end
 
+-- Governance CASCADE SEMANTICS Rule 2: reject release when the owning tenant
+-- (from the reservation hash — authoritative owner) is CLOSED, regardless of
+-- the reservation's own state ("regardless of that child's own current
+-- status"), even before the close cascade reaches this reservation or
+-- revokes API keys (Mode B invariant (a)). In-script like the reserve.lua
+-- budget status guards, so the guard is atomic with the budget mutations.
+-- No tenant record (runtime-only deployment) = no restriction. Sits after
+-- the idempotent-replay block above: a replay re-observes a release that
+-- succeeded BEFORE the flip. (Accepted edge: a non-matching key on an
+-- already-RELEASED reservation returns RESERVATION_FINALIZED above — also
+-- a rejection; that covers reservations the close cascade already drained.)
+local owner_tenant = redis.call('HGET', reservation_key, 'tenant')
+if owner_tenant and owner_tenant ~= "" then
+    local tenant_json = redis.call('GET', 'tenant:' .. owner_tenant)
+    if tenant_json then
+        local ok_tenant, tenant_rec = pcall(cjson.decode, tenant_json)
+        if ok_tenant and type(tenant_rec) == 'table' and tenant_rec['status'] == 'CLOSED' then
+            return cjson.encode({error = "TENANT_CLOSED", tenant = owner_tenant})
+        end
+    end
+end
+
 -- Check if can be released
 if state == "EXPIRED" then
     return cjson.encode({error = "RESERVATION_EXPIRED", state = state})
