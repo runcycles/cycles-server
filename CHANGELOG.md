@@ -14,6 +14,112 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.47] — 2026-07-10
+
+### Added
+
+- **Governance Rule 2 terminal-owner guard on reservation mutations
+  (`TENANT_CLOSED`).** Once the owning tenant's `status=CLOSED` flip is
+  durable in the shared Redis (written by the governance plane's tenant
+  close), the four reservation mutations — create (`POST /v1/reservations`),
+  commit, release, extend — are rejected with HTTP 409 and
+  `error=TENANT_CLOSED` (standard ErrorResponse envelope). This implements
+  the governance spec's CASCADE SEMANTICS Rule 2 / Mode B invariant (a)
+  (`cycles-governance-admin-v0.1.25.yaml`): a mutation observed after the
+  flip MUST NOT succeed, even in the race window before the close cascade
+  drains the reservation or revokes the tenant's API keys. The check runs
+  inside the reserve/commit/release/extend Lua scripts (like the existing
+  `BUDGET_FROZEN`/`BUDGET_CLOSED` guards), so it is atomic with the budget
+  mutations — a post-flip request can never partially succeed — and it is
+  not subject to the tenant-config cache TTL. Runtime spec revision:
+  v0.1.25.13 adds `TENANT_CLOSED` to the runtime ErrorCode enum
+  (runcycles/cycles-protocol#125).
+  - **What changes in practice:** tenant-key requests on a closed tenant
+    were already rejected with 401 at the auth filter (which reads tenant
+    status per request) — that behavior is unchanged. The new 409 closes
+    the two paths auth could not: **admin-key mutations** (an
+    admin-on-behalf-of `release` on a closed tenant previously succeeded;
+    it now returns 409 `TENANT_CLOSED`) and the **auth-check→script race**
+    (a request that passed auth just before the flip can no longer mutate
+    just after it).
+  - **No tenant record ⇒ no restriction:** runtime-only deployments without
+    a governance plane are unaffected. A present-but-malformed tenant record
+    (undecodable JSON, non-object, missing `status`, or a status outside
+    the closed `ACTIVE|SUSPENDED|CLOSED` TenantStatus enum — e.g. `"CLOZED"`
+    or lowercase `"closed"`) **fails closed**: 500 `INTERNAL_ERROR`, no
+    mutation — a corrupt governance record is never treated as an open
+    tenant.
+  - **Precedence:** same-key idempotent replays return their original
+    response; any other mutation on a closed tenant is `TENANT_CLOSED` even
+    when the reservation is already finalized/expired (takes precedence over
+    `RESERVATION_FINALIZED`/`RESERVATION_EXPIRED`, per the spec revision's
+    ERROR SEMANTICS). Open-tenant error responses are unchanged.
+  - **Reads unaffected:** `GET /v1/reservations/{id}` and the list endpoint
+    keep working on closed tenants (spec: post-mortem read access via admin
+    keys; tenant keys remain subject to the existing auth-layer 401).
+  - **SUSPENDED unchanged:** the mutation guard is CLOSED-only; the
+    pre-existing auth-layer 401 for suspended tenants is untouched.
+  - **Idempotent replays unaffected:** replaying a mutation that succeeded
+    before the flip still returns its original response.
+  - **Signed denial receipts:** a mutation-surface 409 `TENANT_CLOSED`
+    (persisting create, commit, release) emits an `error` CyclesEvidence
+    envelope and stamps `cycles_evidence` on the response, like the other
+    budget/lifecycle denial codes (it is the owner-level sibling of
+    `BUDGET_CLOSED`; declared in the evidence ErrorResponseMirror,
+    cycles-evidence-v0.2.yaml 0.2.1). `/v1/decide` and `dry_run` create
+    never 409 for a closed tenant — they return 200 `decision=DENY` with
+    `reason_code=TENANT_CLOSED` and emit their normal `decide`/`reserve`
+    decision evidence (see the next bullet). Extend is not an evidence
+    endpoint and is unchanged.
+  - **Non-persisting evaluations answer truthfully instead of 409ing:** a
+    FRESH `dry_run` or `POST /v1/decide` evaluation on a CLOSED tenant
+    returns 200 `decision=DENY` with `reason_code=TENANT_CLOSED` (new
+    DecisionReasonCode value, spec revision v0.1.25.13) — previously a
+    post-flip dry_run could produce a signed ALLOW attestation for a
+    request whose live execution must fail. Malformed tenant records fail
+    these evaluations closed (500, before any evidence is stamped); absent
+    records and ACTIVE/SUSPENDED tenants evaluate exactly as before, and
+    cached pre-close replays keep their original payload.
+
+### Fixed
+
+- **Webhook `scope_filter` matching now byte-identical to the admin plane's
+  spec-conformant matcher** (cycles-server-admin PR #206). Two refinements to
+  the runtime dispatch matcher (`EventEmitterRepository.matchesScope`):
+  - *Blank scope is unscoped:* an event whose scope is blank/whitespace-only
+    is now treated like a null-scope event — excluded from every
+    scope-filtered subscription. Previously the bare `*` filter (empty-prefix
+    `startsWith`) delivered blank-scope events.
+  - *Trailing-`*` filters match children only:* `tenant:acme-corp/*` now
+    requires a non-empty remainder after the prefix — the degenerate
+    empty-child scope `tenant:acme-corp/` no longer matches (the spec says
+    "all scopes **under** acme-corp"). Unchanged: the bare base scope
+    `tenant:acme-corp` never matched a `…/*` filter on this plane.
+
+  Everything else is unchanged (null/blank filter matches all events
+  including unscoped ones; no trailing `*` = exact, case-sensitive match).
+  The runtime and admin matchers are now pinned to the same table of
+  (filter, scope, expected) test cases so live dispatch and admin-plane
+  dispatch/replay cannot drift.
+
+### Compatibility
+
+- `Enums.ErrorCode` gains `TENANT_CLOSED` (additive; mirrors the governance
+  code of the same name — runtime spec revision v0.1.25.13, runcycles/cycles-protocol#125),
+  and `Enums.ReasonCode` gains `TENANT_CLOSED` (additive; same spec revision —
+  the 200-DENY reason for non-persisting evaluations on closed tenants).
+  New 409 behavior appears only for tenants a governance plane has closed;
+  deployments without tenant records see no change. The reserve/commit/
+  release/extend Lua scripts gain a read-only tenant-status check before
+  their mutations (one extra Redis `GET` inside the script per mutation);
+  no key layouts change. `commit.lua`/`extend.lua` read the additional
+  `tenant` field from the reservation hash (written by `reserve.lua` since
+  the beginning); reservations without it skip the guard.
+- Webhook delivery-selection change only for the two matcher edge cases
+  (blank event scopes against `*`, empty-child scopes against `…/*`).
+  Normal scopes and filters are unaffected. No other wire, Redis, event,
+  or evidence schema change.
+
 ## [0.1.25.46] — 2026-07-04
 
 ### Added

@@ -142,12 +142,58 @@ public class EventEmitterRepository {
                 && (sub.getEventCategories() == null || sub.getEventCategories().isEmpty());
     }
 
-    private boolean matchesScope(WebhookSubscription sub, String scope) {
-        if (sub.getScopeFilter() == null || sub.getScopeFilter().isBlank()) return true;
-        if (scope == null) return false;
+    /**
+     * Spec-conformant scope_filter matcher. The admin OpenAPI description
+     * (WebhookCreateRequest/WebhookUpdateRequest {@code scope_filter}) is the
+     * authority: <i>"Optional scope pattern to narrow event matching. Supports
+     * wildcards: "tenant:acme-corp/*" matches all scopes under acme-corp. If
+     * omitted, matches all scopes within the tenant."</i>
+     *
+     * <p>Semantics (byte-identical to the admin plane's
+     * {@code WebhookRepository.matchesScope}, cycles-server-admin PR #206 —
+     * the two matchers are pinned to the same table of cases so live runtime
+     * dispatch and admin-plane dispatch/replay cannot drift):
+     * <ul>
+     *   <li>{@code null}/blank filter — matches every event, including events
+     *       with a null scope (no restriction).</li>
+     *   <li>Bare {@code "*"} — matches every event that <b>has</b> a scope;
+     *       null-scope and blank-scope events are excluded.</li>
+     *   <li>Filter ending in {@code "*"} (e.g. {@code "tenant:acme-corp/*"}) —
+     *       prefix match on the filter minus the trailing {@code "*"}: the
+     *       event scope must start with {@code "tenant:acme-corp/"} <b>and</b>
+     *       carry a non-empty remainder after the prefix. The bare base scope
+     *       {@code "tenant:acme-corp"} does <b>not</b> match, nor does the
+     *       degenerate {@code "tenant:acme-corp/"} (empty child segment) — the
+     *       spec says "all scopes <b>under</b> acme-corp" (children only).</li>
+     *   <li>Filter without a trailing {@code "*"} — <b>exact</b> match only.
+     *       Child scopes do not match. Any non-trailing {@code "*"} is a
+     *       literal character. Matching is case-sensitive.</li>
+     *   <li>Non-blank filter + null or blank event scope — no match: unscoped
+     *       events are not delivered to scope-filtered subscriptions (a blank
+     *       scope is treated as unscoped).</li>
+     * </ul>
+     *
+     * <p><b>BEHAVIOR CHANGE</b> from the previous runtime implementation,
+     * which (a) matched a blank event scope against a bare {@code "*"} filter
+     * (empty-prefix startsWith), and (b) matched the degenerate empty-child
+     * scope {@code "tenant:a/"} against {@code "tenant:a/*"}. Both now
+     * follow the spec's children-only / blank-is-unscoped semantics.
+     *
+     * <p>Public and static: single scope_filter matcher for the runtime
+     * dispatch path, directly pinned by table tests against the admin
+     * matcher's cases.
+     *
+     * @param sub   the subscription whose {@code scope_filter} applies
+     * @param scope the event's scope path, may be null/blank (= unscoped)
+     */
+    public static boolean matchesScope(WebhookSubscription sub, String scope) {
         String filter = sub.getScopeFilter();
+        if (filter == null || filter.isBlank()) return true;
+        if (scope == null || scope.isBlank()) return false;
+        if (filter.equals("*")) return true;
         if (filter.endsWith("*")) {
-            return scope.startsWith(filter.substring(0, filter.length() - 1));
+            String prefix = filter.substring(0, filter.length() - 1);
+            return scope.length() > prefix.length() && scope.startsWith(prefix);
         }
         return scope.equals(filter);
     }

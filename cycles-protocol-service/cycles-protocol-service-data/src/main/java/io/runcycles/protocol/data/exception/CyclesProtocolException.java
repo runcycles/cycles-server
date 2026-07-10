@@ -63,6 +63,16 @@ public class CyclesProtocolException extends RuntimeException {
     public static CyclesProtocolException budgetClosed(String scope) {
         return new CyclesProtocolException(Enums.ErrorCode.BUDGET_CLOSED, "Budget is closed for scope: " + scope, 409);
     }
+    /**
+     * Governance CASCADE SEMANTICS Rule 2 (terminal-owner mutation guard):
+     * reservation create/commit/release/extend on an owned object of a CLOSED
+     * tenant is rejected with 409 TENANT_CLOSED (runtime spec revision
+     * v0.1.25.13, runcycles/cycles-protocol#125). Message mirrors the admin plane's guard.
+     */
+    public static CyclesProtocolException tenantClosed(String tenantId) {
+        return new CyclesProtocolException(Enums.ErrorCode.TENANT_CLOSED,
+            "Tenant " + tenantId + " is closed; owned objects are read-only", 409);
+    }
     public static CyclesProtocolException idempotencyMismatch() {
         return new CyclesProtocolException(Enums.ErrorCode.IDEMPOTENCY_MISMATCH, "Provided idempotency does not match the stored one", 409);
     }

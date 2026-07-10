@@ -35,7 +35,14 @@ public class Enums {
         BUDGET_CLOSED,
         BUDGET_NOT_FOUND,
         OVERDRAFT_LIMIT_EXCEEDED,
-        DEBT_OUTSTANDING
+        DEBT_OUTSTANDING,
+        // 200-DENY on the non-persisting evaluations (dry_run + /v1/decide) when
+        // the owning tenant is CLOSED: the truthful "would this be allowed?"
+        // attestation for a closed tenant is DENY - the live mutation MUST fail
+        // with 409 TENANT_CLOSED (spec revision v0.1.25.13,
+        // runcycles/cycles-protocol#125, which adds TENANT_CLOSED to the
+        // documented DecisionReasonCode values).
+        TENANT_CLOSED
     }
 
     public enum CommitOveragePolicy {
@@ -75,6 +82,10 @@ public class Enums {
         OVERDRAFT_LIMIT_EXCEEDED, DEBT_OUTSTANDING, MAX_EXTENSIONS_EXCEEDED,
         // 429 throttling (spec v0.1.25.12; mirrors the governance code of the same name)
         LIMIT_EXCEEDED,
+        // 409 terminal-owner mutation guard: reservation create/commit/release/extend
+        // on a CLOSED tenant (governance spec CASCADE SEMANTICS Rule 2; runtime spec
+        // revision v0.1.25.13, runcycles/cycles-protocol#125; mirrors the governance code of the same name)
+        TENANT_CLOSED,
         INTERNAL_ERROR
     }
 

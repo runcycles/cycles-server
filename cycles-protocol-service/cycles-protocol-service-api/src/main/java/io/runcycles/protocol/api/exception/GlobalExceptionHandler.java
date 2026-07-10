@@ -46,6 +46,14 @@ public class GlobalExceptionHandler {
      *     409) or expired ({@code RESERVATION_EXPIRED}, 410). reservation_id is
      *     hoisted for these so evidence-only readers can reconstruct the
      *     authorization -> settlement-denial chain.
+     *   - governance-state denials: {@code TENANT_CLOSED} (409, terminal-owner
+     *     mutation guard — governance CASCADE SEMANTICS Rule 2 / runtime spec
+     *     v0.1.25.13). The owner-level sibling of the ledger-level
+     *     {@code BUDGET_CLOSED} already in this set: the server evaluated the
+     *     request and denied it because governance state forbids it, and the
+     *     signed denial receipt is exactly what a closed-tenant enforcement
+     *     event should produce. Declared in the evidence ErrorResponseMirror
+     *     (cycles-evidence-v0.2.yaml 0.2.1, runcycles/cycles-protocol#125).
      * Pre-evaluation failures (validation, auth, malformed body, not-found,
      * idempotency mismatch) are deliberately excluded — no decision was reached,
      * so there is nothing to attest (matches the spec's `cycles_evidence`
@@ -59,7 +67,8 @@ public class GlobalExceptionHandler {
         Enums.ErrorCode.DEBT_OUTSTANDING,
         Enums.ErrorCode.UNIT_MISMATCH,
         Enums.ErrorCode.RESERVATION_FINALIZED,
-        Enums.ErrorCode.RESERVATION_EXPIRED);
+        Enums.ErrorCode.RESERVATION_EXPIRED,
+        Enums.ErrorCode.TENANT_CLOSED);
 
     /** Endpoint patterns (METHOD + best-matching route) that map 1:1 to the
      *  evidence {@code error} payload's {@code endpoint} enum. Denials on any

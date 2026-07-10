@@ -241,6 +241,57 @@ public class RedisReservationRepository {
 
     // ---- Shared non-persisting idempotent-evaluation machinery (dry_run + decide) ----
 
+    /**
+     * Tenant-status gate for the shared non-persisting evaluations (dry_run +
+     * decide) - the Java-side twin of the in-script Lua guard on the four
+     * mutation paths. Rule 2's 409 scopes MUTATIONS, so a closed tenant does
+     * not 409 here; the evaluation answers truthfully instead: the canonical
+     * signed "would this be allowed?" attestation for a closed tenant is
+     * decision=DENY with reason_code=TENANT_CLOSED (runtime spec revision
+     * v0.1.25.13, runcycles/cycles-protocol#125, which adds TENANT_CLOSED to
+     * the documented DecisionReasonCode values). Without this gate a post-flip
+     * dry_run could stamp a SIGNED ALLOW attestation for a request whose live
+     * execution MUST fail with 409 TENANT_CLOSED.
+     *
+     * <p>Reads {@code tenant:<id>} fresh on the caller's connection (never the
+     * 60s tenant-config cache). Absent record: {@code null} (runtime-only
+     * deployment, no gate). Present but malformed - undecodable JSON,
+     * non-object, missing/non-string status, or a status outside the closed
+     * TenantStatus enum (ACTIVE|SUSPENDED|CLOSED) - fails closed with 500
+     * INTERNAL_ERROR before any evidence is stamped: the server cannot attest
+     * against corrupt governance state. Same whitelist as the Lua guards.
+     *
+     * @return {@link Enums.ReasonCode#TENANT_CLOSED} when the owning tenant is
+     *         CLOSED (caller builds the 200-DENY), else {@code null} (proceed)
+     */
+    private Enums.ReasonCode evaluateTenantStatusGate(Jedis jedis, String tenant) {
+        if (tenant == null || tenant.isBlank()) {
+            return null;
+        }
+        String tenantJson = jedis.get("tenant:" + tenant);
+        if (tenantJson == null) {
+            return null;
+        }
+        String status = null;
+        try {
+            com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(tenantJson);
+            if (node != null && node.isObject() && node.hasNonNull("status")
+                    && node.get("status").isTextual()) {
+                status = node.get("status").asText();
+            }
+        } catch (Exception e) {
+            // fall through with status == null -> fail closed below
+        }
+        if ("CLOSED".equals(status)) {
+            return Enums.ReasonCode.TENANT_CLOSED;
+        }
+        if (!"ACTIVE".equals(status) && !"SUSPENDED".equals(status)) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
+                "Malformed tenant record: tenant:" + tenant, 500);
+        }
+        return null;
+    }
+
     private static String idempotencyCacheKey(String kind, String tenant, String idempotencyKey) {
         return "idem:" + tenant + ":" + kind + ":" + idempotencyKey;
     }
@@ -532,6 +583,21 @@ public class RedisReservationRepository {
             }
             dryRunClaimKey = claim.claimKey();
             dryRunClaimMarker = claim.claimMarker();
+
+            // Governance tenant gate (see evaluateTenantStatusGate): a CLOSED
+            // owning tenant turns the FRESH evaluation into DENY/TENANT_CLOSED
+            // before any budget reads; a malformed record throws 500 (the
+            // catch below clears the claim). Cached pre-close replays returned
+            // above keep their original payload - replay precedence unchanged.
+            Enums.ReasonCode tenantGate = evaluateTenantStatusGate(jedis, tenant);
+            if (tenantGate != null) {
+                return DryRunResult.fresh(ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.DENY)
+                    .reasonCode(tenantGate)
+                    .affectedScopes(affectedScopes)
+                    .scopePath(scopePath)
+                    .build(), dryRunClaimKey, dryRunClaimMarker);
+            }
 
             // Pipeline all budget fetches (validation + balance collection + caps) in one round-trip
             Pipeline pipeline = jedis.pipelined();
@@ -1707,7 +1773,7 @@ public class RedisReservationRepository {
             // Fresh decision: evaluate in its own connection; clear the claim if evaluation fails.
             DecisionResponse response;
             try (Jedis jedis = jedisPool.getResource()) {
-                response = evaluateDecisionBudget(jedis, request);
+                response = evaluateDecisionBudget(jedis, request, tenant);
             } catch (Exception evalError) {
                 clearIdempotencyClaim(claim.claimKey(), claim.claimMarker());
                 throw evalError;
@@ -1742,10 +1808,24 @@ public class RedisReservationRepository {
         }
     }
 
-    private DecisionResponse evaluateDecisionBudget(Jedis jedis, DecisionRequest request) throws Exception {
+    private DecisionResponse evaluateDecisionBudget(Jedis jedis, DecisionRequest request,
+                                                    String tenant) throws Exception {
         List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
         long estimateAmount = request.getEstimate().getAmount();
         String unit = request.getEstimate().getUnit().name();
+
+        // Governance tenant gate (see evaluateTenantStatusGate): shared with the
+        // dry_run path so both non-persisting surfaces answer a closed tenant
+        // the same way - 200 DENY/TENANT_CLOSED, never a signed ALLOW; a
+        // malformed record throws 500 (decide()'s eval-catch clears the claim).
+        Enums.ReasonCode tenantGate = evaluateTenantStatusGate(jedis, tenant);
+        if (tenantGate != null) {
+            return DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .reasonCode(tenantGate)
+                .affectedScopes(affectedScopes)
+                .build();
+        }
 
         DecisionResponse response = null;
         String deepestScope = affectedScopes.get(affectedScopes.size() - 1);
@@ -2403,6 +2483,12 @@ public class RedisReservationRepository {
             case "BUDGET_CLOSED":
                 String closedScope = response.containsKey("scope") ? response.get("scope").toString() : "unknown";
                 throw CyclesProtocolException.budgetClosed(closedScope);
+            case "TENANT_CLOSED":
+                // Governance Rule 2 terminal-owner guard: the owning tenant's
+                // CLOSED flip is durable — reservation mutations are rejected
+                // (reserve/commit/release/extend .lua all return this token).
+                String closedTenant = response.containsKey("tenant") ? response.get("tenant").toString() : "unknown";
+                throw CyclesProtocolException.tenantClosed(closedTenant);
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
             case "UNIT_MISMATCH": {
@@ -2427,6 +2513,12 @@ public class RedisReservationRepository {
                 throw new CyclesProtocolException(Enums.ErrorCode.MAX_EXTENSIONS_EXCEEDED, message, 409);
             case "INVALID_REQUEST":
                 throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST, message, 400);
+            case "INTERNAL_ERROR":
+                // Explicit mapping so script-side INTERNAL_ERROR tokens (e.g. the
+                // fail-closed malformed-tenant-record guard, corrupted reservation
+                // data) keep their diagnostic message instead of the generic
+                // "Script error: INTERNAL_ERROR" default below.
+                throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, message, 500);
             default:
                 throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR, "Script error: " + error, 500);
         }

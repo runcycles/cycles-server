@@ -17,6 +17,133 @@ import static org.mockito.Mockito.*;
 @DisplayName("RedisReservationRepository - Decide/Event")
 class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest {
 
+    // ---- tenant-status gate (shared by decide + dry_run) ----
+
+    /**
+     * Java-side twin of the Lua guards for the NON-PERSISTING evaluations
+     * (spec revision v0.1.25.13, runcycles/cycles-protocol#125): a FRESH
+     * dry_run/decide on a CLOSED tenant returns 200 decision=DENY with
+     * reason_code=TENANT_CLOSED (never a signed ALLOW); a present-but-
+     * malformed tenant record (undecodable / non-object / missing or
+     * non-string status / status outside the closed ACTIVE|SUSPENDED|CLOSED
+     * TenantStatus enum) fails closed with 500 INTERNAL_ERROR; absent record
+     * and ACTIVE/SUSPENDED proceed unchanged.
+     */
+    @Nested
+    @DisplayName("tenant-status gate (dry_run + decide)")
+    class TenantStatusGateTest {
+
+        private DecisionRequest decideRequest(String idemKey) {
+            DecisionRequest request = new DecisionRequest();
+            request.setIdempotencyKey(idemKey);
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            return request;
+        }
+
+        private ReservationCreateRequest dryRunRequest(String idemKey) {
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey(idemKey);
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+            return request;
+        }
+
+        private void baseStubs() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+        }
+
+        @Test
+        void decideOnClosedTenant_deniesWithTenantClosed() throws Exception {
+            baseStubs();
+            when(jedis.get("tenant:acme"))
+                    .thenReturn("{\"tenant_id\":\"acme\",\"status\":\"CLOSED\"}");
+
+            DecisionResponse response = repository.decide(decideRequest("gate-decide-closed"), "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_CLOSED);
+            assertThat(response.getAffectedScopes()).isEqualTo(defaultScopes());
+        }
+
+        @Test
+        void dryRunOnClosedTenant_deniesWithTenantClosed() throws Exception {
+            baseStubs();
+            when(jedis.get("tenant:acme"))
+                    .thenReturn("{\"tenant_id\":\"acme\",\"status\":\"CLOSED\"}");
+
+            ReservationCreateResponse response =
+                    repository.createReservation(dryRunRequest("gate-dry-closed"), "acme");
+
+            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_CLOSED);
+            assertThat(response.getReservationId()).isNull();
+        }
+
+        @Test
+        void malformedTenantRecords_failClosedWith500_onBothSurfaces() {
+            baseStubs();
+            String[] badRecords = {
+                    "{not-json",                                   // undecodable
+                    "\"CLOSED\"",                                  // non-object (string)
+                    "42",                                          // non-object (number)
+                    "{\"tenant_id\":\"acme\"}",                    // missing status
+                    "{\"tenant_id\":\"acme\",\"status\":\"CLOZED\"}", // unknown status
+                    "{\"tenant_id\":\"acme\",\"status\":\"closed\"}"  // case-sensitivity pin
+            };
+            int i = 0;
+            for (String bad : badRecords) {
+                when(jedis.get("tenant:acme")).thenReturn(bad);
+                String suffix = String.valueOf(i++);
+
+                assertThatThrownBy(() -> repository.decide(decideRequest("gate-mal-d" + suffix), "acme"))
+                        .as("decide: " + bad)
+                        .isInstanceOf(CyclesProtocolException.class)
+                        .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                        .hasFieldOrPropertyWithValue("httpStatus", 500)
+                        .hasMessageContaining("Malformed tenant record");
+
+                assertThatThrownBy(() -> repository.createReservation(dryRunRequest("gate-mal-r" + suffix), "acme"))
+                        .as("dry_run: " + bad)
+                        .isInstanceOf(CyclesProtocolException.class)
+                        .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                        .hasFieldOrPropertyWithValue("httpStatus", 500)
+                        .hasMessageContaining("Malformed tenant record");
+            }
+        }
+
+        @Test
+        void activeAndSuspendedTenants_proceedToNormalEvaluation() throws Exception {
+            baseStubs();
+            // No budgets mocked: passing the gate lands in DENY/BUDGET_NOT_FOUND,
+            // proving the gate did not short-circuit the evaluation.
+            when(jedis.get("tenant:acme"))
+                    .thenReturn("{\"tenant_id\":\"acme\",\"status\":\"ACTIVE\"}");
+            assertThat(repository.decide(decideRequest("gate-active"), "acme").getReasonCode())
+                    .isEqualTo(Enums.ReasonCode.BUDGET_NOT_FOUND);
+
+            when(jedis.get("tenant:acme"))
+                    .thenReturn("{\"tenant_id\":\"acme\",\"status\":\"SUSPENDED\"}");
+            assertThat(repository.decide(decideRequest("gate-susp"), "acme").getReasonCode())
+                    .isEqualTo(Enums.ReasonCode.BUDGET_NOT_FOUND);
+        }
+
+        @Test
+        void absentTenantRecord_proceedsToNormalEvaluation() throws Exception {
+            baseStubs();
+            when(jedis.get("tenant:acme")).thenReturn(null);
+
+            DecisionResponse response = repository.decide(decideRequest("gate-absent"), "acme");
+
+            assertThat(response.getReasonCode()).isEqualTo(Enums.ReasonCode.BUDGET_NOT_FOUND);
+        }
+    }
+
     // ---- decide ----
 
     @Nested

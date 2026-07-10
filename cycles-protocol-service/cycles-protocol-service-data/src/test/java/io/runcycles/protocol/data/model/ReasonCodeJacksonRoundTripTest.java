@@ -44,10 +44,12 @@ class ReasonCodeJacksonRoundTripTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * All 6 v0.1.25 base known values. Kept as an explicit list so a future enum
-     * addition (e.g., v0.1.26 extension codes) is caught by the parameterized tests
-     * below automatically via {@code @EnumSource}, while this list documents the
-     * baseline that shipped in v0.1.25.7.
+     * All 7 v0.1.25 base known values: the 6 that shipped in v0.1.25.7 plus
+     * TENANT_CLOSED (spec revision v0.1.25.13, runcycles/cycles-protocol#125,
+     * which adds it to the documented DecisionReasonCode KNOWN VALUES). Kept as
+     * an explicit list so a future enum addition (e.g., v0.1.26 extension codes)
+     * is caught by the parameterized tests below automatically via
+     * {@code @EnumSource}, while this list documents the adopted baseline.
      */
     private static final List<Enums.ReasonCode> V_0_1_25_BASE_VALUES = List.of(
             Enums.ReasonCode.BUDGET_EXCEEDED,
@@ -55,11 +57,12 @@ class ReasonCodeJacksonRoundTripTest {
             Enums.ReasonCode.BUDGET_CLOSED,
             Enums.ReasonCode.BUDGET_NOT_FOUND,
             Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED,
-            Enums.ReasonCode.DEBT_OUTSTANDING
+            Enums.ReasonCode.DEBT_OUTSTANDING,
+            Enums.ReasonCode.TENANT_CLOSED
     );
 
     @Test
-    void shouldHaveExactlySixV01025BaseValues() {
+    void shouldHaveExactlySevenV01025BaseValues() {
         // If this fails, a new ReasonCode was added. That's fine — just update the
         // baseline list above AND verify the corresponding cycles-protocol-v0.yaml
         // KNOWN VALUES list (in DecisionReasonCode schema description) lists the
@@ -67,7 +70,7 @@ class ReasonCodeJacksonRoundTripTest {
         // documented known values; the spec MAY list additional values the server
         // hasn't adopted yet (e.g., v0.1.26 extension codes).
         assertThat(Enums.ReasonCode.values())
-                .hasSize(6)
+                .hasSize(7)
                 .containsExactlyElementsOf(V_0_1_25_BASE_VALUES);
     }
 

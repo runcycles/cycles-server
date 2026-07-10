@@ -5,6 +5,181 @@
 
 ---
 
+### 2026-07-10 — v0.1.25.47: TENANT_CLOSED Rule 2 guard on reservation mutations
+
+Adopts the governance spec's CASCADE SEMANTICS Rule 2 (terminal-owner
+mutation guard, `cycles-governance-admin-v0.1.25.yaml`) on the runtime
+plane: once the owning tenant's CLOSED flip is durable, reservation
+create/commit/release/extend return 409 `TENANT_CLOSED` (Mode B
+invariant (a): a mutation observed after the flip MUST NOT succeed, even
+before the cascade touches the child or revokes keys).
+
+What the guard actually closes, layer by layer (audited during
+implementation): `ApiKeyRepository.validate` ALREADY reads `tenant:<id>`
+fresh per request and 401s tenant keys of SUSPENDED/CLOSED tenants at
+the auth filter — so for tenant-key HTTP traffic the post-flip window
+was already shut (with 401, the pending runtime spec revision's "a
+closed tenant usually surfaces on this plane as 401", not the Rule 2
+409). Two real gaps remained, both now closed: (1) **admin-key
+mutations** — the runtime's admin-on-behalf-of auth (`X-Admin-API-Key`;
+allowlist GET list/single + POST release) carries no tenant-status
+check, so an admin release on a closed tenant SUCCEEDED, mutating
+budgets post-flip; it now returns 409 `TENANT_CLOSED`. (2) **the
+auth-check→script race** — the filter reads tenant status at auth time
+and the CLOSED flip can land between that read and the Lua execution;
+only an in-script check is atomic with the mutation. The guard also
+covers any future path that reaches the repository without the
+tenant-key filter.
+
+Design decisions:
+- **Guard placement — inside the Lua scripts.** The codebase's precedent
+  for status guards (BUDGET_FROZEN/BUDGET_CLOSED in reserve.lua) is
+  in-script, and only in-script placement is atomic with the budget
+  mutations (Redis executes scripts serially): a Java pre-check would
+  leave a flip-vs-mutation race, and piggybacking on
+  `getTenantConfig()` would inherit its 60 s Caffeine cache
+  (`cycles.tenant-config.cache-ttl-ms`), violating invariant (a)'s
+  "durable to readers" requirement. Cost: one extra Redis `GET
+  tenant:<id>` + `cjson.decode` inside each mutation script — no extra
+  network round-trip.
+- **Owning-tenant resolution.** reserve.lua uses the auth-derived tenant
+  already in ARGV[10]; commit/release/extend read the `tenant` field from
+  the reservation hash (the authoritative owner; reserve.lua has always
+  written it) — added to the scripts' existing HMGETs, no new commands.
+- **No tenant record ⇒ no restriction** (runtime-only deployments), same
+  contract as the admin plane's `TerminalOwnerMutationGuard`. A PRESENT
+  record that cannot be decoded into an object with a string `status`
+  **fails closed** (500 INTERNAL_ERROR, no mutation) — matching the admin
+  plane's TenantRepository, which propagates parse failures rather than
+  treating a corrupt governance record as an open tenant (codex round 2;
+  the first cut fell through open on decode failure). Round 3 extended
+  fail-closed to unknown status STRINGS via a whitelist (CLOSED → 409;
+  ACTIVE/SUSPENDED → proceed; anything else → 500): the governance
+  TenantStatus enum is a closed set and the cascade revision explicitly
+  introduces no new status values as a wire-compat guarantee, so an
+  unknown status (e.g. "CLOZED", lowercase "closed") cannot be a
+  legitimate future value under the current contract — it is corruption.
+  Pinned per op with "CLOZED" and lowercase "closed" records in the
+  malformed matrix.
+- **Precedence.** Same-key idempotent replay first (a replay re-observes
+  a pre-flip mutation — not a new mutation; Rule 2(b) idempotency;
+  mirrors how the budget status guards sit after replay), then the
+  closed-tenant guard, then every reservation-state/expiry/budget check —
+  honoring the spec's "regardless of that child's own current status"
+  (precedence sentence added to spec PR runcycles/cycles-protocol#125
+  ERROR SEMANTICS). Codex round 2 resolved the first cut's accepted edge:
+  commit.lua/release.lua previously returned RESERVATION_FINALIZED for a
+  different-key attempt on a finalized reservation before the guard ran;
+  the replay branches were narrowed to true same-key replays so
+  different-key attempts fall through to the guard, and release.lua's
+  post-guard state check widened from `== "COMMITTED"` to `~= "ACTIVE"`
+  to keep the open-tenant RESERVATION_FINALIZED response identical.
+- **Scope.** Exactly the four reservation mutations Rule 2 names get the
+  409 guard. `GET`/list stay available on closed tenants (spec:
+  post-mortem reads). The non-persisting evaluations (dry_run +
+  `/v1/decide`) were initially left unguarded; an external review round
+  (round 4) flagged that a post-flip dry_run could stamp a SIGNED ALLOW
+  attestation for a request whose live execution MUST fail — resolved
+  per the amended spec PR runcycles/cycles-protocol#125: a FRESH
+  evaluation on a CLOSED tenant now returns 200 decision=DENY with
+  reason_code=TENANT_CLOSED (new `Enums.ReasonCode` value, typed,
+  mirroring the documented DecisionReasonCode vocabulary) via a single
+  shared gate (`evaluateTenantStatusGate`) called from both evaluation
+  paths, after replay handling and before any budget read. The gate
+  reads `tenant:<id>` fresh (never the 60 s config cache) and applies
+  the same fail-closed whitelist as the Lua guards — malformed record
+  (undecodable / non-object / missing or non-string status / unknown
+  status string) → 500 INTERNAL_ERROR BEFORE evidence stamping (the
+  server cannot attest against corrupt governance state; no
+  reserve/decide evidence row and no error-evidence row is written,
+  consistent with the existing convention that evidence is emitted only
+  for decisions actually reached — INTERNAL_ERROR is likewise excluded
+  from EVIDENCE_DENIAL_CODES). Cached pre-close replays keep their
+  original payload. `POST /v1/events` also mutates budgets and Rule 2's list is
+  "non-exhaustive" — flagged as an open spec question rather than guarded
+  ahead of the spec. `TENANT_CLOSED` error-evidence emission was initially
+  deferred "until spec v0.1.25.13 lands"; resolved in review round 5 —
+  spec PR runcycles/cycles-protocol#125 added TENANT_CLOSED to the
+  evidence ErrorResponseMirror (cycles-evidence-v0.2.yaml 0.2.1) and both
+  PRs merge together, so `TENANT_CLOSED` is now IN
+  `EVIDENCE_DENIAL_CODES`. Rationale: the set's criterion is "decision
+  reached and denied" and it already contains the governance-state
+  denials BUDGET_FROZEN/BUDGET_CLOSED; a mutation-surface 409
+  TENANT_CLOSED is the direct sibling of BUDGET_CLOSED (owner-level
+  instead of ledger-level), so excluding it was inconsistent — the signed
+  denial receipt is exactly what a closed-tenant enforcement event should
+  produce. Error-evidence emission applies to the mutation-surface 409s
+  (persisting create, commit, release; reservation_id hoisted on
+  commit/release). /v1/decide never 409s for a closed tenant — it (and
+  dry_run create) returns 200 DENY/TENANT_CLOSED and emits its normal
+  decide/reserve decision evidence via the round-4 gate; extend is not
+  an evidence endpoint and emits nothing, same as every other code
+  (pinned by test). SUSPENDED tenants: existing runtime semantics
+  live in the AUTH layer only (tenant keys 401 — pre-existing, unchanged,
+  pinned); the mutation-layer guard is deliberately CLOSED-only per
+  Rule 2 / spec v0.1.25.13.
+- **Wire.** `Enums.ErrorCode` gains `TENANT_CLOSED` (additive; runtime
+  spec revision v0.1.25.13, runcycles/cycles-protocol#125 — mirrors the pre-existing
+  governance code).
+
+Tests: `TenantClosedGuardIntegrationTest` (Testcontainers Redis, real
+Lua). All four ops are exercised at the repository layer — a repository
+call is exactly "a request already past auth", i.e. the
+filter-check→script race — with no-partial-mutation assertions (budget
+`reserved`/`remaining`/`spent`, reservation state, `expires_at`
+unchanged). HTTP layer: admin-key release on a closed tenant → 409
+TENANT_CLOSED with the full ErrorResponse envelope (previously 200 —
+the reachable hole); tenant-key mutation on a closed tenant → 401
+pinned (pre-existing auth behavior, unchanged); admin GET + list on a
+closed tenant → 200 (Rule 2 read access). Plus record-absent / ACTIVE
+pass-through, SUSPENDED (repo-level ops proceed — mutation guard is
+CLOSED-only; auth-layer 401 pinned as pre-existing), cross-tenant
+isolation, and replay-across-the-flip semantics. The 409 HTTP calls use
+a non-validating client until spec v0.1.25.13 merges (the shared
+validating client checks response enums against cycles-protocol@main);
+response shape is asserted explicitly. Unit tests: handleScriptError
+token mapping, `tenantClosed` factory, GlobalExceptionHandler 409
+envelope (+ no-evidence pin).
+
+Codex review round 2 (both applied against real-Lua tests): (1)
+fail-closed on malformed tenant records — all four guards return
+INTERNAL_ERROR (500, message preserved through a new explicit
+handleScriptError case) when a present `tenant:<id>` row fails
+cjson.decode, decodes to a non-object, or lacks a string `status`;
+pinned per op with malformed / non-object (string, number) /
+missing-status shapes and no-partial-mutation assertions. (2)
+TENANT_CLOSED precedence over RESERVATION_FINALIZED for non-replay
+mutations (see the Precedence bullet); pinned: closed tenant +
+finalized reservation + different key → 409 TENANT_CLOSED on commit,
+release, and extend; same-key replay still returns the original
+response; open tenant + different key still RESERVATION_FINALIZED
+(no-regression pin). Codex also confirmed the matcher port is
+byte-identical to admin main and that the in-script `GET tenant:<id>`
+matches the repo's existing standalone-Redis posture — no changes.
+
+### 2026-07-10 — v0.1.25.47: webhook scope-filter matcher parity with the admin plane
+
+The admin server fixed its `scope_filter` matcher for spec conformance
+(cycles-server-admin PR #206); the runtime dispatch matcher
+(`EventEmitterRepository.matchesScope`) already had the trailing-`*`/exact
+split but lacked two of the admin refinements, so the two planes could
+disagree on the same (filter, scope) pair — a subscription could receive an
+event live (runtime dispatch) that admin-plane replay would skip, or vice
+versa. Ported both refinements 1:1 so the matchers are byte-identical:
+(1) blank/whitespace-only event scope is unscoped — excluded from any
+scope-filtered subscription (previously bare `*`, an empty-prefix
+`startsWith`, matched a blank `""` scope); (2) trailing-`*` filters require
+a non-empty child segment after the prefix (`tenant:a/*` no longer matches
+the degenerate `tenant:a/`; spec text is "all scopes *under*" the base).
+The matcher was made `public static` (mirroring the admin's) and the
+admin's full matcher test table — null/blank filters, bare `*`, trailing
+`*` child/base/sibling/empty-segment cases, exact match, literal
+mid-string `*`, case sensitivity, blank-scope edges — was ported into
+`EventEmitterRepositoryTest`, pinning both planes to the same
+(filter, scope, expected) table. One dispatch-level test pins the
+blank-scope refinement end-to-end through `emit()`. No wire or storage
+change; delivery selection shifts only on the two edge cases.
+
 ### 2026-07-04 — full-stack prod compose: stop host-publishing events management port (no version bump)
 
 `docker-compose.full-stack.prod.yml` published the events worker's 9980 to

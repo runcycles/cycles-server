@@ -20,6 +20,8 @@ import redis.clients.jedis.Response;
 import java.time.Instant;
 import java.util.*;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -264,6 +266,162 @@ class EventEmitterRepositoryTest {
 
         // Should not throw
         repository.emit(event);
+    }
+
+    // ---- matchesScope (spec scope_filter wildcard semantics) ----
+    // Spec authority (admin OpenAPI, WebhookCreateRequest.scope_filter):
+    // "Optional scope pattern to narrow event matching. Supports wildcards:
+    //  \"tenant:acme-corp/*\" matches all scopes under acme-corp. If omitted,
+    //  matches all scopes within the tenant."
+    // Ported 1:1 from cycles-server-admin WebhookRepositoryTest (PR #206) so
+    // the runtime dispatch matcher and the admin dispatch/replay matcher are
+    // pinned to the same table of (filter, scope, expected) cases.
+
+    private static WebhookSubscription withFilter(String scopeFilter) {
+        return WebhookSubscription.builder().scopeFilter(scopeFilter).build();
+    }
+
+    @Test
+    void matchesScope_nullFilter_matchesScopedAndNullScope() {
+        assertTrue(EventEmitterRepository.matchesScope(withFilter(null), "tenant:a/workspace:b"));
+        assertTrue(EventEmitterRepository.matchesScope(withFilter(null), null));
+    }
+
+    @Test
+    void matchesScope_blankFilter_matchesScopedAndNullScope() {
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("   "), "tenant:a/workspace:b"));
+        assertTrue(EventEmitterRepository.matchesScope(withFilter(""), null));
+    }
+
+    @Test
+    void matchesScope_bareWildcard_matchesAnyScopedEvent() {
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("*"), "tenant:a"));
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("*"), "tenant:a/workspace:b/agent:c"));
+    }
+
+    @Test
+    void matchesScope_bareWildcard_excludesNullScope() {
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("*"), null));
+    }
+
+    @Test
+    void matchesScope_bareWildcard_excludesBlankScope() {
+        // A blank scope is treated as unscoped — even the bare "*" wildcard
+        // (which requires the event to HAVE a scope) must not match it.
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("*"), ""));
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("*"), "   "));
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_matchesChildScopes() {
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/workspace:b"));
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/workspace:b/agent:c"));
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesExactBaseScope() {
+        // Spec: "tenant:acme-corp/*" matches all scopes UNDER acme-corp —
+        // children only; the bare base scope itself does not match.
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a"));
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesSiblingWithSharedPrefix() {
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), "tenant:aX"));
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), "tenant:aX/workspace:b"));
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesNullScope() {
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), null));
+    }
+
+    @Test
+    void matchesScope_trailingWildcard_excludesEmptyChildSegment() {
+        // "tenant:a/*" means children UNDER tenant:a — the degenerate scope
+        // "tenant:a/" (prefix with nothing after it) is not a child.
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), "tenant:a/"));
+    }
+
+    @Test
+    void matchesScope_slashStarFilter_requiresNonEmptyRemainder() {
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("/*"), "/"));
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("/*"), "/x"));
+    }
+
+    @Test
+    void matchesScope_exactFilter_matchesOnlyExactScope() {
+        assertTrue(EventEmitterRepository.matchesScope(
+            withFilter("tenant:a/workspace:b"), "tenant:a/workspace:b"));
+        // No wildcard = exact match: child scopes do NOT match.
+        assertFalse(EventEmitterRepository.matchesScope(
+            withFilter("tenant:a/workspace:b"), "tenant:a/workspace:b/agent:c"));
+        assertFalse(EventEmitterRepository.matchesScope(
+            withFilter("tenant:a/workspace:b"), "tenant:a/workspace:bX"));
+    }
+
+    @Test
+    void matchesScope_exactFilter_excludesNullScope() {
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a"), null));
+    }
+
+    @Test
+    void matchesScope_nonBlankFilter_excludesBlankScope() {
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a"), ""));
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/*"), ""));
+    }
+
+    @Test
+    void matchesScope_midStringWildcard_isLiteralNotWildcard() {
+        // "*" is only meaningful at the end of the filter; elsewhere it is a
+        // literal character in an exact-match comparison.
+        assertFalse(EventEmitterRepository.matchesScope(
+            withFilter("tenant:*/workspace:b"), "tenant:a/workspace:b"));
+        assertTrue(EventEmitterRepository.matchesScope(
+            withFilter("tenant:*/workspace:b"), "tenant:*/workspace:b"));
+        // Mid-string "*" stays literal even when the filter also ends in "*".
+        assertTrue(EventEmitterRepository.matchesScope(
+            withFilter("tenant:*/ws:*"), "tenant:*/ws:prod"));
+        assertFalse(EventEmitterRepository.matchesScope(
+            withFilter("tenant:*/ws:*"), "tenant:a/ws:prod"));
+    }
+
+    @Test
+    void matchesScope_trailingSlashNoStar_isExactMatchOnly() {
+        assertTrue(EventEmitterRepository.matchesScope(withFilter("tenant:a/"), "tenant:a/"));
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/"), "tenant:a/workspace:b"));
+        assertFalse(EventEmitterRepository.matchesScope(withFilter("tenant:a/"), "tenant:a"));
+    }
+
+    @Test
+    void matchesScope_isCaseSensitive() {
+        assertFalse(EventEmitterRepository.matchesScope(
+            withFilter("tenant:A/*"), "tenant:a/workspace:b"));
+        assertFalse(EventEmitterRepository.matchesScope(
+            withFilter("tenant:a"), "Tenant:a"));
+    }
+
+    // Dispatch-level pin of the blank-scope refinement: a bare "*" filter must
+    // not deliver an event whose scope is blank (previously it did — the
+    // empty-prefix startsWith matched "").
+    @Test
+    void emit_bareWildcardFilter_blankScope_skipped() throws Exception {
+        WebhookSubscription sub = WebhookSubscription.builder()
+                .subscriptionId("whsub_1").tenantId("t1")
+                .eventTypes(List.of(EventType.RESERVATION_DENIED))
+                .scopeFilter("*")
+                .status(WebhookStatus.ACTIVE).build();
+        stubPipelineForSubscriptions(Set.of("whsub_1"), Collections.emptySet(),
+                Map.of("whsub_1", objectMapper.writeValueAsString(sub)));
+
+        Event event = Event.builder()
+                .eventType(EventType.RESERVATION_DENIED)
+                .tenantId("t1").scope("")
+                .source("cycles-server").timestamp(Instant.now()).build();
+
+        repository.emit(event);
+
+        verify(pipeline, never()).lpush(eq("dispatch:pending"), anyString());
     }
 
     @Test

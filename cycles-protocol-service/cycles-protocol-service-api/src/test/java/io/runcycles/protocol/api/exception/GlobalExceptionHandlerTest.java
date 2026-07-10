@@ -73,6 +73,103 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void tenantClosedMapsTo409WithStandardErrorShape() {
+        // Governance Rule 2 terminal-owner guard: 409 TENANT_CLOSED must ride
+        // the same ErrorResponse envelope as every other 409 (error/message/
+        // request_id/trace_id). (No route matched here, so no error evidence —
+        // emission per endpoint is covered below.)
+        CyclesProtocolException ex = CyclesProtocolException.tenantClosed("acme");
+
+        ResponseEntity<ErrorResponse> response = handler.handleCyclesException(ex, request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.TENANT_CLOSED);
+        assertThat(response.getBody().getMessage()).contains("acme").contains("closed");
+        assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
+        assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    @DisplayName("TENANT_CLOSED denial on create emits error evidence (governance sibling of BUDGET_CLOSED)")
+    void tenantClosedDenialOnCreateEmitsErrorEvidence() {
+        // TENANT_CLOSED is IN EVIDENCE_DENIAL_CODES (evidence ErrorResponseMirror,
+        // cycles-evidence-v0.2.yaml 0.2.1, runcycles/cycles-protocol#125): the
+        // owner-level sibling of the ledger-level BUDGET_CLOSED — a decision was
+        // reached and denied, so the signed denial receipt is emitted.
+        withRoute("POST", "/v1/reservations", null);
+        String evId = "d".repeat(64);
+        when(evidenceEmitter.emit(eq("error"), anyLong(), eq(TRACE_ID), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef(evId,
+                        "https://cycles.example.com/v1/evidence/" + evId));
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCyclesException(CyclesProtocolException.tenantClosed("acme"), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getCyclesEvidence()).isNotNull();
+        assertThat(response.getBody().getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> bodyCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), eq(TRACE_ID), bodyCaptor.capture());
+        assertThat(bodyCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations")
+                .containsEntry("http_status", 409)
+                .doesNotContainKey("reservation_id")
+                .containsKey("response");
+    }
+
+    @Test
+    @DisplayName("TENANT_CLOSED denial on commit/release hoists reservation_id into the evidence payload")
+    void tenantClosedDenialOnCommitAndReleaseHoistsReservationId() {
+        withRoute("POST", "/v1/reservations/{reservation_id}/commit",
+                Map.of("reservation_id", "res_tc1"));
+        when(evidenceEmitter.emit(eq("error"), anyLong(), anyString(), any()))
+                .thenReturn(new EvidenceEmitter.EvidenceRef("e".repeat(64), "u"));
+
+        handler.handleCyclesException(CyclesProtocolException.tenantClosed("acme"), request);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> commitCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter).emit(eq("error"), anyLong(), anyString(), commitCaptor.capture());
+        assertThat(commitCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations/{reservation_id}/commit")
+                .containsEntry("reservation_id", "res_tc1");
+
+        withRoute("POST", "/v1/reservations/{reservation_id}/release",
+                Map.of("reservation_id", "res_tc2"));
+
+        handler.handleCyclesException(CyclesProtocolException.tenantClosed("acme"), request);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> releaseCaptor =
+                org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(evidenceEmitter, org.mockito.Mockito.times(2))
+                .emit(eq("error"), anyLong(), anyString(), releaseCaptor.capture());
+        assertThat(releaseCaptor.getValue())
+                .containsEntry("endpoint", "POST /v1/reservations/{reservation_id}/release")
+                .containsEntry("reservation_id", "res_tc2");
+    }
+
+    @Test
+    @DisplayName("TENANT_CLOSED on the extend route emits nothing (extend is not an evidence endpoint)")
+    void tenantClosedOnExtendRouteDoesNotEmit() {
+        // EVIDENCE_ENDPOINTS covers decide/create/commit/release but NOT extend —
+        // TENANT_CLOSED on extend carries no error evidence, same as every other
+        // denial code there. Deliberate; pinned here.
+        withRoute("POST", "/v1/reservations/{reservation_id}/extend",
+                Map.of("reservation_id", "res_tc3"));
+
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCyclesException(CyclesProtocolException.tenantClosed("acme"), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        assertThat(response.getBody().getCyclesEvidence()).isNull();
+        verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+    }
+
+    @Test
     @ExtendWith(OutputCaptureExtension.class)
     @DisplayName("handled CyclesProtocolException log includes operator context")
     void cyclesExceptionLogIncludesOperatorContext(CapturedOutput output) {
