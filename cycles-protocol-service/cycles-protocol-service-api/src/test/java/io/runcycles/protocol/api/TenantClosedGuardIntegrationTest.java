@@ -140,6 +140,26 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
         return response.getReservationId();
     }
 
+    private io.runcycles.protocol.model.EventCreateRequest eventRequest(long amount,
+            Enums.CommitOveragePolicy overagePolicy) {
+        Subject subject = new Subject();
+        subject.setTenant(TENANT_A);
+        Action action = new Action();
+        action.setKind("llm.completion");
+        action.setName("test-model");
+        return io.runcycles.protocol.model.EventCreateRequest.builder()
+                .idempotencyKey(UUID.randomUUID().toString())
+                .subject(subject)
+                .action(action)
+                .actual(new Amount(Enums.UnitEnum.TOKENS, amount))
+                .overagePolicy(overagePolicy)
+                .build();
+    }
+
+    private io.runcycles.protocol.model.EventCreateRequest eventRequest(long amount) {
+        return eventRequest(amount, null);
+    }
+
     private static void assertTenantClosedException(Throwable thrown) {
         assertThat(thrown).isInstanceOf(CyclesProtocolException.class)
                 .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.TENANT_CLOSED)
@@ -232,6 +252,146 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
             // code there (pinned at the handler level in
             // GlobalExceptionHandlerTest.tenantClosedOnExtendRouteDoesNotEmit).
             assertThat(evidenceRecords("error")).isEmpty();
+        }
+    }
+
+    // ---- POST /v1/events debit guard (runtime spec v0.1.25.14, pending) ----
+
+    /**
+     * /v1/events is a persisting budget debit, so a CLOSED owning tenant is
+     * rejected 409 TENANT_CLOSED, mirroring the reservation guards. Exposure
+     * is narrower than reservations: /v1/events has no admin-key path (not in
+     * the admin allowlist) and the tenant-key auth filter 401s a durably-closed
+     * tenant before the controller, so the only residual is the post-flip race
+     * (a request past auth just before the flip). These repository-level tests
+     * exercise exactly that "already past auth" window against real Lua.
+     * /v1/events is outside EVIDENCE_ENDPOINTS entirely — no denial there stamps
+     * error-evidence — so TENANT_CLOSED emits none either (consistent).
+     */
+    @Nested
+    @DisplayName("POST /v1/events debit on a CLOSED tenant → 409 TENANT_CLOSED")
+    class EventDebitGuard {
+
+        @Test
+        void freshEventOnClosedTenant_rejected_noDebit() {
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+            Map<String, String> before = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.createEvent(eventRequest(100), TENANT_A)));
+
+            // Guard runs inside event.lua BEFORE any debit — no partial mutation.
+            Map<String, String> after = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            assertThat(after.get("remaining")).isEqualTo(before.get("remaining"));
+            assertThat(after.get("spent")).isEqualTo(before.get("spent"));
+            assertThat(after.get("debt")).isEqualTo(before.get("debt"));
+            // No evidence written to Redis. NB: this repository-level call does
+            // not enter GlobalExceptionHandler, so it does not by itself prove
+            // the endpoint-gate exclusion — that is proven at the controller
+            // layer (EventControllerTest.shouldReturn409TenantClosed asserts the
+            // real handler never invokes the evidence emitter for /v1/events).
+            assertThat(evidenceRecords("error")).isEmpty();
+        }
+
+        @Test
+        void absentTenantRecord_eventAppliesNormally() {
+            // Runtime-only deployment, no governance plane: no restriction.
+            io.runcycles.protocol.model.EventCreateResponse response =
+                    reservationRepository.createEvent(eventRequest(100), TENANT_A);
+
+            assertThat(response.getStatus()).isEqualTo(Enums.EventStatus.APPLIED);
+            assertThat(getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS").get("spent")).isEqualTo("100");
+        }
+
+        @Test
+        void eventReplayAfterClose_returnsOriginalResponse() {
+            // Mode B invariant (b): a pre-close idempotent replay still returns
+            // its stored response; only a FRESH event on a closed tenant is
+            // rejected.
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            io.runcycles.protocol.model.EventCreateRequest request = eventRequest(100);
+            io.runcycles.protocol.model.EventCreateResponse original =
+                    reservationRepository.createEvent(request, TENANT_A);
+            assertThat(original.getStatus()).isEqualTo(Enums.EventStatus.APPLIED);
+            String spentAfterApply = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS").get("spent");
+
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            io.runcycles.protocol.model.EventCreateResponse replay =
+                    reservationRepository.createEvent(request, TENANT_A);
+            assertThat(replay.isIdempotentReplay()).isTrue();
+            assertThat(replay.getEventId()).isEqualTo(original.getEventId());
+            // Replay does not re-debit.
+            assertThat(getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS").get("spent")).isEqualTo(spentAfterApply);
+
+            // A NEW event (different idempotency key) is still rejected.
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.createEvent(eventRequest(100), TENANT_A)));
+        }
+
+        @Test
+        void tenantClosedPrecedesBudgetExceeded() {
+            // Amount far exceeds remaining with REJECT policy — on an OPEN tenant
+            // this is BUDGET_EXCEEDED; on a CLOSED tenant the guard wins.
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.createEvent(
+                            eventRequest(99_999_999L, Enums.CommitOveragePolicy.REJECT), TENANT_A)));
+
+            Map<String, String> after = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            assertThat(after.get("spent")).isEqualTo("0");
+        }
+
+        @Test
+        void tenantClosedPrecedesBudgetClosed() {
+            // Budget CLOSED + tenant CLOSED: the tenant guard (owner-level) runs
+            // before the per-scope BUDGET_CLOSED check.
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudgetWithStatus(jedis, TENANT_A, "TOKENS", 1_000_000, "CLOSED");
+            }
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.createEvent(eventRequest(100), TENANT_A)));
+        }
+
+        @Test
+        void closedTenant_allowWithOverdraft_debtPathUntouched() {
+            // Regression coverage for the debt path specifically (the branch most
+            // likely to break if someone reorders event.lua): remaining=50 with
+            // overdraft_limit=1000, an ALLOW_WITH_OVERDRAFT event of 200 would
+            // normally charge 50 to spent and accrue 150 debt (setting
+            // is_over_limit if it crossed the ceiling). On a CLOSED tenant the
+            // guard runs first, so remaining/spent/debt/is_over_limit are ALL
+            // unchanged after the 409.
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudgetWithOverdraftLimit(jedis, TENANT_A, "TOKENS", 50, 1_000);
+            }
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.createEvent(
+                            eventRequest(200, Enums.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT), TENANT_A)));
+
+            Map<String, String> after = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            assertThat(after.get("remaining")).isEqualTo("50");
+            assertThat(after.get("spent")).isEqualTo("0");
+            assertThat(after.get("debt")).isEqualTo("0");
+            assertThat(after.get("is_over_limit")).isEqualTo("false");
+        }
+
+        @Test
+        void activeAndSuspendedTenants_eventApplies() {
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            assertThat(reservationRepository.createEvent(eventRequest(100), TENANT_A).getStatus())
+                    .isEqualTo(Enums.EventStatus.APPLIED);
+
+            // SUSPENDED is not gated at the debit layer (mutation guard is
+            // CLOSED-only; SUSPENDED semantics live in tenant-key auth).
+            seedTenantWithStatus(TENANT_A, "SUSPENDED");
+            assertThat(reservationRepository.createEvent(eventRequest(100), TENANT_A).getStatus())
+                    .isEqualTo(Enums.EventStatus.APPLIED);
         }
     }
 
@@ -506,6 +666,21 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
                 Map<String, String> reservation = getReservationStateFromRedis(reservationId);
                 assertThat(reservation.get("expires_at")).as(bad).isEqualTo(expiresBefore);
                 assertThat(reservation.get("extension_count")).as(bad).isEqualTo("0");
+            }
+        }
+
+        @Test
+        void event_failsClosed_noDebit() {
+            Map<String, String> before = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            for (String bad : BAD_RECORDS) {
+                seedRawTenantRecord(TENANT_A, bad);
+
+                assertMalformedTenantFailsClosed(catchThrowable(
+                        () -> reservationRepository.createEvent(eventRequest(100), TENANT_A)));
+
+                Map<String, String> after = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+                assertThat(after.get("remaining")).as(bad).isEqualTo(before.get("remaining"));
+                assertThat(after.get("spent")).as(bad).isEqualTo(before.get("spent"));
             }
         }
     }
