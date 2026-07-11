@@ -70,6 +70,50 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     end
 end
 
+-- Governance CASCADE SEMANTICS Rule 2 (cycles-governance-admin-v0.1.25):
+-- POST /v1/events is a persisting budget debit, so once the owning tenant's
+-- CLOSED flip is durable the event MUST be rejected with 409 TENANT_CLOSED,
+-- regardless of per-scope budget status and even before the close cascade
+-- reaches this tenant's budgets or revokes API keys (Mode B invariant (a)).
+-- Runtime spec revision v0.1.25.14 (pending) adds /v1/events to the
+-- closed-tenant binding. Copied verbatim from reserve.lua's guard: checked
+-- INSIDE the script — like the BUDGET_FROZEN/BUDGET_CLOSED per-scope guards
+-- below — so the guard is atomic with the budget debit (Redis runs scripts
+-- serially; a request observed after the flip can never partially succeed).
+-- The tenant record is written by the admin plane to the shared Redis
+-- ("tenant:<id>" JSON, status field); ABSENCE of the record (runtime-only
+-- deployment, no governance plane) means no restriction, but a PRESENT
+-- record that cannot be decoded into an object with a valid TenantStatus
+-- (ACTIVE|SUSPENDED|CLOSED) FAILS CLOSED (INTERNAL_ERROR, no mutation) —
+-- matching the admin plane's TenantRepository, which propagates parse
+-- failures instead of treating a corrupt governance record as an open
+-- tenant. Sits after the idempotency-replay block above (Mode B invariant
+-- (b): a pre-close replay still returns its stored response) and before the
+-- scope/mutation phase, so TENANT_CLOSED precedes the per-scope BUDGET_*
+-- checks for a fresh event.
+if tenant ~= nil and tenant ~= "" then
+    local tenant_json = redis.call('GET', 'tenant:' .. tenant)
+    if tenant_json then
+        local ok_tenant, tenant_rec = pcall(cjson.decode, tenant_json)
+        if not ok_tenant or type(tenant_rec) ~= 'table' or type(tenant_rec['status']) ~= 'string' then
+            return cjson.encode({error = "INTERNAL_ERROR", message = "Malformed tenant record: tenant:" .. tenant})
+        end
+        if tenant_rec['status'] == 'CLOSED' then
+            return cjson.encode({error = "TENANT_CLOSED", tenant = tenant})
+        end
+        if tenant_rec['status'] ~= 'ACTIVE' and tenant_rec['status'] ~= 'SUSPENDED' then
+            -- The governance TenantStatus enum is a closed set (ACTIVE|
+            -- SUSPENDED|CLOSED) and the cascade revision explicitly
+            -- introduces no new status values as a wire-compat guarantee,
+            -- so an unknown status (e.g. "CLOZED", lowercase "closed")
+            -- cannot be a legitimate future value under the current
+            -- contract - it is corruption. Fail closed like the other
+            -- malformed shapes.
+            return cjson.encode({error = "INTERNAL_ERROR", message = "Malformed tenant record: tenant:" .. tenant})
+        end
+    end
+end
+
 if overage_policy ~= "REJECT"
    and overage_policy ~= "ALLOW_IF_AVAILABLE"
    and overage_policy ~= "ALLOW_WITH_OVERDRAFT" then

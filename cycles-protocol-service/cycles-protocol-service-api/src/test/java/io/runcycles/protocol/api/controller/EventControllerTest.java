@@ -94,6 +94,26 @@ class EventControllerTest {
     }
 
     @Test
+    void shouldReturn409TenantClosed() throws Exception {
+        // Governance Rule 2 / runtime spec v0.1.25.14 (pending): a fresh
+        // /v1/events debit on a CLOSED owning tenant is rejected 409
+        // TENANT_CLOSED. On the wire this is only reachable via the post-flip
+        // race (the tenant-key auth filter 401s a durably-closed tenant first,
+        // and /v1/events has no admin-key path); this pins the controller ->
+        // GlobalExceptionHandler -> 409 mapping for that residual case.
+        when(repository.createEvent(any(), eq(TENANT)))
+                .thenThrow(io.runcycles.protocol.data.exception.CyclesProtocolException.tenantClosed(TENANT));
+
+        mockMvc.perform(post("/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(eventJson(TENANT)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("TENANT_CLOSED"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(TENANT)))
+                .andExpect(jsonPath("$.request_id").exists());
+    }
+
+    @Test
     void shouldRejectTenantMismatch() throws Exception {
         mockMvc.perform(post("/v1/events")
                         .contentType(MediaType.APPLICATION_JSON)

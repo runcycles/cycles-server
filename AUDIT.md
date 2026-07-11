@@ -5,6 +5,66 @@
 
 ---
 
+### 2026-07-11 — v0.1.25.48: TENANT_CLOSED guard on POST /v1/events
+
+Closes the open question flagged in the v0.1.25.47 entry: `/v1/events`
+is a persisting budget debit (same as commit — it decrements
+`remaining` and increments `spent`/`debt`), so a CLOSED owning tenant
+MUST be rejected there too. Runtime spec revision v0.1.25.14 (pending,
+cycles-protocol) adds `/v1/events` to the closed-tenant binding
+alongside the four reservation ops.
+
+Implementation — one place, `event.lua`. The tenant-status guard block
+is copied verbatim from `reserve.lua` (fail-closed whitelist: `CLOSED`
+→ TENANT_CLOSED; `ACTIVE`/`SUSPENDED` → proceed; undecodable /
+non-object / missing or non-string status / unknown status string →
+INTERNAL_ERROR before any mutation; absent `tenant:<id>` record → no
+guard). Placed AFTER the idempotency-replay block and BEFORE the
+overage-policy / scope-validation / debit phase, so a pre-close
+idempotent replay still returns its stored response (Mode B invariant
+(b)) while a fresh event on a CLOSED tenant is rejected; TENANT_CLOSED
+precedes the per-scope BUDGET_* checks for non-replay, consistent with
+the reservation guards. In-script placement is atomic with the debit
+(Redis runs scripts serially) — a post-flip request can never partially
+succeed — and bypasses the 60s tenant-config cache.
+
+No Java change needed: `createEvent` already routes Lua errors through
+`handleScriptError`, whose `TENANT_CLOSED → 409` mapping exists from the
+reservation work; the DENY metric tag flows through the existing
+`catch (CyclesProtocolException) → recordEvent(tenant, "DENY",
+e.getErrorCode().name())`, tagging `TENANT_CLOSED`.
+
+Error-evidence decision: `/v1/events` is NOT in `EVIDENCE_ENDPOINTS`
+(only decide + the three reservation ops), so none of its denials
+(BUDGET_EXCEEDED/BUDGET_CLOSED/…) stamp error-evidence today — it is an
+accounting/debit endpoint, not a decision endpoint. The endpoint gate in
+GlobalExceptionHandler returns early for `/v1/events` before the
+denial-code check, so even though `TENANT_CLOSED` is in
+`EVIDENCE_DENIAL_CODES`, events emit nothing for it. Deliberately did
+NOT add evidence emission just for this code — kept consistent with the
+endpoint. Pinned by a test asserting zero error-evidence records.
+
+Exposure is NARROWER than the reservation guards: `/v1/events` has no
+admin-key path (not in the runtime admin allowlist — that covers only
+GET reservations list/single + POST release), and the tenant-key auth
+filter 401s a durably-closed tenant before the controller. The only
+residual reachable case is the post-flip race (a request past auth just
+before the flip lands), which the in-script guard closes.
+
+Tests: `TenantClosedGuardIntegrationTest` (Testcontainers, real Lua) —
+new `EventDebitGuard` class: fresh event on CLOSED → 409 TENANT_CLOSED
+with no debit (remaining/spent/debt unchanged) and zero error-evidence;
+absent record → applies; pre-close idempotent replay under a
+now-CLOSED tenant → original stored response, no re-debit, while a fresh
+event is still rejected; TENANT_CLOSED precedence over BUDGET_EXCEEDED
+(over-budget REJECT) and over BUDGET_CLOSED (closed budget); ACTIVE +
+SUSPENDED apply. Malformed-record matrix gains an
+`event_failsClosed_noDebit` case (all shapes incl. "CLOZED"/"closed" →
+500, no debit). Controller layer: `EventControllerTest`
+`shouldReturn409TenantClosed` pins the POST /v1/events →
+GlobalExceptionHandler → 409 TENANT_CLOSED envelope for the residual
+race. Version/revision 0.1.25.47 → 0.1.25.48.
+
 ### 2026-07-10 — v0.1.25.47: TENANT_CLOSED Rule 2 guard on reservation mutations
 
 Adopts the governance spec's CASCADE SEMANTICS Rule 2 (terminal-owner
@@ -97,7 +157,9 @@ Design decisions:
   from EVIDENCE_DENIAL_CODES). Cached pre-close replays keep their
   original payload. `POST /v1/events` also mutates budgets and Rule 2's list is
   "non-exhaustive" — flagged as an open spec question rather than guarded
-  ahead of the spec. `TENANT_CLOSED` error-evidence emission was initially
+  ahead of the spec. **[RESOLVED 2026-07-11, v0.1.25.48:** `/v1/events` is
+  now guarded — runtime spec revision v0.1.25.14 (pending) adds it to the
+  closed-tenant binding; see that day's entry.**]** `TENANT_CLOSED` error-evidence emission was initially
   deferred "until spec v0.1.25.13 lands"; resolved in review round 5 —
   spec PR runcycles/cycles-protocol#125 added TENANT_CLOSED to the
   evidence ErrorResponseMirror (cycles-evidence-v0.2.yaml 0.2.1) and both

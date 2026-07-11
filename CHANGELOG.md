@@ -14,6 +14,39 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.48] — 2026-07-11
+
+### Added
+
+- **`TENANT_CLOSED` guard extended to `POST /v1/events`.** `/v1/events` is a
+  persisting budget debit, so a debit whose owning tenant is `CLOSED` is now
+  rejected with HTTP 409 `error=TENANT_CLOSED`, mirroring the reservation
+  guards shipped in 0.1.25.47. The check runs inside `event.lua` (same
+  fail-closed whitelist as the reservation scripts: `CLOSED` → 409;
+  `ACTIVE`/`SUSPENDED` → proceed; a present-but-malformed `tenant:<id>`
+  record → 500 `INTERNAL_ERROR`, no debit; absent record → no restriction),
+  after the idempotency-replay block and before any budget mutation — so a
+  pre-close idempotent replay still returns its stored response, but a fresh
+  post-flip event is rejected, with `TENANT_CLOSED` taking precedence over
+  the per-scope `BUDGET_*` outcomes. Runtime spec revision: v0.1.25.14
+  (pending) adds `/v1/events` to the closed-tenant binding.
+  - **Exposure is narrow:** `/v1/events` has no admin-key path and the
+    tenant-key auth filter already 401s a durably-closed tenant before the
+    controller — the guard closes the residual post-flip race (a request
+    past auth just before the flip is durable).
+  - **No error-evidence change:** `/v1/events` is outside the evidence
+    endpoint surface (an accounting endpoint, not a decision endpoint), so
+    none of its denials stamp `cycles_evidence` — `TENANT_CLOSED` included,
+    consistent with the endpoint.
+
+### Compatibility
+
+- New 409 behavior appears only for tenants a governance plane has closed;
+  runtime-only deployments (no `tenant:<id>` records) are unaffected. No
+  wire, Redis, or event-schema change beyond the added in-script status read
+  (one `GET tenant:<id>` inside `event.lua`, mirroring the reservation
+  scripts). `Enums.ErrorCode.TENANT_CLOSED` was already added in 0.1.25.47.
+
 ## [0.1.25.47] — 2026-07-10
 
 ### Added
