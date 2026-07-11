@@ -100,7 +100,13 @@ class EventControllerTest {
         // TENANT_CLOSED. On the wire this is only reachable via the post-flip
         // race (the tenant-key auth filter 401s a durably-closed tenant first,
         // and /v1/events has no admin-key path); this pins the controller ->
-        // GlobalExceptionHandler -> 409 mapping for that residual case.
+        // GlobalExceptionHandler -> 409 mapping for that residual case AND the
+        // evidence-endpoint-gate exclusion: this goes through the REAL
+        // GlobalExceptionHandler (which sees the matched /v1/events route), so
+        // maybeEmitErrorEvidence passes the denial-code check (TENANT_CLOSED is
+        // in EVIDENCE_DENIAL_CODES) then returns early at the endpoint gate
+        // (/v1/events not in EVIDENCE_ENDPOINTS) — no evidence stamped. A
+        // repository-level test can't prove this; the handler must be entered.
         when(repository.createEvent(any(), eq(TENANT)))
                 .thenThrow(io.runcycles.protocol.data.exception.CyclesProtocolException.tenantClosed(TENANT));
 
@@ -110,7 +116,13 @@ class EventControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error").value("TENANT_CLOSED"))
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString(TENANT)))
-                .andExpect(jsonPath("$.request_id").exists());
+                .andExpect(jsonPath("$.request_id").exists())
+                // /v1/events is outside EVIDENCE_ENDPOINTS: no cycles_evidence ref.
+                .andExpect(jsonPath("$.cycles_evidence").doesNotExist());
+
+        // Proves the endpoint-gate exclusion through the real handler path:
+        // the evidence emitter is never invoked for a /v1/events denial.
+        verifyNoInteractions(evidenceEmitter);
     }
 
     @Test

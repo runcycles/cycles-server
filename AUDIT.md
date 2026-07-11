@@ -37,12 +37,16 @@ e.getErrorCode().name())`, tagging `TENANT_CLOSED`.
 Error-evidence decision: `/v1/events` is NOT in `EVIDENCE_ENDPOINTS`
 (only decide + the three reservation ops), so none of its denials
 (BUDGET_EXCEEDED/BUDGET_CLOSED/…) stamp error-evidence today — it is an
-accounting/debit endpoint, not a decision endpoint. The endpoint gate in
-GlobalExceptionHandler returns early for `/v1/events` before the
-denial-code check, so even though `TENANT_CLOSED` is in
-`EVIDENCE_DENIAL_CODES`, events emit nothing for it. Deliberately did
-NOT add evidence emission just for this code — kept consistent with the
-endpoint. Pinned by a test asserting zero error-evidence records.
+accounting/debit endpoint, not a decision endpoint. In
+GlobalExceptionHandler.maybeEmitErrorEvidence the denial-code
+membership check runs FIRST (`TENANT_CLOSED` is in
+`EVIDENCE_DENIAL_CODES`, so it passes), then the endpoint gate runs and
+returns early because `POST /v1/events` is not in `EVIDENCE_ENDPOINTS` —
+so events emit nothing for it. Deliberately did NOT add evidence
+emission just for this code — kept consistent with the endpoint. Pinned
+at the controller layer (EventControllerTest exercises the real
+GlobalExceptionHandler path and asserts the evidence emitter is never
+invoked for a `/v1/events` TENANT_CLOSED 409).
 
 Exposure is NARROWER than the reservation guards: `/v1/events` has no
 admin-key path (not in the runtime admin allowlist — that covers only

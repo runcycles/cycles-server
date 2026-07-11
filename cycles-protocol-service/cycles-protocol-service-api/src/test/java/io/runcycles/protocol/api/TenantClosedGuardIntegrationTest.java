@@ -285,7 +285,11 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
             assertThat(after.get("remaining")).isEqualTo(before.get("remaining"));
             assertThat(after.get("spent")).isEqualTo(before.get("spent"));
             assertThat(after.get("debt")).isEqualTo(before.get("debt"));
-            // /v1/events is not an evidence endpoint — no error-evidence row.
+            // No evidence written to Redis. NB: this repository-level call does
+            // not enter GlobalExceptionHandler, so it does not by itself prove
+            // the endpoint-gate exclusion — that is proven at the controller
+            // layer (EventControllerTest.shouldReturn409TenantClosed asserts the
+            // real handler never invokes the evidence emitter for /v1/events).
             assertThat(evidenceRecords("error")).isEmpty();
         }
 
@@ -350,6 +354,31 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
 
             assertTenantClosedException(catchThrowable(
                     () -> reservationRepository.createEvent(eventRequest(100), TENANT_A)));
+        }
+
+        @Test
+        void closedTenant_allowWithOverdraft_debtPathUntouched() {
+            // Regression coverage for the debt path specifically (the branch most
+            // likely to break if someone reorders event.lua): remaining=50 with
+            // overdraft_limit=1000, an ALLOW_WITH_OVERDRAFT event of 200 would
+            // normally charge 50 to spent and accrue 150 debt (setting
+            // is_over_limit if it crossed the ceiling). On a CLOSED tenant the
+            // guard runs first, so remaining/spent/debt/is_over_limit are ALL
+            // unchanged after the 409.
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudgetWithOverdraftLimit(jedis, TENANT_A, "TOKENS", 50, 1_000);
+            }
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+
+            assertTenantClosedException(catchThrowable(
+                    () -> reservationRepository.createEvent(
+                            eventRequest(200, Enums.CommitOveragePolicy.ALLOW_WITH_OVERDRAFT), TENANT_A)));
+
+            Map<String, String> after = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
+            assertThat(after.get("remaining")).isEqualTo("50");
+            assertThat(after.get("spent")).isEqualTo("0");
+            assertThat(after.get("debt")).isEqualTo("0");
+            assertThat(after.get("is_over_limit")).isEqualTo("false");
         }
 
         @Test
