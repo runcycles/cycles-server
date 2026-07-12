@@ -34,6 +34,7 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         return cjson.encode({
             reservation_id = existing_res_id,
             idempotency_key = idempotency_key,
+            response_snapshot = redis.call('HGET', 'reservation:res_' .. existing_res_id, 'reserve_response_json')
         })
     end
 end
@@ -186,10 +187,6 @@ redis.call('HMSET', reservation_key,
 
 -- Add to reservation index
 redis.call('ZADD', 'reservation:ttl', expires_at, reservation_id)
--- Per-tenant candidate index for listReservations. The Java read path still
--- applies every filter and sort comparator, but no longer scans other tenants'
--- reservation hashes once the lazy backfill marker is present.
-redis.call('ZADD', 'reservation:idx:tenant:' .. tenant, now, reservation_id)
 
 -- After successful reservation, store idempotency mapping
 if idempotency_key ~= "" and idempotency_key ~= nil then
@@ -223,10 +220,18 @@ for _, scope in ipairs(budgeted_scopes) do
     })
 end
 
-return cjson.encode({
+local response = cjson.encode({
     reservation_id = reservation_id,
     state = "ACTIVE",
     expires_at = expires_at,
     affected_scopes = affected_scopes,
-    balances = balances
+    balances = balances,
+    estimate_amount = estimate_amount,
+    estimate_unit = estimate_unit,
+    scope_path = scope_path,
+    caps_json = redis.call('HGET', 'budget:' .. scope_path .. ':' .. estimate_unit, 'caps_json')
 })
+-- Durable source for exact idempotent replay. Unlike the fast body cache,
+-- this snapshot is committed atomically with the budget mutation.
+redis.call('HSET', reservation_key, 'reserve_response_json', response)
+return response

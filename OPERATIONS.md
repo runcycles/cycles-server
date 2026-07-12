@@ -450,20 +450,18 @@ do not publish its internal worker port `7980` on ingress.
 `tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`,
 `expires_at_ms`) and `sort_dir` (`asc` or `desc`, default `desc`).
 
-Implementation: sorted requests use a lightweight per-tenant candidate ZSET,
-then pipeline-hydrate, filter, and sort that tenant's rows in memory. Existing
-deployments lazily backfill each tenant's index on its first sorted request;
-subsequent sorted requests avoid the global reservation-key SCAN. This is
-**O(N)** in that tenant's reservations, rather than total reservations across
-all tenants. Legacy unsorted requests retain their SCAN cursor behavior. Watch the
+Implementation: full-SCAN + in-memory sort per sorted page. This is
+**O(N)** in reservations matching the filter — fine at the current
+runtime-plane target of ≤ 10³ reservations per tenant. Watch the
 Spring Boot `http_server_requests_seconds{uri="/v1/reservations"}`
 p99: if it climbs above 500 ms under real load, a tenant has grown
-past the in-memory sort threshold and per-sort-key ZSET indexing becomes
+past the in-memory threshold and per-tenant ZSET indexing becomes
 worthwhile. Track the top `tenant` tag on that metric to spot who.
 
-The implemented candidate index and the deferred full per-sort-key design are documented in
+The deferred ZSET-indexed design is fully written up in
 [`docs/deferred-optimizations/sorted-list-zset-indices.md`](docs/deferred-optimizations/sorted-list-zset-indices.md)
-— cost/benefit, trigger conditions, benchmark impact, and rollback.
+— cost/benefit, trigger conditions, benchmark impact, rollback.
+Pull it out when any of the triggers listed there fires.
 
 Legacy clients (no sort params) stay on the existing Redis-SCAN
 cursor path and are unaffected by this concern.

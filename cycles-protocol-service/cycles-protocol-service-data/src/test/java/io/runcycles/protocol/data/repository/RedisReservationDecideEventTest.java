@@ -426,8 +426,30 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             repository.decide(request, "acme");
 
-            // Verify idempotency key was stored (pipelined write)
-            verify(pipeline).psetex(eq("idem:acme:decide:decide-store"), eq(86400000L), anyString());
+            verify(jedis).eval(contains("PSETEX"),
+                    eq(List.of("idem:acme:decide:decide-store", "idem:acme:decide:decide-store:hash", "evidence:pending")),
+                    anyList());
+        }
+
+        @Test
+        void decideWithoutIdempotencyKeyEmitsDirectlyWithoutCaching() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            String evId = "6".repeat(64);
+            when(evidenceEmitter.emit(eq("decide"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                        evId, "https://cycles.example.com/v1/evidence/" + evId));
+            DecisionRequest request = DecisionRequest.builder()
+                    .subject(defaultSubject()).action(defaultAction()).estimate(defaultEstimate()).build();
+
+            DecisionResponse response = repository.decide(request, "acme", "trace-d");
+
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+            verify(evidenceEmitter, never()).prepare(anyString(), anyLong(), any(), any());
+            verify(jedis, never()).eval(contains("PSETEX"), anyList(), anyList());
         }
 
         @Test
@@ -438,7 +460,12 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
             mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
             lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
-            doNothing().doNothing().doThrow(new RuntimeException("cache down")).when(pipeline).sync();
+            when(evidenceEmitter.prepare(eq("decide"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                        new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                            "b".repeat(64), "https://cycles.example.com/v1/evidence/" + "b".repeat(64)), "{}"));
+            when(jedis.eval(contains("PSETEX"), anyList(), anyList()))
+                    .thenThrow(new RuntimeException("cache down"));
 
             DecisionRequest request = DecisionRequest.builder()
                     .idempotencyKey("decide-cache-fail")
@@ -453,6 +480,8 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
                     .hasMessageContaining("persist idempotency response");
             verify(jedis).eval(contains("redis.call('GET'"),
                     eq(List.of("idem:acme:decide:decide-cache-fail")), anyList());
+            verify(evidenceEmitter, times(1)).prepare(eq("decide"), anyLong(), any(), any());
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
         }
 
         @Test
@@ -465,8 +494,9 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
             String evId = "a".repeat(64);
             String url = "https://cycles.example.com/v1/evidence/" + evId;
-            when(evidenceEmitter.emit(eq("decide"), anyLong(), any(), any()))
-                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url));
+            when(evidenceEmitter.prepare(eq("decide"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                        new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url), "{\"evidence_id\":\"" + evId + "\"}"));
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-ev");
@@ -478,8 +508,9 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
             // body cached (with evidence) under the decide idempotency key, 24h TTL
-            verify(pipeline).psetex(eq("idem:acme:decide:decide-ev"), eq(86400000L),
-                    contains("\"evidence_id\":\"" + evId + "\""));
+            verify(jedis).eval(contains("PSETEX"),
+                    eq(List.of("idem:acme:decide:decide-ev", "idem:acme:decide:decide-ev:hash", "evidence:pending")),
+                    argThat(args -> args.stream().anyMatch(v -> v.contains("\"evidence_id\":\"" + evId + "\""))));
         }
 
         @Test
@@ -511,6 +542,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+            verify(evidenceEmitter, never()).prepare(anyString(), anyLong(), any(), any());
         }
 
         @Test
@@ -521,9 +553,11 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
             mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
             mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
             lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
-            when(evidenceEmitter.emit(eq("decide"), anyLong(), any(), any()))
-                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
-                            "a".repeat(64), "https://cycles.example.com/v1/evidence/" + "a".repeat(64)));
+            String evId = "a".repeat(64);
+            when(evidenceEmitter.prepare(eq("decide"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                        new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                            evId, "https://cycles.example.com/v1/evidence/" + evId), "{}"));
 
             DecisionRequest request = new DecisionRequest();
             request.setIdempotencyKey("decide-order");
@@ -533,10 +567,10 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             repository.decide(request, "acme", "trace-d");
 
-            // pool-nesting guard: the eval connection is released before evidence emit
+            // pool-nesting guard: the eval connection is released before evidence preparation
             org.mockito.InOrder ordered = inOrder(jedis, evidenceEmitter);
             ordered.verify(jedis).close();
-            ordered.verify(evidenceEmitter).emit(eq("decide"), anyLong(), any(), any());
+            ordered.verify(evidenceEmitter).prepare(eq("decide"), anyLong(), any(), any());
         }
 
         @Test

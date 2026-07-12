@@ -128,6 +128,31 @@ public class EvidenceEmitter {
      *         (fail-open — never throws)
      */
     public EvidenceRef emit(String artifactType, long issuedAtMs, String traceId, Object payloadBody) {
+        PreparedEvidence prepared = prepare(artifactType, issuedAtMs, traceId, payloadBody);
+        if (prepared == null) {
+            return null;
+        }
+        return enqueue(prepared, artifactType, traceId) ? prepared.ref() : null;
+    }
+
+    /** Enqueue a record previously returned by {@link #prepare}. */
+    public boolean enqueue(PreparedEvidence prepared, String artifactType, String traceId) {
+        try {
+            repository.push(prepared.recordJson());
+            return true;
+        } catch (Exception e) {
+            recordFailure(artifactType, traceId, e);
+            return false;
+        }
+    }
+
+    /**
+     * Build an evidence record without enqueueing it. Callers that must coordinate
+     * evidence with another Redis write can include {@link PreparedEvidence#recordJson()}
+     * in their own Lua transaction, avoiding a queue/body split-brain window.
+     */
+    public PreparedEvidence prepare(String artifactType, long issuedAtMs, String traceId,
+                                    Object payloadBody) {
         try {
             if (!identityConfigured()) {
                 return null;
@@ -156,15 +181,18 @@ public class EvidenceEmitter {
             record.put("evidence_id", evidenceId);
             EvidenceRef ref = new EvidenceRef(evidenceId, evidenceUrl(evidenceId));
 
-            repository.push(objectMapper.writeValueAsString(record));
-            return ref;
+            return new PreparedEvidence(ref, objectMapper.writeValueAsString(record));
         } catch (Exception e) {
-            LOG.error("evidence-source emission failed: artifact_type={} trace_id={} server_id_configured={} signer_did_configured={} error={}",
-                    artifactType, traceId, serverId != null && !serverId.isBlank(),
-                    signerDid != null && !signerDid.isBlank(), LogSanitizer.sanitize(e.toString()), e);
-            metrics.recordEvidenceEmitFailed(artifactType);
+            recordFailure(artifactType, traceId, e);
             return null;
         }
+    }
+
+    private void recordFailure(String artifactType, String traceId, Exception e) {
+        LOG.error("evidence-source emission failed: artifact_type={} trace_id={} server_id_configured={} signer_did_configured={} error={}",
+                artifactType, traceId, serverId != null && !serverId.isBlank(),
+                signerDid != null && !signerDid.isBlank(), LogSanitizer.sanitize(e.toString()), e);
+        metrics.recordEvidenceEmitFailed(artifactType);
     }
 
     private boolean identityConfigured() {
@@ -189,5 +217,8 @@ public class EvidenceEmitter {
      * to fetch the signed envelope (via {@code getEvidence}).
      */
     public record EvidenceRef(String evidenceId, String cyclesEvidenceUrl) {
+    }
+
+    public record PreparedEvidence(EvidenceRef ref, String recordJson) {
     }
 }

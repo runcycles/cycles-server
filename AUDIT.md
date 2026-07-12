@@ -30,15 +30,18 @@ for the fresh tenant-status gate. This removes pool occupancy during hashing
 without caching authorization status or weakening revocation behavior between
 requests.
 
-**Truthful idempotency.** The reserve replay fallback rebuilt a nominal success
-from the current reservation and ledger, while commit/release returned a
-partially reconstructed body when their cached original was absent. Those
-responses could differ from the normative original balances, caps, and evidence
-reference. All three lifecycle operations now return a retriable 500
-`INTERNAL_ERROR` when the canonical original body is temporarily unavailable.
-Dry-run and decide similarly clear their pending claim and return a retriable
-error when a fresh canonical response cannot be cached. Removing reconstruction
-also made `fetchBalancesForScopes` dead code, so it was deleted.
+**Truthful, recoverable idempotency.** The reserve replay fallback rebuilt a
+nominal success from the current reservation and ledger, while commit/release
+returned a partially reconstructed body when their cached original was absent.
+Those responses could differ from the normative original balances, caps, and
+evidence reference. Each mutation script now stores its immutable response
+snapshot on the reservation hash in the same atomic unit as the ledger change.
+The fast body cache is repaired from that snapshot on a miss. Evidence enqueue,
+reservation evidence-link fields, and the stamped body cache are written by one
+Redis script. Dry-run and decide similarly combine their body/hash cache writes
+with evidence enqueueing, preventing duplicate envelopes after a cache failure.
+Removing current-ledger reconstruction also made `fetchBalancesForScopes` dead
+code, so it was deleted.
 
 **Atomic admin audit.** The controller previously released first and wrote the
 required admin-on-behalf-of audit row afterward through a fail-open repository;
@@ -53,19 +56,10 @@ TTL) is passed into the script.
 **Bounded index maintenance.** Event and delivery values already expired, but
 their ZSET members accumulated indefinitely. A non-fatal scheduled sweep now
 SCANs only `events:*` and `deliveries:*` index keys and prunes scores older than
-the configured value TTLs. The default maintenance window is 03:30 daily and is
-overridable with `EVENT_RETENTION_SWEEP_CRON`.
-
-**Sorted-list performance without seven indices.** The deferred design proposed
-seven per-sort-key ZSETs and updates in every lifecycle script. This release
-implements the lower-complexity step: one per-tenant candidate ZSET updated by a
-single `ZADD` in `reserve.lua`. The first sorted read performs an idempotent lazy
-backfill and sets a readiness marker; subsequent reads `ZRANGE` only that
-tenant's IDs, pipeline-hydrate in batches of 500, prune stale members, apply all
-existing filters, and use the unchanged in-memory comparator/cursor logic. Work
-therefore falls from O(total reservations) to O(tenant reservations) with no
-wire change. Full per-sort-key indices remain deferred until one tenant's size
-justifies the write and migration cost.
+the configured value TTLs. It type-checks each candidate and tolerates a key
+changing type during the sweep, so shared `events:correlation:*` SETs cannot
+abort cleanup. The default maintenance window is 03:30 daily and is overridable
+with `EVENT_RETENTION_SWEEP_CRON`.
 
 **jqwik configuration.** jqwik 1.9 no longer reads `jqwik.properties` (removed
 since 1.6). Configuration now lives in `junit-platform.properties`; the
@@ -73,14 +67,15 @@ supported override is `-Djqwik.tries.default=<N>`. The nightly workflow and
 runbook use the same parameter. A profile run confirmed all five properties
 executed exactly 20 tries.
 
-**Validation.** Current protocol checkout `2e14d79`:
+**Validation.** Current protocol checkout `b04f276`:
 
-- clean `mvn verify`: 801 tests (31 model + 503 data + 267 API), zero failures;
-  JaCoCo line coverage 95.51% data and 95.12% API;
-- Docker integration profile: 1,074 tests (31 + 503 + 540), zero failures;
+- `mvn verify` against the local protocol spec: 832 tests
+  (31 model + 514 data + 287 API), zero failures; JaCoCo line coverage
+  95.03% data and 95.56% API;
+- Docker integration profile: 1,105 tests (31 + 514 + 560), zero failures;
 - jqwik property profile: 5 properties at 20 tries, zero failures;
 - benchmark profile: 15 benchmarks, zero failures and zero concurrent errors;
-  reserve p50 15.4 ms, commit p50 14.7 ms, release p50 14.8 ms, and 597.8
+  reserve p50 13.2 ms, commit p50 13.6 ms, release p50 14.4 ms, and 615.6
   ops/s at 32 threads on the local Docker Desktop environment. These absolute
   values are environment-specific; the run is a regression smoke test, not a
   replacement for a same-host before/after baseline.

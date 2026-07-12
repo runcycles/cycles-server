@@ -14,6 +14,7 @@ import org.springframework.stereotype.Repository;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
 
@@ -67,7 +68,18 @@ public class EventEmitterRepository {
         do {
             ScanResult<String> scan = jedis.scan(cursor, params);
             for (String key : scan.getResult()) {
-                removed += jedis.zremrangeByScore(key, Double.NEGATIVE_INFINITY, cutoffMillis);
+                String type = jedis.type(key);
+                if (type != null && !"zset".equals(type)) {
+                    continue;
+                }
+                try {
+                    removed += jedis.zremrangeByScore(key, Double.NEGATIVE_INFINITY, cutoffMillis);
+                } catch (JedisDataException e) {
+                    // The key can change type between TYPE and ZREMRANGEBYSCORE. One
+                    // co-located correlation SET must not abort either retention pass.
+                    LOG.warn("Skipping non-ZSET event index during retention sweep: key={} error={}",
+                        LogSanitizer.sanitize(key), LogSanitizer.sanitize(e.toString()));
+                }
             }
             cursor = scan.getCursor();
         } while (!ScanParams.SCAN_POINTER_START.equals(cursor));

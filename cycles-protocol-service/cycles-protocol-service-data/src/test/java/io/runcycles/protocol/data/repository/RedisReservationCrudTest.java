@@ -467,6 +467,44 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void reserveReplayRepairsMissingBodyCacheFromMutationSnapshot() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("reservation_id", "orig-res");
+            snapshot.put("expires_at", 9_999_999L);
+            snapshot.put("estimate_amount", 1000L);
+            snapshot.put("estimate_unit", "TOKENS");
+            snapshot.put("scope_path", "tenant:acme");
+            snapshot.put("affected_scopes", List.of("tenant:acme"));
+            snapshot.put("balances", List.of());
+            String snapshotJson = objectMapper.writeValueAsString(snapshot);
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(Map.of(
+                        "reservation_id", "orig-res", "response_snapshot", snapshotJson)));
+            when(jedis.get("reserve:body:orig-res")).thenReturn(null);
+            when(jedis.hmget("reservation:res_orig-res", "reserve_response_json",
+                    "reserve_evidence_id", "reserve_evidence_url"))
+                    .thenReturn(List.of(snapshotJson, "e".repeat(64),
+                        "https://cycles.example.com/v1/evidence/" + "e".repeat(64)));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-hit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getReserved().getAmount()).isEqualTo(1000L);
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("e".repeat(64));
+            verify(jedis).psetex(eq("reserve:body:orig-res"), eq(86_400_000L), anyString());
+        }
+
+        @Test
         void freshReserveStampsEvidenceAndCachesBodyWithIdempotencyTtl() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
@@ -476,11 +514,12 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
                     .thenReturn(luaResponse);
             lenient().when(jedis.hget(anyString(), eq("caps_json"))).thenReturn(null);
-            // identity configured → emit returns a ref that the repository stamps
+            // identity configured → prepared evidence is cached/linked/queued atomically
             String evId = "d".repeat(64);
             String url = "https://cycles.example.com/v1/evidence/" + evId;
-            when(evidenceEmitter.emit(eq("reserve"), anyLong(), any(), any()))
-                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url));
+            when(evidenceEmitter.prepare(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                        new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(evId, url), "{\"evidence_id\":\"" + evId + "\"}"));
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("idem-fresh");
@@ -495,12 +534,40 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
             assertThat(response.getCyclesEvidence().getCyclesEvidenceUrl()).isEqualTo(url);
             // full body cached keyed by reservation_id (a generated UUID), TTL >= 24h floor
-            verify(jedis).psetex(startsWith("reserve:body:"), longThat(ttl -> ttl >= 86400000L),
-                    contains("\"evidence_id\":\"" + evId + "\""));
+            verify(jedis).eval(contains("LPUSH"),
+                    eq(List.of("reserve:body:fresh-res", "reservation:res_fresh-res", "evidence:pending")),
+                    argThat(args -> args.stream().anyMatch(v -> v.contains("\"evidence_id\":\"" + evId + "\""))));
             // pool-nesting guard: the Lua connection is released before evidence emit
             org.mockito.InOrder ordered = inOrder(jedis, evidenceEmitter);
             ordered.verify(jedis).close();
-            ordered.verify(evidenceEmitter).emit(eq("reserve"), anyLong(), any(), any());
+            ordered.verify(evidenceEmitter).prepare(eq("reserve"), anyLong(), any(), any());
+        }
+
+        @Test
+        void freshReserveReturnsUnstampedSnapshotResponseWhenAtomicEvidenceWriteIsRejected() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(
+                        Map.of("reservation_id", "fresh-res", "expires_at", 9_999_999L)));
+            String evId = "5".repeat(64);
+            when(evidenceEmitter.prepare(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                        new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                            evId, "https://cycles.example.com/v1/evidence/" + evId), "{}"));
+            when(jedis.eval(contains("local rt"), anyList(), anyList())).thenReturn(0L);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-atomic-fail");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme", "trace-r");
+
+            assertThat(response.getCyclesEvidence()).isNull();
+            verify(metrics).recordEvidenceEmitFailed("reserve");
         }
 
         @Test
@@ -867,7 +934,34 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             verify(jedis).set(eq("idem:acme:dry_run:dry-store"), startsWith("__dry_run_pending__:"),
                     any(SetParams.class));
-            verify(pipeline).psetex(eq("idem:acme:dry_run:dry-store"), eq(86400000L), anyString());
+            verify(jedis).eval(contains("PSETEX"),
+                    eq(List.of("idem:acme:dry_run:dry-store", "idem:acme:dry_run:dry-store:hash", "evidence:pending")),
+                    anyList());
+        }
+
+        @Test
+        void dryRunWithoutIdempotencyKeyEmitsDirectlyWithoutCaching() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            String evId = "7".repeat(64);
+            when(evidenceEmitter.emit(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                        evId, "https://cycles.example.com/v1/evidence/" + evId));
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse response = repository.createReservation(request, "acme", "trace-r");
+
+            assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo(evId);
+            verify(evidenceEmitter, never()).prepare(anyString(), anyLong(), any(), any());
+            verify(jedis, never()).eval(contains("PSETEX"), anyList(), anyList());
         }
 
         @Test
@@ -878,7 +972,12 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
             mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
             lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
-            doNothing().doNothing().doThrow(new RuntimeException("cache down")).when(pipeline).sync();
+            when(evidenceEmitter.prepare(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                        new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                            "a".repeat(64), "https://cycles.example.com/v1/evidence/" + "a".repeat(64)), "{}"));
+            when(jedis.eval(contains("PSETEX"), anyList(), anyList()))
+                    .thenThrow(new RuntimeException("cache down"));
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-cache-fail");
@@ -898,6 +997,8 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             verify(jedis).eval(contains("redis.call('GET'"),
                     eq(List.of("idem:acme:dry_run:dry-cache-fail")),
                     eq(List.of(markerCaptor.getValue())));
+            verify(evidenceEmitter, times(1)).prepare(eq("reserve"), anyLong(), any(), any());
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
         }
 
         @Test

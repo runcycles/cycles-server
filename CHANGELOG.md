@@ -18,14 +18,10 @@ called out but are not breaking to API clients.
 
 ### Added
 
-- **Per-tenant reservation candidate index.** Successful reservations now add
-  one member to `reservation:idx:tenant:<tenant>` atomically in `reserve.lua`.
-  The first sorted-list request lazily backfills older reservations; later
-  sorted requests avoid scanning reservation hashes belonging to every other
-  tenant while preserving the existing filters, ordering, and opaque cursors.
 - **Event/delivery index retention sweep.** A configurable daily sweep removes
   stale `events:*` and `deliveries:*` ZSET pointers after their backing rows
-  expire (`EVENT_RETENTION_SWEEP_CRON`, default `0 30 3 * * *`).
+  expire (`EVENT_RETENTION_SWEEP_CRON`, default `0 30 3 * * *`). Non-ZSET
+  correlation keys are skipped without aborting either sweep pass.
 
 ### Fixed
 
@@ -36,11 +32,12 @@ called out but are not breaking to API clients.
 - **Admin release audit is atomic.** Admin audit JSON and both audit indexes are
   written by `release.lua` in the same Redis execution as the release, removing
   the successful-release/missing-audit failure window.
-- **Idempotency replay remains truthful.** Reserve, commit, and release no
-  longer synthesize a response from current Redis state when the original body
-  is unavailable. Dry-run and decide also reject a fresh result whose canonical
-  response cannot be persisted. These cases return retriable HTTP 500
-  `INTERNAL_ERROR` with instructions to reuse the same idempotency key.
+- **Idempotency replay remains truthful and recoverable.** Reserve, commit, and
+  release store an immutable response snapshot inside the mutation script and
+  repair a missing fast body cache from that snapshot. Evidence enqueueing,
+  evidence-link storage, and canonical response caching are atomic. Dry-run and
+  decide likewise cache their response and enqueue evidence in one Redis script,
+  so a transient cache failure cannot duplicate signed evidence.
 - **jqwik runtime overrides work again.** Configuration moved from the retired
   `jqwik.properties` format to `junit-platform.properties`; nightly/manual try
   counts use the supported `jqwik.tries.default` parameter.
@@ -50,16 +47,11 @@ called out but are not breaking to API clients.
 - API-key validation releases its Redis connection before BCrypt verification,
   then uses a second short checkout only for a successful key's tenant-status
   read. Slow password hashing no longer occupies the Redis pool.
-- Sorted reservation reads reduce repeated work from all reservations in Redis
-  to the requesting tenant's candidates. Reserve adds one in-memory `ZADD`; the
-  legacy unsorted SCAN path is unchanged.
 
 ### Compatibility
 
-- No public request/response schema changes. The only new Redis key is the
-  rebuildable per-tenant candidate ZSET plus its readiness marker. Operators
-  may override the new retention sweep cron; existing retention TTL settings
-  remain authoritative.
+- No public request/response schema changes. Operators may override the new
+  retention sweep cron; existing retention TTL settings remain authoritative.
 
 ## [0.1.25.48] — 2026-07-11
 
