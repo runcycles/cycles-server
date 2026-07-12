@@ -56,7 +56,6 @@ class ReservationControllerTest {
     @Autowired private ObjectMapper objectMapper;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
-    @MockitoBean private io.runcycles.protocol.data.repository.AuditRepository auditRepository;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.repository.EvidenceStoreReader evidenceStoreReader;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;
@@ -574,7 +573,7 @@ class ReservationControllerTest {
                     .status(Enums.ReleaseStatus.RELEASED)
                     .released(new Amount(Enums.UnitEnum.TOKENS, 1000L))
                     .build();
-            when(repository.releaseReservation(eq("res_123"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res_123"), any(), any(), any(), any(), any())).thenReturn(resp);
 
             ReleaseRequest req = ReleaseRequest.builder()
                     .idempotencyKey(UUID.randomUUID().toString()).build();
@@ -1181,7 +1180,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
-            when(repository.releaseReservation(eq("res-x"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-x"), any(), any(), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] hung\"}";
             mockMvc.perform(post("/v1/reservations/res-x/release")
                             .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -1197,7 +1196,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-audit")).thenReturn("tenant-target");
-            when(repository.releaseReservation(eq("res-audit"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-audit"), any(), any(), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] stuck reservation\"}";
 
@@ -1212,7 +1211,7 @@ class ReservationControllerTest {
             org.mockito.ArgumentCaptor<io.runcycles.protocol.model.audit.AuditLogEntry> captor =
                 org.mockito.ArgumentCaptor.forClass(
                     io.runcycles.protocol.model.audit.AuditLogEntry.class);
-            verify(auditRepository).log(captor.capture());
+            verify(repository).releaseReservation(eq("res-audit"), any(), any(), any(), any(), captor.capture());
             io.runcycles.protocol.model.audit.AuditLogEntry entry = captor.getValue();
             org.assertj.core.api.Assertions.assertThat(entry.getOperation()).isEqualTo("releaseReservation");
             org.assertj.core.api.Assertions.assertThat(entry.getResourceType()).isEqualTo("reservation");
@@ -1235,7 +1234,7 @@ class ReservationControllerTest {
             resp.setReleased(released);
             resp.setIdempotentReplay(true); // a retry of an already-released reservation
             when(repository.findReservationTenantById("res-audit")).thenReturn("tenant-target");
-            when(repository.releaseReservation(eq("res-audit"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-audit"), any(), any(), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"[INCIDENT_FORCE_RELEASE] stuck reservation\"}";
 
@@ -1243,8 +1242,8 @@ class ReservationControllerTest {
                             .contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isOk());
 
-            // the original release already audited; a replay must not double-log
-            verify(auditRepository, org.mockito.Mockito.never()).log(any());
+            // release.lua detects the replay before its atomic audit write block.
+            verify(repository).releaseReservation(eq("res-audit"), any(), any(), any(), any(), any());
         }
 
         @Test @DisplayName("tenant-auth release does NOT write an audit entry (audit is admin-only)")
@@ -1260,7 +1259,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-t")).thenReturn(TENANT);
-            when(repository.releaseReservation(eq("res-t"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-t"), any(), any(), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\"}";
 
             mockMvc.perform(post("/v1/reservations/res-t/release")
@@ -1270,7 +1269,8 @@ class ReservationControllerTest {
             // Tenant self-service shouldn't pollute the audit log —
             // that's admin-only. Tenant actions are visible in the
             // existing tenant-facing audit surfaces.
-            verify(auditRepository, org.mockito.Mockito.never()).log(any());
+            verify(repository).releaseReservation(eq("res-t"), any(), any(), any(), any(),
+                    org.mockito.ArgumentMatchers.isNull());
         }
 
         @Test @DisplayName("audit CR/LF in reason is sanitized before being recorded in metadata")
@@ -1282,7 +1282,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-x")).thenReturn("t");
-            when(repository.releaseReservation(eq("res-x"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-x"), any(), any(), any(), any(), any())).thenReturn(resp);
             String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"line1\\nFAKE_ENTRY\\nline3\"}";
 
@@ -1293,7 +1293,7 @@ class ReservationControllerTest {
             org.mockito.ArgumentCaptor<io.runcycles.protocol.model.audit.AuditLogEntry> captor =
                 org.mockito.ArgumentCaptor.forClass(
                     io.runcycles.protocol.model.audit.AuditLogEntry.class);
-            verify(auditRepository).log(captor.capture());
+            verify(repository).releaseReservation(eq("res-x"), any(), any(), any(), any(), captor.capture());
             String storedReason = captor.getValue().getMetadata().get("reason").toString();
             // No raw newlines in the recorded reason — attackers can't
             // forge audit entries by embedding line breaks.
@@ -1320,7 +1320,7 @@ class ReservationControllerTest {
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
             when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
-            when(repository.releaseReservation(eq("res-x"), any(), any(), any(), any())).thenReturn(resp);
+            when(repository.releaseReservation(eq("res-x"), any(), any(), any(), any(), any())).thenReturn(resp);
             String maliciousBody = "{\"idempotency_key\":\"" + UUID.randomUUID()
                 + "\",\"reason\":\"line1\\nFAKE_ADMIN_LOG\\nline3\"}";
             mockMvc.perform(post("/v1/reservations/res-x/release")

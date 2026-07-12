@@ -11,6 +11,7 @@ import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.audit.AuditLogEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +26,7 @@ import redis.clients.jedis.resps.ScanResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -75,6 +77,9 @@ public class RedisReservationRepository {
     private static final String COMPARE_AND_DELETE_SCRIPT =
         "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
             "return redis.call('DEL', KEYS[1]) else return 0 end";
+
+    @Value("${audit.retention.days:400}")
+    private int auditRetentionDays;
 
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
@@ -164,11 +169,9 @@ public class RedisReservationRepository {
                     if (original != null) {
                         return original;
                     }
-                    // Fallback (cache expired/absent, e.g. a reservation created before the
-                    // full-response cache existed): rebuild from the stored reservation. Balances
-                    // reflect current state and no cycles_evidence is replayed — a bounded
-                    // degradation only when the original body is no longer available.
-                    return rebuildReserveReplay(existingId);
+                    // Never synthesize a replay from current ledger state: balances, caps,
+                    // and evidence may differ from the original successful response.
+                    throw idempotencyReplayUnavailable();
                 }
 
                 // Parse balances from Lua response (read atomically with mutation)
@@ -375,6 +378,7 @@ public class RedisReservationRepository {
                 computePayloadHash(request), dryRunResponse);
             if (!cached) {
                 clearIdempotencyClaim(dryRun.claimKey(), dryRun.claimMarker());
+                throw idempotencyResponsePersistenceFailed();
             }
         }
         return dryRunResponse;
@@ -534,28 +538,6 @@ public class RedisReservationRepository {
         String cached = readCacheValueWithWait(
             lifecycleBodyCacheKey(artifactType, reservationId), RESERVE_BODY_CACHE_WAIT_ATTEMPTS);
         return cached == null ? null : objectMapper.readValue(cached, type);
-    }
-
-    private ReservationCreateResponse rebuildReserveReplay(String existingId) throws Exception {
-        try (Jedis jedis = jedisPool.getResource()) {
-            Map<String, String> existingFields = jedis.hgetAll("reservation:res_" + existingId);
-            if (existingFields == null || existingFields.isEmpty()) {
-                throw CyclesProtocolException.notFound(existingId);
-            }
-            ReservationSummary existing = buildReservationSummary(existingFields);
-            List<Balance> idempotencyBalances = fetchBalancesForScopes(
-                jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
-            return ReservationCreateResponse.builder()
-                .decision(Enums.DecisionEnum.ALLOW)
-                .reservationId(existingId)
-                .affectedScopes(existing.getAffectedScopes())
-                .scopePath(existing.getScopePath())
-                .reserved(existing.getReserved())
-                .expiresAtMs(existing.getExpiresAtMs())
-                .balances(idempotencyBalances)
-                .idempotentReplay(true)
-                .build();
-        }
     }
 
     private DryRunResult evaluateDryRun(Jedis jedis, ReservationCreateRequest request,
@@ -864,6 +846,16 @@ public class RedisReservationRepository {
             "Idempotency result is still being prepared; retry with the same idempotency_key", 500);
     }
 
+    private CyclesProtocolException idempotencyReplayUnavailable() {
+        return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
+            "Original idempotency response is temporarily unavailable; retry with the same idempotency_key", 500);
+    }
+
+    private CyclesProtocolException idempotencyResponsePersistenceFailed() {
+        return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
+            "Unable to persist idempotency response; retry with the same idempotency_key", 500);
+    }
+
     private String readCacheValueWithWait(String key, int attempts) {
         for (int attempt = 0; attempt <= attempts; attempt++) {
             if (attempt > 0 && !sleepBeforeIdempotencyRetry()) {
@@ -987,7 +979,7 @@ public class RedisReservationRepository {
                     cached.setIdempotentReplay(true);
                     return cached;
                 }
-                return committed; // fallback (cache absent): no evidence replayed
+                throw idempotencyReplayUnavailable();
             }
 
             // Fresh commit: emit `commit` evidence over {reservation_id, request, response}
@@ -1038,15 +1030,47 @@ public class RedisReservationRepository {
 
     public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
                                                String tenant, String actorType, String traceId) {
+        return releaseReservation(reservationId, request, tenant, actorType, traceId, null);
+    }
+
+    /**
+     * Release with an optional admin audit entry. The entry is passed into release.lua so
+     * the ledger transition and required admin audit record share one Redis atomic unit.
+     */
+    public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
+                                               String tenant, String actorType, String traceId,
+                                               AuditLogEntry auditEntry) {
         LOG.debug("Releasing reservation: {}", reservationId);
 
         Jedis jedis = null;
         try {
             jedis = jedisPool.getResource();
+            String auditJson = "";
+            String auditLogId = "";
+            long auditTtlSeconds = 0L;
+            if (auditEntry != null) {
+                auditLogId = auditEntry.getLogId();
+                if (auditLogId == null || auditLogId.isBlank()) {
+                    auditLogId = "log_" + UUID.randomUUID().toString().substring(0, 16);
+                    auditEntry.setLogId(auditLogId);
+                }
+                if (auditEntry.getTimestamp() == null) {
+                    auditEntry.setTimestamp(Instant.now());
+                }
+                auditJson = objectMapper.writeValueAsString(auditEntry);
+                auditTtlSeconds = auditRetentionDays > 0
+                        ? (long) auditRetentionDays * 86_400L : 0L;
+            }
             List<String> args = Arrays.asList(
                 reservationId,
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
-                computePayloadHash(request)
+                computePayloadHash(request),
+                auditJson,
+                auditLogId,
+                tenant != null ? tenant : "",
+                String.valueOf(auditTtlSeconds),
+                auditEntry != null && auditEntry.getTimestamp() != null
+                        ? String.valueOf(auditEntry.getTimestamp().toEpochMilli()) : "0"
             );
 
             Object result = luaScripts.eval(jedis, "release", releaseScript, args.toArray(new String[0]));
@@ -1092,7 +1116,7 @@ public class RedisReservationRepository {
                     cached.setIdempotentReplay(true);
                     return cached;
                 }
-                return releasedResponse; // fallback (cache absent): no evidence replayed
+                throw idempotencyReplayUnavailable();
             }
 
             // Fresh release: emit `release` evidence over {reservation_id, request, response}
@@ -1395,43 +1419,52 @@ public class RedisReservationRepository {
             String agentSegment = agent != null ? "agent:" + agent.toLowerCase() : null;
             String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
 
-            String scanCursor = "0";
-            do {
-                ScanResult<String> scan = jedis.scan(scanCursor, params);
-                List<String> keys = scan.getResult();
-                if (!keys.isEmpty()) {
-                    Pipeline pipeline = jedis.pipelined();
-                    Map<String, Response<Map<String, String>>> responses = new HashMap<>();
-                    for (String key : keys) {
-                        responses.put(key, pipeline.hgetAll(key));
-                    }
-                    pipeline.sync();
+            String tenantIndexKey = tenantReservationIndexKey(tenant);
+            String tenantIndexReadyKey = tenantIndexKey + ":ready";
+            if (jedis.exists(tenantIndexReadyKey)) {
+                hydrateIndexedReservations(jedis, tenantIndexKey, matching, tenant,
+                        idempotencyKey, status, workspaceSegment, appSegment,
+                        workflowSegment, agentSegment, toolsetSegment, fromMs, toMs,
+                        expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, include);
+            } else {
+                // One-time lazy backfill for reservations created before the tenant index.
+                // reserve.lua writes new members atomically, so reservations created during
+                // this scan cannot be lost when the ready marker is installed afterward.
+                String scanCursor = "0";
+                do {
+                    ScanResult<String> scan = jedis.scan(scanCursor, params);
+                    List<String> keys = scan.getResult();
+                    if (!keys.isEmpty()) {
+                        Pipeline pipeline = jedis.pipelined();
+                        Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+                        for (String key : keys) {
+                            responses.put(key, pipeline.hgetAll(key));
+                        }
+                        pipeline.sync();
 
-                    for (String key : keys) {
-                        try {
-                            Map<String, String> fields = responses.get(key).get();
-                            if (fields.isEmpty()) continue;
-                            if (!tenant.equals(fields.get("tenant"))) continue;
-                            if (status != null && !status.equals(fields.get("state"))) continue;
-                            if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) continue;
-                            String scopePath = fields.getOrDefault("scope_path", "").toLowerCase();
-                            if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) continue;
-                            if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) continue;
-                            if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
-                            if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
-                            if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
-                            if (!createdAtInWindow(fields, fromMs, toMs)) continue;
-                            if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) continue;
-                            if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) continue;
-
-                            matching.add(toSummary(buildReservationSummary(fields), include));
-                        } catch (Exception e) {
-                            LOG.warn("Failed to parse reservation: {}", LogSanitizer.sanitize(key), e);
+                        for (String key : keys) {
+                            try {
+                                Map<String, String> fields = responses.get(key).get();
+                                if (fields.isEmpty() || !tenant.equals(fields.get("tenant"))) continue;
+                                String reservationId = fields.get("reservation_id");
+                                if (reservationId != null && !reservationId.isBlank()) {
+                                    double score = parseIndexScore(fields.get("created_at"));
+                                    jedis.zadd(tenantIndexKey, score, reservationId);
+                                }
+                                ReservationSummary summary = matchingReservation(fields, tenant,
+                                        idempotencyKey, status, workspaceSegment, appSegment,
+                                        workflowSegment, agentSegment, toolsetSegment, fromMs, toMs,
+                                        expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, include);
+                                if (summary != null) matching.add(summary);
+                            } catch (Exception e) {
+                                LOG.warn("Failed to parse reservation: {}", LogSanitizer.sanitize(key), e);
+                            }
                         }
                     }
-                }
-                scanCursor = scan.getCursor();
-            } while (!"0".equals(scanCursor));
+                    scanCursor = scan.getCursor();
+                } while (!"0".equals(scanCursor));
+                jedis.set(tenantIndexReadyKey, "1");
+            }
 
             if (matching.size() >= SORTED_HYDRATE_WARN_THRESHOLD) {
                 LOG.warn("listReservationsSorted hydrated {} rows for tenant={} sort_by={} sort_dir={}; narrow filters or add sorted indices before this grows further",
@@ -1473,6 +1506,81 @@ public class RedisReservationRepository {
                 .nextCursor(nextCursor)
                 .build();
         }
+    }
+
+    private static String tenantReservationIndexKey(String tenant) {
+        return "reservation:idx:tenant:" + tenant;
+    }
+
+    private static double parseIndexScore(String createdAt) {
+        if (createdAt == null) return 0D;
+        try {
+            return Double.parseDouble(createdAt);
+        } catch (NumberFormatException ignored) {
+            return 0D;
+        }
+    }
+
+    private void hydrateIndexedReservations(
+            Jedis jedis, String indexKey, List<ReservationSummary> matching,
+            String tenant, String idempotencyKey, String status,
+            String workspaceSegment, String appSegment, String workflowSegment,
+            String agentSegment, String toolsetSegment, Long fromMs, Long toMs,
+            Long expiresFromMs, Long expiresToMs, Long finalizedFromMs, Long finalizedToMs,
+            Set<ReservationInclude> include) {
+        List<String> ids = jedis.zrange(indexKey, 0, -1);
+        final int batchSize = 500;
+        List<String> staleIds = new ArrayList<>();
+        for (int offset = 0; offset < ids.size(); offset += batchSize) {
+            List<String> batch = ids.subList(offset, Math.min(offset + batchSize, ids.size()));
+            Pipeline pipeline = jedis.pipelined();
+            List<Response<Map<String, String>>> responses = new ArrayList<>(batch.size());
+            for (String id : batch) {
+                responses.add(pipeline.hgetAll("reservation:res_" + id));
+            }
+            pipeline.sync();
+            for (int i = 0; i < batch.size(); i++) {
+                String id = batch.get(i);
+                try {
+                    Map<String, String> fields = responses.get(i).get();
+                    if (fields == null || fields.isEmpty()) {
+                        staleIds.add(id);
+                        continue;
+                    }
+                    ReservationSummary summary = matchingReservation(fields, tenant,
+                            idempotencyKey, status, workspaceSegment, appSegment,
+                            workflowSegment, agentSegment, toolsetSegment, fromMs, toMs,
+                            expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, include);
+                    if (summary != null) matching.add(summary);
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse indexed reservation: {}", LogSanitizer.sanitize(id), e);
+                }
+            }
+        }
+        if (!staleIds.isEmpty()) {
+            jedis.zrem(indexKey, staleIds.toArray(String[]::new));
+        }
+    }
+
+    private ReservationSummary matchingReservation(
+            Map<String, String> fields, String tenant, String idempotencyKey, String status,
+            String workspaceSegment, String appSegment, String workflowSegment,
+            String agentSegment, String toolsetSegment, Long fromMs, Long toMs,
+            Long expiresFromMs, Long expiresToMs, Long finalizedFromMs, Long finalizedToMs,
+            Set<ReservationInclude> include) throws Exception {
+        if (!tenant.equals(fields.get("tenant"))) return null;
+        if (status != null && !status.equals(fields.get("state"))) return null;
+        if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) return null;
+        String scopePath = fields.getOrDefault("scope_path", "").toLowerCase();
+        if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) return null;
+        if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) return null;
+        if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) return null;
+        if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) return null;
+        if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) return null;
+        if (!createdAtInWindow(fields, fromMs, toMs)) return null;
+        if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) return null;
+        if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) return null;
+        return toSummary(buildReservationSummary(fields), include);
     }
 
     /**
@@ -1795,6 +1903,7 @@ public class RedisReservationRepository {
             }
             if (!cacheIdempotentBody("decide", tenant, idempotencyKey, payloadHash, response)) {
                 clearIdempotencyClaim(claim.claimKey(), claim.claimMarker());
+                throw idempotencyResponsePersistenceFailed();
             }
             return response;
         } catch (CyclesProtocolException e) {
@@ -2202,46 +2311,6 @@ public class RedisReservationRepository {
             LOG.warn("Failed to compute payload hash, skipping mismatch detection", e);
             return "";
         }
-    }
-
-    /**
-     * Fetch current balances for a list of scopes and unit.
-     * Used to populate the optional balances field in mutation responses.
-     */
-    private List<Balance> fetchBalancesForScopes(Jedis jedis, List<String> scopes, Enums.UnitEnum unit) {
-        if (scopes == null || scopes.isEmpty()) return Collections.emptyList();
-
-        // Pipeline all HGETALL calls into a single round-trip
-        Pipeline pipeline = jedis.pipelined();
-        Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
-        for (String scope : scopes) {
-            String budgetKey = "budget:" + scope + ":" + unit.name();
-            responses.put(scope, pipeline.hgetAll(budgetKey));
-        }
-        pipeline.sync();
-
-        List<Balance> balances = new ArrayList<>();
-        for (Map.Entry<String, Response<Map<String, String>>> entry : responses.entrySet()) {
-            String scope = entry.getKey();
-            Map<String, String> budget = entry.getValue().get();
-            if (budget != null && !budget.isEmpty()) {
-                long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
-                long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
-                boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
-                balances.add(Balance.builder()
-                    .scope(leafScope(scope))
-                    .scopePath(scope)
-                    .remaining(new SignedAmount(unit, Long.parseLong(budget.getOrDefault("remaining", "0"))))
-                    .reserved(new Amount(unit, Long.parseLong(budget.getOrDefault("reserved", "0"))))
-                    .spent(new Amount(unit, Long.parseLong(budget.getOrDefault("spent", "0"))))
-                    .allocated(new Amount(unit, Long.parseLong(budget.getOrDefault("allocated", "0"))))
-                    .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
-                    .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
-                    .isOverLimit(isOverLimit ? true : null)
-                    .build());
-            }
-        }
-        return balances;
     }
 
     /**

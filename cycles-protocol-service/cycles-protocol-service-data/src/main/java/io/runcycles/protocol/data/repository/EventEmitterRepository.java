@@ -9,10 +9,13 @@ import io.runcycles.protocol.model.webhook.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Repository;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.time.Instant;
 import java.util.*;
@@ -37,6 +40,39 @@ public class EventEmitterRepository {
 
     @org.springframework.beans.factory.annotation.Value("${events.retention.delivery-ttl-days:14}")
     private int deliveryTtlDays;
+
+    /**
+     * Prune ZSET pointers after the underlying event/delivery keys reach their
+     * configured TTL. Redis expires the string values, not their index members.
+     */
+    @Scheduled(cron = "${events.retention.sweep-cron:0 30 3 * * *}")
+    public void sweepStaleIndexEntries() {
+        try (Jedis jedis = jedisPool.getResource()) {
+            long now = Instant.now().toEpochMilli();
+            long eventCutoff = now - Math.max(0L, (long) eventTtlDays) * 86_400_000L;
+            long deliveryCutoff = now - Math.max(0L, (long) deliveryTtlDays) * 86_400_000L;
+            long removedEvents = pruneIndexes(jedis, "events:*", eventCutoff);
+            long removedDeliveries = pruneIndexes(jedis, "deliveries:*", deliveryCutoff);
+            LOG.info("Event index retention sweep completed: removed_event_pointers={} removed_delivery_pointers={}",
+                    removedEvents, removedDeliveries);
+        } catch (Exception e) {
+            LOG.error("Event index retention sweep failed (non-fatal; next run will retry)", e);
+        }
+    }
+
+    private long pruneIndexes(Jedis jedis, String pattern, long cutoffMillis) {
+        long removed = 0L;
+        String cursor = ScanParams.SCAN_POINTER_START;
+        ScanParams params = new ScanParams().match(pattern).count(100);
+        do {
+            ScanResult<String> scan = jedis.scan(cursor, params);
+            for (String key : scan.getResult()) {
+                removed += jedis.zremrangeByScore(key, Double.NEGATIVE_INFINITY, cutoffMillis);
+            }
+            cursor = scan.getCursor();
+        } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+        return removed;
+    }
 
     /**
      * Save an event and dispatch to matching webhook subscriptions.

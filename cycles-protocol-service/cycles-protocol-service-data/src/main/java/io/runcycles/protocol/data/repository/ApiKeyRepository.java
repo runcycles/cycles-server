@@ -49,17 +49,21 @@ public class ApiKeyRepository {
 
     public ApiKeyValidationResponse validate(String keySecret) {
         String prefix = null;
-        try (Jedis jedis = jedisPool.getResource()) {
+        try {
             prefix = extractPrefix(keySecret);
-            String keyId = jedis.get("apikey:lookup:" + prefix);
-            if (keyId == null) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
+            ApiKey key;
+            try (Jedis jedis = jedisPool.getResource()) {
+                String keyId = jedis.get("apikey:lookup:" + prefix);
+                if (keyId == null) {
+                    return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
+                }
+                String data = jedis.get("apikey:" + keyId);
+                if (data == null) {
+                    return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
+                }
+                key = objectMapper.readValue(data, ApiKey.class);
             }
-            String data = jedis.get("apikey:" + keyId);
-            if (data == null) {
-                return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
-            }
-            ApiKey key = objectMapper.readValue(data, ApiKey.class);
+
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId() != null ? key.getTenantId() : "").reason("KEY_" + key.getStatus()).build();
             }
@@ -73,7 +77,10 @@ public class ApiKeyRepository {
                 return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_OWNED_BY_TENANT").build();
             }
             // Check tenant status: reject if SUSPENDED or CLOSED
-            String tenantData = jedis.get("tenant:" + key.getTenantId());
+            String tenantData;
+            try (Jedis jedis = jedisPool.getResource()) {
+                tenantData = jedis.get("tenant:" + key.getTenantId());
+            }
             if (tenantData != null) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);

@@ -110,7 +110,7 @@ class BudgetExhaustionConcurrentPropertyTest extends BaseIntegrationTest {
      * against a REJECT-policy budget, the three invariants hold.
      *
      * The try count is NOT fixed on the annotation so it can be overridden at runtime via
-     * -Djqwik.defaultTries=<N>. Default is 20 (set in src/test/resources/jqwik.properties)
+     * -Djqwik.tries.default=<N>. Default is 20 (set in src/test/resources/junit-platform.properties)
      * for PR-feedback speed; nightly CI runs with 100 for ~5x deeper interleaving coverage.
      */
     @Property(shrinking = ShrinkingMode.FULL)

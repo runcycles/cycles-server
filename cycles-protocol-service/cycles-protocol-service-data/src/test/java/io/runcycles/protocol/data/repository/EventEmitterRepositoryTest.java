@@ -16,6 +16,8 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.Response;
+import redis.clients.jedis.params.ScanParams;
+import redis.clients.jedis.resps.ScanResult;
 
 import java.time.Instant;
 import java.util.*;
@@ -61,6 +63,15 @@ class EventEmitterRepositoryTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    @Test
+    void retentionSweepFailureIsNonFatal() {
+        when(jedisPool.getResource()).thenThrow(new RuntimeException("redis unavailable"));
+
+        repository.sweepStaleIndexEntries();
+
+        verify(jedisPool).getResource();
     }
 
     /**
@@ -266,6 +277,23 @@ class EventEmitterRepositoryTest {
 
         // Should not throw
         repository.emit(event);
+    }
+
+    @Test
+    void retentionSweep_prunesEventAndDeliveryIndexes() {
+        ScanResult<String> first = new ScanResult<>(ScanParams.SCAN_POINTER_START.getBytes(),
+                List.of("events:t1", "events:_all"));
+        ScanResult<String> second = new ScanResult<>(ScanParams.SCAN_POINTER_START.getBytes(),
+                List.of("deliveries:whsub_1"));
+        when(jedis.scan(eq(ScanParams.SCAN_POINTER_START), any(ScanParams.class)))
+                .thenReturn(first, second);
+        when(jedis.zremrangeByScore(anyString(), anyDouble(), anyDouble())).thenReturn(1L);
+
+        repository.sweepStaleIndexEntries();
+
+        verify(jedis).zremrangeByScore(eq("events:t1"), eq(Double.NEGATIVE_INFINITY), anyDouble());
+        verify(jedis).zremrangeByScore(eq("events:_all"), eq(Double.NEGATIVE_INFINITY), anyDouble());
+        verify(jedis).zremrangeByScore(eq("deliveries:whsub_1"), eq(Double.NEGATIVE_INFINITY), anyDouble());
     }
 
     // ---- matchesScope (spec scope_filter wildcard semantics) ----

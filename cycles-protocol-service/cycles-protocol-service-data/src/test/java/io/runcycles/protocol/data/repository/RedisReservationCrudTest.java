@@ -338,10 +338,15 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                     Map.of("reservation_id", "existing-res"));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hgetAll("reservation:res_existing-res")).thenReturn(reservationFields("existing-res", "ACTIVE"));
-            Response<Map<String, String>> budgetResp = mock(Response.class);
-            when(budgetResp.get()).thenReturn(budgetMap(10000, 5000, 0, 5000));
-            when(pipeline.hgetAll(anyString())).thenReturn(budgetResp);
+            ReservationCreateResponse original = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .reservationId("existing-res")
+                    .affectedScopes(List.of("tenant:acme"))
+                    .reserved(defaultEstimate())
+                    .balances(List.of())
+                    .build();
+            when(jedis.get("reserve:body:existing-res"))
+                    .thenReturn(objectMapper.writeValueAsString(original));
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("idem-dup");
@@ -398,7 +403,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
-        void shouldWaitForCachedOriginalResponseBeforeFallbackOnIdempotencyHit() throws Exception {
+        void shouldWaitForCachedOriginalResponseOnIdempotencyHit() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
@@ -435,6 +440,29 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             org.mockito.InOrder order = inOrder(jedis);
             order.verify(jedis).close();
             order.verify(jedis).get("reserve:body:orig-res");
+            verify(jedis, never()).hgetAll("reservation:res_orig-res");
+        }
+
+        @Test
+        void shouldFailRetriablyWhenOriginalReserveResponseIsUnavailable() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(Map.of("reservation_id", "orig-res")));
+            when(jedis.get("reserve:body:orig-res")).thenReturn(null);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("idem-hit");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasMessageContaining("Original idempotency response");
             verify(jedis, never()).hgetAll("reservation:res_orig-res");
         }
 
@@ -859,10 +887,12 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             request.setEstimate(defaultEstimate());
             request.setDryRun(true);
 
-            ReservationCreateResponse response = repository.createReservation(request, "acme");
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasMessageContaining("persist idempotency response");
 
             org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
-            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
             verify(jedis).set(eq("idem:acme:dry_run:dry-cache-fail"), markerCaptor.capture(),
                     any(SetParams.class));
             verify(jedis).eval(contains("redis.call('GET'"),
@@ -931,11 +961,9 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
-        void dryRunClaimClearFailsOpenWhenPoolUnavailable() throws Exception {
-            // After a fresh dry-run is evaluated, if caching the body AND clearing the claim both
-            // fail because the pool is exhausted (self-acquired connections throw on checkout), the
-            // dry-run must still return its computed decision — releasing the claim is never allowed
-            // to fail the response.
+        void dryRunCacheFailureReturnsRetriableErrorWhenPoolUnavailable() throws Exception {
+            // A computed response that cannot be persisted cannot satisfy the original-response
+            // replay contract. Claim cleanup remains fail-open, but the request itself is retriable.
             when(jedisPool.getResource()).thenReturn(jedis).thenThrow(new RuntimeException("pool down"));
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
@@ -950,9 +978,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             request.setEstimate(defaultEstimate());
             request.setDryRun(true);
 
-            ReservationCreateResponse response = repository.createReservation(request, "acme");
-
-            assertThat(response.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasMessageContaining("persist idempotency response");
         }
     }
 
@@ -1026,7 +1055,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
     class CreateReservationIdempotencyEdgeCases {
 
         @Test
-        void shouldThrowNotFoundWhenIdempotencyHitWithEmptyExistingFields() throws Exception {
+        void shouldNotReconstructReplayWhenOriginalBodyIsMissingAndHashIsEmpty() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
@@ -1035,9 +1064,6 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                 Map.of("reservation_id", "vanished-res"));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            // Existing reservation fields are empty (expired/evicted)
-            when(jedis.hgetAll("reservation:res_vanished-res")).thenReturn(Map.of());
-
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("idem-vanished");
             request.setSubject(defaultSubject());
@@ -1046,11 +1072,13 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             assertThatThrownBy(() -> repository.createReservation(request, "acme"))
                 .isInstanceOf(CyclesProtocolException.class)
-                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                .hasMessageContaining("Original idempotency response");
+            verify(jedis, never()).hgetAll("reservation:res_vanished-res");
         }
 
         @Test
-        void shouldThrowNotFoundWhenIdempotencyHitWithNullExistingFields() throws Exception {
+        void shouldNotReconstructReplayWhenOriginalBodyIsMissingAndHashIsNull() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
@@ -1058,8 +1086,6 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             String luaResponse = objectMapper.writeValueAsString(
                 Map.of("reservation_id", "null-res"));
             when(luaScripts.eval(eq(jedis), eq("reserve"), eq("RESERVE_SCRIPT"), any(String[].class))).thenReturn(luaResponse);
-            when(jedis.hgetAll("reservation:res_null-res")).thenReturn(null);
-
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("idem-null");
             request.setSubject(defaultSubject());
@@ -1068,7 +1094,9 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             assertThatThrownBy(() -> repository.createReservation(request, "acme"))
                 .isInstanceOf(CyclesProtocolException.class)
-                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.NOT_FOUND);
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                .hasMessageContaining("Original idempotency response");
+            verify(jedis, never()).hgetAll("reservation:res_null-res");
         }
     }
 

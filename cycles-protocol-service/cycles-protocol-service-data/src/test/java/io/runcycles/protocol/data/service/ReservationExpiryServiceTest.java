@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.model.event.EventType;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,6 +41,7 @@ class ReservationExpiryServiceTest {
         setField(service, "expireScript", "-- expire lua script");
         setField(service, "eventEmitter", eventEmitter);
         setField(service, "metrics", metrics);
+        setField(service, "objectMapper", new ObjectMapper());
         when(jedisPool.getResource()).thenReturn(jedis);
         // Mock Redis TIME — returns [seconds, microseconds].
         // Use lenient() because some tests override getResource() to throw before time() is called.
@@ -145,8 +147,8 @@ class ReservationExpiryServiceTest {
                 "scope_path", "tenant:t1/agent:bot",
                 "estimate_unit", "USD_MICROCENTS",
                 "estimate_amount", "5000",
-                "created_at_ms", "1710768000000",
-                "expires_at_ms", "1710768060000",
+                "created_at", "1710768000000",
+                "expires_at", "1710768060000",
                 "extension_count", "2"
         ));
 
@@ -177,6 +179,19 @@ class ReservationExpiryServiceTest {
         service.expireReservations();
 
         verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldNotEmitEventForAlreadyExpiredSkipResult() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
+                .thenReturn("{\"status\":\"SKIP\",\"state\":\"EXPIRED\"}");
+
+        service.expireReservations();
+
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(metrics, never()).recordExpired(anyString());
     }
 
     @Test

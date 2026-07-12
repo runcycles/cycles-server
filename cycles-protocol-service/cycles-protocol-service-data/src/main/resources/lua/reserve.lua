@@ -186,6 +186,10 @@ redis.call('HMSET', reservation_key,
 
 -- Add to reservation index
 redis.call('ZADD', 'reservation:ttl', expires_at, reservation_id)
+-- Per-tenant candidate index for listReservations. The Java read path still
+-- applies every filter and sort comparator, but no longer scans other tenants'
+-- reservation hashes once the lazy backfill marker is present.
+redis.call('ZADD', 'reservation:idx:tenant:' .. tenant, now, reservation_id)
 
 -- After successful reservation, store idempotency mapping
 if idempotency_key ~= "" and idempotency_key ~= nil then

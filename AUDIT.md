@@ -5,6 +5,88 @@
 
 ---
 
+### 2026-07-12 — v0.1.25.49: runtime correctness and performance hardening
+
+Follow-up audit of the runtime server against the current
+`cycles-protocol-v0.yaml` identified a small set of correctness and scaling
+risks worth fixing without introducing new services or a multi-index migration.
+This release keeps the wire contract unchanged and concentrates the changes in
+the existing repositories and Lua atomic units.
+
+**Expiry correctness.** `ReservationExpiryService` previously decided whether
+to emit `reservation.expired` with `result.toString().contains("EXPIRED")`.
+That also matched Lua skip results such as
+`{"status":"SKIP","state":"EXPIRED"}`, duplicating events and metrics for a
+reservation already finalized. The service now parses JSON and requires the
+top-level `status` to equal `EXPIRED`. It also reads the actual reservation hash
+fields, `created_at` and `expires_at`, rather than nonexistent `_ms` field names,
+so emitted TTL metadata is populated correctly.
+
+**Redis pool pressure.** API-key validation held a Jedis connection while
+performing BCrypt, the slowest CPU operation in authentication. The lookup and
+key JSON are now read in one short checkout, BCrypt runs after that connection
+closes, and only a successfully verified key performs a second short checkout
+for the fresh tenant-status gate. This removes pool occupancy during hashing
+without caching authorization status or weakening revocation behavior between
+requests.
+
+**Truthful idempotency.** The reserve replay fallback rebuilt a nominal success
+from the current reservation and ledger, while commit/release returned a
+partially reconstructed body when their cached original was absent. Those
+responses could differ from the normative original balances, caps, and evidence
+reference. All three lifecycle operations now return a retriable 500
+`INTERNAL_ERROR` when the canonical original body is temporarily unavailable.
+Dry-run and decide similarly clear their pending claim and return a retriable
+error when a fresh canonical response cannot be cached. Removing reconstruction
+also made `fetchBalancesForScopes` dead code, so it was deleted.
+
+**Atomic admin audit.** The controller previously released first and wrote the
+required admin-on-behalf-of audit row afterward through a fail-open repository;
+a Redis outage between those operations produced a successful mutation with no
+audit record. The controller now builds the sanitized `AuditLogEntry` before
+calling the repository. `release.lua` writes `audit:log:<id>`,
+`audit:logs:<tenant>`, and `audit:logs:_all` inside the same script execution as
+the fresh release. Idempotent replays return before these writes, preserving one
+audit row per mutation. Existing audit retention (default 400 days, zero for no
+TTL) is passed into the script.
+
+**Bounded index maintenance.** Event and delivery values already expired, but
+their ZSET members accumulated indefinitely. A non-fatal scheduled sweep now
+SCANs only `events:*` and `deliveries:*` index keys and prunes scores older than
+the configured value TTLs. The default maintenance window is 03:30 daily and is
+overridable with `EVENT_RETENTION_SWEEP_CRON`.
+
+**Sorted-list performance without seven indices.** The deferred design proposed
+seven per-sort-key ZSETs and updates in every lifecycle script. This release
+implements the lower-complexity step: one per-tenant candidate ZSET updated by a
+single `ZADD` in `reserve.lua`. The first sorted read performs an idempotent lazy
+backfill and sets a readiness marker; subsequent reads `ZRANGE` only that
+tenant's IDs, pipeline-hydrate in batches of 500, prune stale members, apply all
+existing filters, and use the unchanged in-memory comparator/cursor logic. Work
+therefore falls from O(total reservations) to O(tenant reservations) with no
+wire change. Full per-sort-key indices remain deferred until one tenant's size
+justifies the write and migration cost.
+
+**jqwik configuration.** jqwik 1.9 no longer reads `jqwik.properties` (removed
+since 1.6). Configuration now lives in `junit-platform.properties`; the
+supported override is `-Djqwik.tries.default=<N>`. The nightly workflow and
+runbook use the same parameter. A profile run confirmed all five properties
+executed exactly 20 tries.
+
+**Validation.** Current protocol checkout `2e14d79`:
+
+- clean `mvn verify`: 801 tests (31 model + 503 data + 267 API), zero failures;
+  JaCoCo line coverage 95.51% data and 95.12% API;
+- Docker integration profile: 1,074 tests (31 + 503 + 540), zero failures;
+- jqwik property profile: 5 properties at 20 tries, zero failures;
+- benchmark profile: 15 benchmarks, zero failures and zero concurrent errors;
+  reserve p50 15.4 ms, commit p50 14.7 ms, release p50 14.8 ms, and 597.8
+  ops/s at 32 threads on the local Docker Desktop environment. These absolute
+  values are environment-specific; the run is a regression smoke test, not a
+  replacement for a same-host before/after baseline.
+
+Version/revision 0.1.25.48 → 0.1.25.49.
+
 ### 2026-07-11 — v0.1.25.48: TENANT_CLOSED guard on POST /v1/events
 
 Closes the open question flagged in the v0.1.25.47 entry: `/v1/events`

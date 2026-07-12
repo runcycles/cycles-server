@@ -434,6 +434,7 @@ don't fit.
 | `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+) and operational endpoint access. Production Compose requires it. |
 | `audit.retention.days` | `400` | Retention for runtime-written audit rows (v0.1.25.15+). Default matches admin's `audit.retention.authenticated.days` — SOC2 Type II 12-month lookback + 1-month auditor-lag buffer. Set `0` for indefinite retention (legal hold, archive-store deployments). |
 | `audit.sweep.cron` | `0 0 3 * * *` | Daily cron for pruning stale ZSET index pointers (v0.1.25.15+). Lower cadence if audit write volume is very high; leave as-is otherwise. Skipped when `audit.retention.days=0`. |
+| `events.retention.sweep-cron` | `0 30 3 * * *` | Daily cleanup of stale `events:*` and `deliveries:*` ZSET pointers after their backing rows expire. Override with `EVENT_RETENTION_SWEEP_CRON` when Redis maintenance needs a different window. |
 | `management.endpoints.web.exposure.include` | `health,info,prometheus` | Add more actuator endpoints if you need them, but `prometheus` is the one ops cares about. |
 | `springdoc.api-docs.enabled` | `true` | Set `false` in production unless API docs are intentionally exposed to callers with `X-Admin-API-Key`. Production Compose disables it. |
 | `springdoc.swagger-ui.enabled` | `true` | Set `false` in production unless Swagger UI is intentionally exposed to callers with `X-Admin-API-Key`. Production Compose disables it. |
@@ -449,18 +450,20 @@ do not publish its internal worker port `7980` on ingress.
 `tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`,
 `expires_at_ms`) and `sort_dir` (`asc` or `desc`, default `desc`).
 
-Implementation: full-SCAN + in-memory sort per sorted page. This is
-**O(N)** in reservations matching the filter — fine at the current
-runtime-plane target of ≤ 10³ reservations per tenant. Watch the
+Implementation: sorted requests use a lightweight per-tenant candidate ZSET,
+then pipeline-hydrate, filter, and sort that tenant's rows in memory. Existing
+deployments lazily backfill each tenant's index on its first sorted request;
+subsequent sorted requests avoid the global reservation-key SCAN. This is
+**O(N)** in that tenant's reservations, rather than total reservations across
+all tenants. Legacy unsorted requests retain their SCAN cursor behavior. Watch the
 Spring Boot `http_server_requests_seconds{uri="/v1/reservations"}`
 p99: if it climbs above 500 ms under real load, a tenant has grown
-past the in-memory threshold and per-tenant ZSET indexing becomes
+past the in-memory sort threshold and per-sort-key ZSET indexing becomes
 worthwhile. Track the top `tenant` tag on that metric to spot who.
 
-The deferred ZSET-indexed design is fully written up in
+The implemented candidate index and the deferred full per-sort-key design are documented in
 [`docs/deferred-optimizations/sorted-list-zset-indices.md`](docs/deferred-optimizations/sorted-list-zset-indices.md)
-— cost/benefit, trigger conditions, benchmark impact, rollback.
-Pull it out when any of the triggers listed there fires.
+— cost/benefit, trigger conditions, benchmark impact, and rollback.
 
 Legacy clients (no sort params) stay on the existing Redis-SCAN
 cursor path and are unaffected by this concern.

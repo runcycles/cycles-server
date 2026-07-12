@@ -146,6 +146,9 @@ class ApiKeyRepositoryTest {
             assertThat(result.getTenantId()).isEqualTo("acme-corp");
             assertThat(result.getKeyId()).isEqualTo(keyId);
             assertThat(result.getPermissions()).containsExactly("reservations:create");
+            // Lookup connection is released before BCrypt, then a short-lived
+            // second connection performs the tenant-status read.
+            verify(jedis, times(2)).close();
         }
 
         @Test
@@ -408,7 +411,7 @@ class ApiKeyRepositoryTest {
             assertThat(result2.isValid()).isFalse();
             assertThat(result2.getReason()).isEqualTo("KEY_REVOKED");
 
-            verify(jedisPool, times(2)).getResource();
+            verify(jedisPool, times(3)).getResource();
         }
 
         @Test
@@ -428,7 +431,7 @@ class ApiKeyRepositoryTest {
 
             assertThat(result1.isValid()).isTrue();
             assertThat(result2.isValid()).isTrue();
-            verify(jedisPool, times(2)).getResource();
+            verify(jedisPool, times(4)).getResource();
             verify(jedis, times(2)).get("apikey:" + keyId);
         }
 
@@ -470,7 +473,7 @@ class ApiKeyRepositoryTest {
             assertThat(result3.isValid()).isTrue();
             verify(spyRepository, times(1)).verifyKey(secret, staleHash);
             verify(spyRepository, times(1)).verifyKey(secret, rotatedHash);
-            verify(jedisPool, times(3)).getResource();
+            verify(jedisPool, times(4)).getResource();
             verify(jedis, times(3)).get("apikey:" + keyId);
         }
 
@@ -514,7 +517,7 @@ class ApiKeyRepositoryTest {
             ApiKeyValidationResponse result2 = repository.validate(secret);
             assertThat(result2.isValid()).isTrue();
 
-            verify(jedisPool, times(2)).getResource();
+            verify(jedisPool, times(3)).getResource();
         }
     }
 }

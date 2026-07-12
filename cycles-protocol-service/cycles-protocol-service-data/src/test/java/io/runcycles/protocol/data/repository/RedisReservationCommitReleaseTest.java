@@ -2,11 +2,13 @@ package io.runcycles.protocol.data.repository;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.audit.AuditLogEntry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -241,6 +243,31 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(jedis, never()).psetex(eq("commit:body:res-cr"), anyLong(), anyString());
         }
+
+        @Test
+        void commitReplayFailsRetriablyWhenOriginalBodyIsUnavailable() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-cr");
+            luaMap.put("state", "COMMITTED");
+            luaMap.put("replay", true);
+            luaMap.put("charged", 3000);
+            luaMap.put("estimate_amount", 3000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-replay");
+
+            assertThatThrownBy(() -> repository.commitReservation("res-cr", request, "tenant-a", "trace-c"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasMessageContaining("Original idempotency response");
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+        }
     }
 
     // ---- releaseReservation ----
@@ -400,6 +427,95 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("d".repeat(64));
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(jedis, never()).psetex(eq("release:body:res-rr"), anyLong(), anyString());
+        }
+
+        @Test
+        void releaseReplayFailsRetriablyWhenOriginalBodyIsUnavailable() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("reservation_id", "res-rr");
+            luaMap.put("state", "RELEASED");
+            luaMap.put("replay", true);
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+
+            assertThatThrownBy(() -> repository.releaseReservation("res-rr",
+                    ReleaseRequest.builder().idempotencyKey("rel-replay").build(),
+                    "tenant-a", "tenant", "trace-r"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasMessageContaining("Original idempotency response");
+            verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+        }
+
+        @Test
+        void adminAuditPayloadIsPassedToReleaseScriptAtomically() throws Exception {
+            objectMapper.findAndRegisterModules();
+            setField("auditRetentionDays", 400);
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            Map<String, Object> luaMap = new LinkedHashMap<>();
+            luaMap.put("estimate_amount", 5000);
+            luaMap.put("estimate_unit", "USD_MICROCENTS");
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(luaMap));
+
+            Instant timestamp = Instant.parse("2026-07-12T12:00:00Z");
+            AuditLogEntry audit = AuditLogEntry.builder()
+                    .logId("log_atomic")
+                    .timestamp(timestamp)
+                    .tenantId("tenant-a")
+                    .operation("reservation.release")
+                    .resourceType("reservation")
+                    .resourceId("res-audit")
+                    .status(200)
+                    .build();
+
+            repository.releaseReservation("res-audit",
+                    ReleaseRequest.builder().idempotencyKey("rel-audit").build(),
+                    "tenant-a", "admin_on_behalf_of", "trace-a", audit);
+
+            org.mockito.ArgumentCaptor<String[]> args = org.mockito.ArgumentCaptor.forClass(String[].class);
+            verify(luaScripts).eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), args.capture());
+            assertThat(args.getValue()).hasSize(8);
+            assertThat(args.getValue()[3]).contains("\"log_id\":\"log_atomic\"")
+                    .contains("\"operation\":\"reservation.release\"");
+            assertThat(args.getValue()[4]).isEqualTo("log_atomic");
+            assertThat(args.getValue()[5]).isEqualTo("tenant-a");
+            assertThat(args.getValue()[6]).isEqualTo(String.valueOf(400L * 86_400L));
+            assertThat(args.getValue()[7]).isEqualTo(String.valueOf(timestamp.toEpochMilli()));
+        }
+
+        @Test
+        void adminAuditDefaultsAreGeneratedWithoutRetentionTtl() throws Exception {
+            objectMapper.findAndRegisterModules();
+            setField("auditRetentionDays", 0);
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                    .thenReturn(objectMapper.writeValueAsString(Map.of(
+                            "estimate_amount", 5000,
+                            "estimate_unit", "USD_MICROCENTS")));
+            AuditLogEntry audit = AuditLogEntry.builder()
+                    .tenantId("tenant-a")
+                    .operation("releaseReservation")
+                    .status(200)
+                    .build();
+
+            repository.releaseReservation("res-audit-defaults",
+                    ReleaseRequest.builder().build(), "tenant-a",
+                    "admin_on_behalf_of", null, audit);
+
+            org.mockito.ArgumentCaptor<String[]> args = org.mockito.ArgumentCaptor.forClass(String[].class);
+            verify(luaScripts).eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), args.capture());
+            assertThat(audit.getLogId()).startsWith("log_");
+            assertThat(audit.getTimestamp()).isNotNull();
+            assertThat(args.getValue()[4]).isEqualTo(audit.getLogId());
+            assertThat(args.getValue()[6]).isEqualTo("0");
+            assertThat(args.getValue()[7]).isEqualTo(String.valueOf(audit.getTimestamp().toEpochMilli()));
         }
     }
 

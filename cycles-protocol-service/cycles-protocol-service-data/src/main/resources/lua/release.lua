@@ -4,6 +4,11 @@
 local reservation_id = ARGV[1]
 local idempotency_key = ARGV[2]
 local payload_hash    = ARGV[3] or ""
+local audit_json      = ARGV[4] or ""
+local audit_log_id    = ARGV[5] or ""
+local audit_tenant    = ARGV[6] or ""
+local audit_ttl       = tonumber(ARGV[7] or 0)
+local audit_score     = tonumber(ARGV[8] or 0)
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -154,6 +159,20 @@ redis.call('HMSET', reservation_key,
     'released_idempotency_key', idempotency_key,
     'released_payload_hash', payload_hash
 )
+
+-- Admin-on-behalf-of releases have a normative audit requirement. Persist the
+-- audit row and both governance-readable indexes inside the same Lua execution
+-- as the release so a successful fresh release cannot omit its audit record.
+if audit_json ~= "" and audit_log_id ~= "" and audit_tenant ~= "" then
+    local audit_key = "audit:log:" .. audit_log_id
+    if audit_ttl and audit_ttl > 0 then
+        redis.call('SET', audit_key, audit_json, 'EX', audit_ttl)
+    else
+        redis.call('SET', audit_key, audit_json)
+    end
+    redis.call('ZADD', "audit:logs:" .. audit_tenant, audit_score, audit_log_id)
+    redis.call('ZADD', "audit:logs:_all", audit_score, audit_log_id)
+end
 
 -- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
 redis.call('ZREM', 'reservation:ttl', reservation_id)

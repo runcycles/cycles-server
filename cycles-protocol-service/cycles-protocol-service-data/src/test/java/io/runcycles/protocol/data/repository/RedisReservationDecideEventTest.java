@@ -431,6 +431,31 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
         }
 
         @Test
+        void cacheFailureClearsDecideClaimAndReturnsRetriableError() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            lenient().when(jedis.hget("budget:tenant:acme/app:myapp:USD_MICROCENTS", "caps_json")).thenReturn(null);
+            doNothing().doNothing().doThrow(new RuntimeException("cache down")).when(pipeline).sync();
+
+            DecisionRequest request = DecisionRequest.builder()
+                    .idempotencyKey("decide-cache-fail")
+                    .subject(defaultSubject())
+                    .action(defaultAction())
+                    .estimate(defaultEstimate())
+                    .build();
+
+            assertThatThrownBy(() -> repository.decide(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasMessageContaining("persist idempotency response");
+            verify(jedis).eval(contains("redis.call('GET'"),
+                    eq(List.of("idem:acme:decide:decide-cache-fail")), anyList());
+        }
+
+        @Test
         void freshDecideStampsEvidenceAndCachesBody() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();

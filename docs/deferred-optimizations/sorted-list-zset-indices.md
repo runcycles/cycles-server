@@ -1,12 +1,25 @@
-# Deferred: per-tenant ZSET indices for sorted list-reservations
+# Partially implemented: per-tenant ZSET indices for sorted list-reservations
 
-**Status:** deferred — not currently scheduled. Triggers below.
+**Status:** lightweight tenant candidate index implemented 2026-07-12; seven per-sort-key indices remain deferred. Triggers below.
 **Context:** analysed 2026-04-16 during v0.1.25.12 release (introduced `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16).
 **Owner:** unassigned until a triggering condition lands.
 
 ## The problem this would solve
 
-v0.1.25.12 ships a **sorted list path** on `GET /v1/reservations`. The current implementation does a full Redis `SCAN` of `reservation:res_*`, filters in-stream, sorts in memory, and slices by cursor. This is **O(N) in total reservations** (not per-tenant) because `SCAN` walks the whole keyspace. Every sorted-list request repeats this work.
+v0.1.25.12 shipped a **sorted list path** on `GET /v1/reservations` that did a full Redis `SCAN` of `reservation:res_*`, filtered in-stream, sorted in memory, and sliced by cursor. That was **O(N) in total reservations** (not per-tenant) because `SCAN` walked the whole keyspace on every sorted-list request.
+
+The 2026-07-12 hardening change implements the low-complexity middle ground: one
+`reservation:idx:tenant:<tenant>` ZSET whose members are reservation IDs and whose
+scores are creation timestamps. `reserve.lua` updates it atomically. A tenant's
+first sorted read lazily backfills older rows and installs a readiness marker;
+later sorted reads use `ZRANGE` plus pipelined hash hydration and never scan other
+tenants' reservations. Stale members are pruned while hydrating.
+
+This reduces repeated work from total-keyspace O(N) to per-tenant O(N), adds only
+one `ZADD` to reservation creation, preserves every existing sort/filter/cursor
+semantic, and avoids the write amplification and migration complexity of seven
+indices. The remaining design below is for the next step: eliminating the
+per-tenant in-memory sort if a single tenant becomes large enough to justify it.
 
 At runtime-plane scale (~10³ reservations per tenant, ~10⁴ total across tenants), full-SCAN is fine — ~4ms on the benchmark, well inside any practical SLO. Above that, latency degrades roughly linearly with total keyspace size.
 
@@ -19,11 +32,11 @@ At runtime-plane scale (~10³ reservations per tenant, ~10⁴ total across tenan
    100,000   —  ~800ms+      (Redis GC pressure dominates)
 ```
 
-The ZSET-indexed approach replaces the full SCAN with `ZRANGEBYSCORE` (or `ZRANGEBYLEX` for string keys), which is **O(log N + page_size)** regardless of total keyspace size.
+The fully indexed approach would replace tenant-wide hydration with `ZRANGEBYSCORE` (or `ZRANGEBYLEX` for string keys), which is **O(log N + page_size)** regardless of tenant size.
 
 ## Trigger — when to schedule this
 
-Don't do this speculatively. Schedule it when **any** of the following is true:
+Don't add the remaining seven indices speculatively. Schedule them when **any** of the following is true:
 
 1. A real tenant crosses ~10 k active reservations. Track via `http_server_requests_seconds{uri="/v1/reservations"}` p99 broken down by `tenant` tag.
 2. Sorted-list p99 on a production deployment crosses ~50 ms sustained over any 1-hour window.

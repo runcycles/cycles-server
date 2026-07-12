@@ -842,6 +842,100 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
 
         @SuppressWarnings("unchecked")
         @Test
+        @DisplayName("ready tenant index avoids the global reservation SCAN")
+        void readyTenantIndexAvoidsGlobalScan() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            String indexKey = "reservation:idx:tenant:acme";
+            when(jedis.exists(indexKey + ":ready")).thenReturn(true);
+            when(jedis.zrange(indexKey, 0, -1)).thenReturn(List.of("r2", "r1"));
+
+            Map<String, String> f1 = reservationFields("r1", "ACTIVE");
+            f1.put("created_at", "100");
+            Map<String, String> f2 = reservationFields("r2", "ACTIVE");
+            f2.put("created_at", "200");
+            Response<Map<String, String>> resp1 = mock(Response.class);
+            Response<Map<String, String>> resp2 = mock(Response.class);
+            when(resp1.get()).thenReturn(f1);
+            when(resp2.get()).thenReturn(f2);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+
+            ReservationListResponse response = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 100, null,
+                "created_at_ms", "asc", null, null, null, null, null, null);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                .containsExactly("r1", "r2");
+            verify(jedis).zrange(indexKey, 0, -1);
+            verify(jedis, never()).scan(anyString(), any(ScanParams.class));
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("ready tenant index prunes stale rows and skips malformed rows")
+        void readyTenantIndexPrunesStaleAndSkipsMalformedRows() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            String indexKey = "reservation:idx:tenant:acme";
+            when(jedis.exists(indexKey + ":ready")).thenReturn(true);
+            when(jedis.zrange(indexKey, 0, -1)).thenReturn(List.of("stale", "bad", "good"));
+
+            Response<Map<String, String>> stale = mock(Response.class);
+            Response<Map<String, String>> bad = mock(Response.class);
+            Response<Map<String, String>> good = mock(Response.class);
+            when(stale.get()).thenReturn(Map.of());
+            Map<String, String> malformed = reservationFields("bad", "ACTIVE");
+            malformed.put("estimate_amount", "not-a-number");
+            when(bad.get()).thenReturn(malformed);
+            when(good.get()).thenReturn(reservationFields("good", "ACTIVE"));
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_stale")).thenReturn(stale);
+            when(pipeline.hgetAll("reservation:res_bad")).thenReturn(bad);
+            when(pipeline.hgetAll("reservation:res_good")).thenReturn(good);
+
+            ReservationListResponse response = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 100, null,
+                "created_at_ms", "asc", null, null, null, null, null, null);
+
+            assertThat(response.getReservations()).extracting(ReservationSummary::getReservationId)
+                .containsExactly("good");
+            verify(jedis).zrem(indexKey, "stale");
+            verify(jedis, never()).scan(anyString(), any(ScanParams.class));
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
+        @DisplayName("lazy backfill tolerates an invalid created_at index score")
+        void lazyBackfillToleratesInvalidCreatedAtIndexScore() {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+
+            Map<String, String> fields = reservationFields("bad-score", "ACTIVE");
+            fields.put("created_at", "not-a-number");
+            Response<Map<String, String>> row = mock(Response.class);
+            when(row.get()).thenReturn(fields);
+            ScanResult<String> scan = mock(ScanResult.class);
+            when(scan.getResult()).thenReturn(List.of("reservation:res_bad-score"));
+            when(scan.getCursor()).thenReturn("0");
+            when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scan);
+            when(jedis.pipelined()).thenReturn(pipeline);
+            when(pipeline.hgetAll("reservation:res_bad-score")).thenReturn(row);
+
+            ReservationListResponse response = repository.listReservations(
+                "acme", null, null, null, null, null, null, null, 100, null,
+                "created_at_ms", "asc", null, null, null, null, null, null);
+
+            assertThat(response.getReservations()).isEmpty();
+            verify(jedis).zadd("reservation:idx:tenant:acme", 0D, "bad-score");
+            verify(jedis).set("reservation:idx:tenant:acme:ready", "1");
+        }
+
+        @SuppressWarnings("unchecked")
+        @Test
         @DisplayName("sort_by=created_at_ms asc paginates in ascending timestamp order")
         void sortsByCreatedAtAsc() {
             when(jedisPool.getResource()).thenReturn(jedis);

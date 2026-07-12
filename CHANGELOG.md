@@ -14,6 +14,53 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.49] — 2026-07-12
+
+### Added
+
+- **Per-tenant reservation candidate index.** Successful reservations now add
+  one member to `reservation:idx:tenant:<tenant>` atomically in `reserve.lua`.
+  The first sorted-list request lazily backfills older reservations; later
+  sorted requests avoid scanning reservation hashes belonging to every other
+  tenant while preserving the existing filters, ordering, and opaque cursors.
+- **Event/delivery index retention sweep.** A configurable daily sweep removes
+  stale `events:*` and `deliveries:*` ZSET pointers after their backing rows
+  expire (`EVENT_RETENTION_SWEEP_CRON`, default `0 30 3 * * *`).
+
+### Fixed
+
+- **Expiry events are emitted exactly once.** The sweeper now parses the Lua
+  result and requires `status=EXPIRED`; a skipped already-expired row can no
+  longer match merely because its state text contains `EXPIRED`. Event payload
+  timestamps now read the actual Redis hash fields (`created_at`, `expires_at`).
+- **Admin release audit is atomic.** Admin audit JSON and both audit indexes are
+  written by `release.lua` in the same Redis execution as the release, removing
+  the successful-release/missing-audit failure window.
+- **Idempotency replay remains truthful.** Reserve, commit, and release no
+  longer synthesize a response from current Redis state when the original body
+  is unavailable. Dry-run and decide also reject a fresh result whose canonical
+  response cannot be persisted. These cases return retriable HTTP 500
+  `INTERNAL_ERROR` with instructions to reuse the same idempotency key.
+- **jqwik runtime overrides work again.** Configuration moved from the retired
+  `jqwik.properties` format to `junit-platform.properties`; nightly/manual try
+  counts use the supported `jqwik.tries.default` parameter.
+
+### Performance
+
+- API-key validation releases its Redis connection before BCrypt verification,
+  then uses a second short checkout only for a successful key's tenant-status
+  read. Slow password hashing no longer occupies the Redis pool.
+- Sorted reservation reads reduce repeated work from all reservations in Redis
+  to the requesting tenant's candidates. Reserve adds one in-memory `ZADD`; the
+  legacy unsorted SCAN path is unchanged.
+
+### Compatibility
+
+- No public request/response schema changes. The only new Redis key is the
+  rebuildable per-tenant candidate ZSET plus its readiness marker. Operators
+  may override the new retention sweep cron; existing retention TTL settings
+  remain authoritative.
+
 ## [0.1.25.48] — 2026-07-11
 
 ### Added
