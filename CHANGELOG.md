@@ -37,7 +37,9 @@ called out but are not breaking to API clients.
   repair a missing fast body cache from that snapshot. Evidence enqueueing,
   evidence-link storage, and canonical response caching are atomic. Dry-run and
   decide likewise cache their response and enqueue evidence in one Redis script,
-  so a transient cache failure cannot duplicate signed evidence.
+  so a transient cache failure cannot duplicate signed evidence. Commit/release
+  replays return a valid snapshot before consulting current budget hashes, while
+  retaining the legacy reconstruction path for pre-snapshot reservations.
 - **jqwik runtime overrides work again.** Configuration moved from the retired
   `jqwik.properties` format to `junit-platform.properties`; nightly/manual try
   counts use the supported `jqwik.tries.default` parameter.

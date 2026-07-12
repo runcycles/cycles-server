@@ -51,6 +51,12 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             ResponseEntity<Map> resp1 = post(
                     "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+            // Rolling-upgrade compatibility: pre-snapshot reservations still use the
+            // legacy replay path and the canonical Java body cache.
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hdel("reservation:res_" + reservationId, "commit_response_json"))
+                        .isEqualTo(1L);
+            }
             ResponseEntity<Map> resp2 = post(
                     "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
 
@@ -58,6 +64,23 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp1.getBody().get("status")).isEqualTo("COMMITTED");
             assertThat(resp2.getBody().get("status")).isEqualTo("COMMITTED");
+        }
+
+        @Test
+        void commitReplayUsesSnapshotWithoutReadingCurrentBudget() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body = commitBody(800);
+
+            ResponseEntity<Map> original = post(
+                    "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            replaceTenantBudgetWithWrongType();
+
+            ResponseEntity<Map> replay = post(
+                    "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 
         @Test
@@ -85,6 +108,11 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             ResponseEntity<Map> resp1 = post(
                     "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
+            // Rolling-upgrade compatibility for reservations finalized before snapshots.
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hdel("reservation:res_" + reservationId, "release_response_json"))
+                        .isEqualTo(1L);
+            }
             ResponseEntity<Map> resp2 = post(
                     "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
 
@@ -93,6 +121,23 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             // Spec: idempotent replay with same key must return original successful response
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp2.getBody().get("status")).isEqualTo("RELEASED");
+        }
+
+        @Test
+        void releaseReplayUsesSnapshotWithoutReadingCurrentBudget() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body = releaseBody();
+
+            ResponseEntity<Map> original = post(
+                    "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            replaceTenantBudgetWithWrongType();
+
+            ResponseEntity<Map> replay = post(
+                    "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 
         @Test
@@ -268,6 +313,14 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             var headers = headersForTenant(apiKey);
             headers.set("X-Idempotency-Key", idempotencyKey);
             return headers;
+        }
+
+        private void replaceTenantBudgetWithWrongType() {
+            try (Jedis jedis = jedisPool.getResource()) {
+                String budgetKey = "budget:tenant:" + TENANT_A + ":TOKENS";
+                jedis.del(budgetKey);
+                jedis.set(budgetKey, "wrong-type-sentinel");
+            }
         }
     }
 }

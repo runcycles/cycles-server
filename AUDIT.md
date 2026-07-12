@@ -40,6 +40,9 @@ The fast body cache is repaired from that snapshot on a miss. Evidence enqueue,
 reservation evidence-link fields, and the stamped body cache are written by one
 Redis script. Dry-run and decide similarly combine their body/hash cache writes
 with evidence enqueueing, preventing duplicate envelopes after a cache failure.
+Commit/release replay validates and returns the snapshot before any per-scope
+budget reads; reservations finalized before snapshots existed retain the legacy
+reconstruction fallback for rolling-upgrade compatibility.
 Removing current-ledger reconstruction also made `fetchBalancesForScopes` dead
 code, so it was deleted.
 
@@ -72,7 +75,7 @@ executed exactly 20 tries.
 - `mvn verify` against the local protocol spec: 832 tests
   (31 model + 514 data + 287 API), zero failures; JaCoCo line coverage
   95.03% data and 95.56% API;
-- Docker integration profile: 1,105 tests (31 + 514 + 560), zero failures;
+- Docker integration profile: 1,107 tests (31 + 514 + 562), zero failures;
 - jqwik property profile: 5 properties at 20 tries, zero failures;
 - benchmark profile: 15 benchmarks, zero failures and zero concurrent errors;
   reserve p50 13.2 ms, commit p50 13.6 ms, release p50 14.4 ms, and 615.6

@@ -37,6 +37,20 @@ if state == "RELEASED" and idempotency_key ~= "" and idempotency_key ~= nil
             end
         end
         local response_snapshot = redis.call('HGET', reservation_key, 'release_response_json')
+        if response_snapshot then
+            local ok_snapshot, replay_response = pcall(cjson.decode, response_snapshot)
+            if ok_snapshot and type(replay_response) == 'table'
+               and replay_response['reservation_id'] == reservation_id
+               and replay_response['estimate_amount'] ~= nil
+               and replay_response['estimate_unit'] ~= nil
+               and replay_response['balances'] ~= nil then
+                replay_response['replay'] = true
+                replay_response['response_snapshot'] = response_snapshot
+                return cjson.encode(replay_response)
+            end
+        end
+        -- Rolling-upgrade fallback for reservations finalized before immutable
+        -- response snapshots existed (or whose snapshot is malformed).
         local idem_vals = redis.call('HMGET', reservation_key,
             'estimate_amount', 'estimate_unit', 'affected_scopes')
         -- Spec MUST: replay returns original successful response payload including balances.
