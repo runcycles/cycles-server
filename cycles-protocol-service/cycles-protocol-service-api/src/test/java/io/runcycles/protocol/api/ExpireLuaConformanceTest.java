@@ -34,7 +34,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   C5. Honors grace_ms — within (expires_at, expires_at + grace_ms], returns SKIP
  *       in_grace_period.
  *   C6. NOT_FOUND for missing reservations, and still cleans up the TTL index.
- *   C7. Uses Redis TIME (no Java clock), so behavior depends only on Redis server time.
+ *   C7. Missing or malformed estimate data returns ERROR and leaves state/budgets
+ *       untouched, but removes the poison entry from the bounded TTL sweep index.
+ *   C8. Uses Redis TIME (no Java clock), so behavior depends only on Redis server time.
  */
 @DisplayName("expire.lua conformance")
 class ExpireLuaConformanceTest extends BaseIntegrationTest {
@@ -288,7 +290,44 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
     }
 
     @Nested
-    @DisplayName("C7 — uses Redis TIME, not client-supplied time")
+    @DisplayName("C7 — corrupt estimates are quarantined")
+    class CorruptEstimates {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"__missing__", "not-an-integer", "-1"})
+        void removesPoisonEntryWithoutChangingStateOrBudget(String corruptAmount)
+                throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String scope = "tenant:" + TENANT_A;
+                String resId = seedActiveReservation(
+                        jedis, 500, pastExpires, 0, scope, 500);
+                if ("__missing__".equals(corruptAmount)) {
+                    jedis.hdel("reservation:res_" + resId, "estimate_amount");
+                } else {
+                    jedis.hset("reservation:res_" + resId,
+                            "estimate_amount", corruptAmount);
+                }
+
+                Map<String, Object> result = evalExpire(jedis, resId);
+
+                assertThat(result)
+                        .containsEntry("status", "ERROR")
+                        .containsEntry("error", "INTERNAL_ERROR");
+                assertThat(jedis.zscore("reservation:ttl", resId))
+                        .as("corrupt rows must not poison the bounded sweep batch")
+                        .isNull();
+                assertThat(jedis.hget("reservation:res_" + resId, "state"))
+                        .isEqualTo("ACTIVE");
+                assertThat(jedis.hgetAll("budget:" + scope + ":TOKENS"))
+                        .containsEntry("reserved", "500")
+                        .containsEntry("remaining", "999500");
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("C8 — uses Redis TIME, not client-supplied time")
     class RedisTimeSource {
 
         @Test

@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.util.LogSanitizer;
@@ -70,8 +71,18 @@ public class ReservationExpiryService {
                     // with reserve/commit/release/extend scripts. We still pass reservation_id only.
                     Object result = luaScripts.eval(jedis, "expire", expireScript, reservationId);
                     LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
+                    JsonNode resultNode = objectMapper.readTree(
+                            result != null ? result.toString() : "");
+                    if ("ERROR".equals(resultNode.path("status").asText())) {
+                        LOG.warn("Expiry quarantined reservation after Lua error: "
+                                        + "reservation_id={} error={} message={}",
+                                LogSanitizer.sanitize(reservationId),
+                                LogSanitizer.sanitize(resultNode.path("error").asText()),
+                                LogSanitizer.sanitize(resultNode.path("message").asText()));
+                        continue;
+                    }
                     // Emit reservation.expired event if the Lua script actually expired this reservation
-                    emitExpiredEvent(jedis, reservationId, result, batchTrace);
+                    emitExpiredEvent(jedis, reservationId, resultNode, batchTrace);
                 } catch (Exception e) {
                     LOG.warn("Failed to expire reservation: {}", LogSanitizer.sanitize(reservationId), e);
                 }
@@ -81,14 +92,14 @@ public class ReservationExpiryService {
         }
     }
 
-    private void emitExpiredEvent(Jedis jedis, String reservationId, Object luaResult, TraceContext trace) {
+    private void emitExpiredEvent(Jedis jedis, String reservationId, JsonNode luaResult,
+                                  TraceContext trace) {
         String tenantId = null;
         String scopePath = null;
         try {
             // Only emit if the Lua script actually expired this reservation (status == "EXPIRED")
-            String resultStr = luaResult != null ? luaResult.toString() : "";
-            if (resultStr.isBlank()
-                    || !"EXPIRED".equals(objectMapper.readTree(resultStr).path("status").asText())) {
+            if (luaResult == null
+                    || !"EXPIRED".equals(luaResult.path("status").asText())) {
                 return;
             }
 

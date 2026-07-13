@@ -43,6 +43,11 @@ called out but are not breaking to API clients.
   Successful commit/release replays are recorded with
   `reason=IDEMPOTENT_REPLAY`; replaying a commit no longer increments the
   overdraft-incurred counter a second time.
+- **Corrupt expiry rows cannot wedge the bounded sweeper.** Reservations with
+  missing, malformed, or negative estimate data are removed from the hot TTL
+  candidate index while their state and budgets remain untouched for operator
+  reconciliation. The expiry service logs the quarantined row at WARN instead
+  of retrying it silently every five seconds.
 
 ### Performance
 

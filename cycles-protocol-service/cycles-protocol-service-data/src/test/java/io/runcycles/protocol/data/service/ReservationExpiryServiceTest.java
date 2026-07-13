@@ -176,6 +176,24 @@ class ReservationExpiryServiceTest {
     }
 
     @Test
+    void shouldSkipSideEffectsAndContinueAfterQuarantinedExpiryError() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(List.of("bad-id", "next-id"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("bad-id")))
+                .thenReturn("{\"status\":\"ERROR\",\"error\":\"INTERNAL_ERROR\","
+                        + "\"message\":\"Reservation has invalid estimate data\"}");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("next-id")))
+                .thenReturn("{\"status\":\"SKIP\",\"reason\":\"in_grace_period\"}");
+
+        service.expireReservations();
+
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("next-id"));
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(metrics, never()).recordExpired(anyString());
+        verify(jedis, never()).hmget(anyString(), any(String[].class));
+    }
+
+    @Test
     void shouldNotEmitEventForAlreadyExpiredSkipResult() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(List.of("id1"));

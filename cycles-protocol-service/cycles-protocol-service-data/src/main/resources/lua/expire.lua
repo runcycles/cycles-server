@@ -44,8 +44,13 @@ local affected_scopes_json = detail[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
 local budgeted_scopes_json = detail[4]
 
-if not estimate_amount or not estimate_unit then
-    return cjson.encode({status = "ERROR", error = "INTERNAL_ERROR", message = "Reservation missing estimate data"})
+if not estimate_amount or compare_int(estimate_amount, "0") < 0
+   or not estimate_unit or estimate_unit == "" then
+    -- Persistent row corruption cannot be repaired by retrying every sweep.
+    -- Quarantine the reservation outside the hot candidate index while
+    -- leaving state and budgets untouched for operator reconciliation.
+    redis.call('ZREM', 'reservation:ttl', reservation_id)
+    return cjson.encode({status = "ERROR", error = "INTERNAL_ERROR", message = "Reservation has invalid estimate data"})
 end
 
 if budgeted_scopes_json or affected_scopes_json then
