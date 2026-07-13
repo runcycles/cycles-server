@@ -48,6 +48,8 @@ public class ReservationExpiryService {
     private static final List<String> EXPIRED_EVENT_FIELDS = List.of(
         "tenant", "scope_path", "estimate_unit", "estimate_amount",
         "created_at", "expires_at", "extension_count");
+    private static final String[] EXPIRED_EVENT_FIELD_ARRAY =
+        EXPIRED_EVENT_FIELDS.toArray(String[]::new);
 
     @Scheduled(fixedDelayString = "${cycles.expiry.interval-ms:5000}",
                initialDelayString = "${cycles.expiry.initial-delay-ms:5000}")
@@ -119,7 +121,7 @@ public class ReservationExpiryService {
             // Surfaced by the new cycles.reservations.expired counter test in v0.1.25.10.
             Map<String, String> fields = HashProjections.mapHashFields(EXPIRED_EVENT_FIELDS,
                 jedis.hmget("reservation:res_" + reservationId,
-                    EXPIRED_EVENT_FIELDS.toArray(String[]::new)));
+                    EXPIRED_EVENT_FIELD_ARRAY));
             if (fields.isEmpty()) return;
 
             tenantId = fields.get("tenant");

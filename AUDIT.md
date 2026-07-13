@@ -79,9 +79,9 @@ the release script runs, keeping future callers fail-closed.
 **Release defaults.** Both production compose variants self-pin the matching
 `0.1.25.50` image instead of retaining the older `0.1.25.48` default.
 
-**Validation.** A clean Docker integration-profile build completed 1,106 tests
-(31 model, 520 data, 555 API) with zero failures, errors, or skips; contract
-coverage remained 11/11. JaCoCo line coverage was 95.04% data and 95.56% API.
+**Validation.** A clean Docker integration-profile build completed 1,111 tests
+(31 model, 525 data, 555 API) with zero failures, errors, or skips; contract
+coverage remained 11/11. JaCoCo line coverage was 95.09% data and 95.56% API.
 The targeted real-Redis suites also verified exact event debits and expiry
 refunds at `2^53 + 1` and `Long.MAX_VALUE`, extend replay balances at
 `100000000000001`, the existing exact reserve/commit/release cases, and a
