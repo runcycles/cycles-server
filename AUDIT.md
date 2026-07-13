@@ -5,6 +5,63 @@
 
 ---
 
+### 2026-07-13 — v0.1.25.50: replay storage and int64 follow-up (#236)
+
+This follow-up closes the non-blocking items left after the v0.1.25.49 runtime
+hardening review. It keeps the public contract unchanged and removes work from
+reservation reads while making the durable replay representation exact across
+the protocol's full signed-int64 amount domain.
+
+**Exact lifecycle numerics.** Redis embeds Lua 5.1 numbers as IEEE-754 doubles,
+and its cjson encoder formats numbers with 14 significant digits. The prior
+reserve echo fix protected only the top-level reserved amount; balances and the
+commit/release scalars could still be rounded before being frozen into the
+immutable snapshot. Reserve, commit, and release now normalize ledger values as
+decimal strings. Commit uses small signed-decimal compare/add/subtract helpers,
+leaving Redis `HINCRBY` responsible for checked int64 mutation. Java accepts
+both the new strings and numeric responses from older scripts. Real-Redis tests
+exercise reserve, commit overage arithmetic, release, balances, and byte-equal
+replay at `100000000000001`.
+
+**Smaller reads and snapshots.** Reservation detail, legacy and sorted list
+paths, and expiry event hydration now request only their required fields with
+`HMGET`; the potentially large `*_response_json` snapshots no longer ride on
+every `HGETALL`. Mutation scripts also omit snapshot JSON when invoked without
+an idempotency key. The response-state marker remains available for the
+evidence finalization state machine, so this optimization does not weaken its
+race guarantees.
+
+**Clear replay compatibility.** The Lua commit/release replay branches now do
+only payload-hash validation and return the immutable snapshot pointer. Their
+old current-ledger reconstruction values were never consumed by Java and could
+not satisfy the protocol requirement to return the original successful body.
+Pre-snapshot rows therefore retain the documented behavior: replay succeeds
+while the canonical body cache survives, otherwise it returns a retriable 500
+for the remainder of that idempotency window.
+
+**Single audit preparation path.** `AuditRepository.prepare` is now the owner
+of log-id generation, timestamp defaulting, serialization, score, and retention
+calculation passed to atomic `release.lua`. The duplicate marshalling and the
+unused fail-open `AuditRepository.log()` API were removed, reducing the chance
+that a future normative admin mutation accidentally writes its audit record in
+a separate failure domain.
+
+**Validation.** A clean Docker integration-profile build completed 1,094 tests
+(31 model, 517 data, 546 API) with zero failures, errors, or skips; contract
+coverage remained 11/11. JaCoCo line coverage was 95.01% data and 95.56% API.
+The targeted real-Redis idempotency suite also verified exact reserve, commit
+overage, release, balance, and replay bodies at `100000000000001`.
+
+Three benchmark-profile trials completed all 15 benchmarks with zero
+concurrent errors. Median reserve/commit/release p50 was 14.4/13.8/14.7 ms and
+32-thread throughput was 549.6 ops/s. Against the immediately preceding
+v0.1.25.49 same-host medians (14.2/14.1/14.4 ms and 601.6 ops/s), the deltas are
++1.4%/-2.1%/+2.1% and -8.6%, all well inside the 30% environmental-noise
+threshold. The projected GET-reservation and LIST-reservations p50 medians were
+12.7 and 14.7 ms respectively. Absolute values remain host-specific.
+
+Version/revision 0.1.25.49 → 0.1.25.50.
+
 ### 2026-07-12 — v0.1.25.49: runtime correctness and performance hardening
 
 Follow-up audit of the runtime server against the current

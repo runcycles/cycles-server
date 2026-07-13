@@ -142,15 +142,9 @@ class ReservationExpiryServiceTest {
                 .thenReturn(List.of("id1"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
-        when(jedis.hgetAll("reservation:res_id1")).thenReturn(Map.of(
-                "tenant", "t1",
-                "scope_path", "tenant:t1/agent:bot",
-                "estimate_unit", "USD_MICROCENTS",
-                "estimate_amount", "5000",
-                "created_at", "1710768000000",
-                "expires_at", "1710768060000",
-                "extension_count", "2"
-        ));
+        when(jedis.hmget(eq("reservation:res_id1"), any(String[].class))).thenReturn(List.of(
+                "t1", "tenant:t1/agent:bot", "USD_MICROCENTS", "5000",
+                "1710768000000", "1710768060000", "2"));
 
         service.expireReservations();
 
@@ -200,9 +194,8 @@ class ReservationExpiryServiceTest {
                 .thenReturn(List.of("id1"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
-        when(jedis.hgetAll("reservation:res_id1")).thenReturn(Map.of(
-                "scope_path", "tenant:t1"
-        ));
+        when(jedis.hmget(eq("reservation:res_id1"), any(String[].class))).thenReturn(
+                java.util.Arrays.asList(null, "tenant:t1", null, null, null, null, null));
 
         service.expireReservations();
 
@@ -215,7 +208,8 @@ class ReservationExpiryServiceTest {
                 .thenReturn(List.of("id1"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
-        when(jedis.hgetAll("reservation:res_id1")).thenReturn(Collections.emptyMap());
+        when(jedis.hmget(eq("reservation:res_id1"), any(String[].class))).thenReturn(
+                Collections.nCopies(7, null));
 
         service.expireReservations();
 
@@ -229,10 +223,10 @@ class ReservationExpiryServiceTest {
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
                 .thenReturn("{\"status\":\"EXPIRED\"}");
         // res_1 hash throws, res_2 hash succeeds
-        when(jedis.hgetAll("reservation:res_id1")).thenThrow(new RuntimeException("Redis error"));
-        when(jedis.hgetAll("reservation:res_id2")).thenReturn(Map.of(
-                "tenant", "t2", "scope_path", "tenant:t2"
-        ));
+        when(jedis.hmget(eq("reservation:res_id1"), any(String[].class)))
+                .thenThrow(new RuntimeException("Redis error"));
+        when(jedis.hmget(eq("reservation:res_id2"), any(String[].class))).thenReturn(
+                java.util.Arrays.asList("t2", "tenant:t2", null, null, null, null, null));
 
         service.expireReservations();
 

@@ -37,7 +37,7 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
         fields.put("reserve_evidence_url", "http://h/v1/evidence/" + HEX_A);
         fields.put("commit_evidence_id", HEX_B);
         fields.put("commit_evidence_url", "http://h/v1/evidence/" + HEX_B);
-        when(jedis.hgetAll("reservation:res_res-ev")).thenReturn(fields);
+        mockReservationHash("reservation:res_res-ev", fields);
 
         ReservationDetail detail = repository.getReservationById("res-ev");
 
@@ -54,7 +54,7 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
     void noEvidenceWhenAbsent() {
         when(jedisPool.getResource()).thenReturn(jedis);
         doNothing().when(jedis).close();
-        when(jedis.hgetAll("reservation:res_bare")).thenReturn(reservationFields("bare", "ACTIVE"));
+        mockReservationHash("reservation:res_bare", reservationFields("bare", "ACTIVE"));
 
         assertThat(repository.getReservationById("bare").getEvidence()).isNull();
     }
@@ -66,7 +66,7 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
         doNothing().when(jedis).close();
         Map<String, String> fields = reservationFields("res-half", "ACTIVE");
         fields.put("reserve_evidence_id", HEX_A); // url missing
-        when(jedis.hgetAll("reservation:res_res-half")).thenReturn(fields);
+        mockReservationHash("reservation:res_res-half", fields);
 
         assertThat(repository.getReservationById("res-half").getEvidence()).isNull();
     }

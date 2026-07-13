@@ -1,7 +1,6 @@
 package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,11 +14,11 @@ import redis.clients.jedis.params.ScanParams;
 import redis.clients.jedis.resps.ScanResult;
 
 import java.time.Instant;
-import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Writes audit-log entries to the shared Redis store. The governance
+ * Owns audit-entry preparation and retention cleanup for the shared Redis store. The governance
  * plane's admin dashboard reads these via {@code GET /v1/admin/audit/logs}
  * on {@code cycles-server-admin} — both services point at the same
  * Redis instance in every deployed topology (docker-compose, k8s), so
@@ -48,13 +47,8 @@ import java.util.UUID;
  *   <li>{@code audit:logs:_all} — global ZSET index</li>
  * </ul>
  *
- * <p>Atomic write via Lua (SET + 2x ZADD in one call) — prevents
- * orphaned log entries if the server crashes between operations.
- *
- * <p>Failure mode: audit-log failures MUST NOT break the business
- * operation that triggered them. A noisy ERROR log is emitted; the
- * triggering request proceeds normally. Matches the governance
- * plane's repository behavior.
+ * <p>The admin-release mutation consumes {@link PreparedAudit} inside
+ * {@code release.lua}, keeping the audit row and ledger transition atomic.
  */
 @Repository
 public class AuditRepository {
@@ -76,57 +70,30 @@ public class AuditRepository {
     @Value("${audit.retention.days:400}")
     private int retentionDays;
 
-    /**
-     * Lua script for atomic audit-log creation with optional TTL via
-     * ARGV[4] (seconds; 0 or negative = no expiry). Identical shape to
-     * admin's script — keeps the wire-compatible storage layout the
-     * admin dashboard reads against.
-     * <pre>
-     *   SET audit:log:&#123;logId&#125; &lt;json&gt; [EX ttlSeconds]
-     *   ZADD audit:logs:&#123;tenantId&#125; &lt;score&gt; &lt;logId&gt;
-     *   ZADD audit:logs:_all         &lt;score&gt; &lt;logId&gt;
-     * </pre>
-     */
-    private static final String LOG_AUDIT_LUA =
-        "local ttl = tonumber(ARGV[4])\n" +
-        "if ttl and ttl > 0 then\n" +
-        "    redis.call('SET', KEYS[1], ARGV[1], 'EX', ttl)\n" +
-        "else\n" +
-        "    redis.call('SET', KEYS[1], ARGV[1])\n" +
-        "end\n" +
-        "redis.call('ZADD', KEYS[2], ARGV[2], ARGV[3])\n" +
-        "redis.call('ZADD', KEYS[3], ARGV[2], ARGV[3])\n" +
-        "return 1\n";
-
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
 
-    public void log(AuditLogEntry entry) {
-        try (Jedis jedis = jedisPool.getResource()) {
-            String logId = "log_" + UUID.randomUUID().toString().substring(0, 16);
-            entry.setLogId(logId);
-            entry.setTimestamp(Instant.now());
-            String json = objectMapper.writeValueAsString(entry);
-            String score = String.valueOf(entry.getTimestamp().toEpochMilli());
-            long ttlSeconds = retentionDays > 0 ? (long) retentionDays * 86400L : 0L;
-            jedis.eval(LOG_AUDIT_LUA,
-                List.of("audit:log:" + logId,
-                        "audit:logs:" + entry.getTenantId(),
-                        "audit:logs:_all"),
-                List.of(json, score, logId, String.valueOf(ttlSeconds)));
-        } catch (Exception e) {
-            // Audit log failure must NOT break the business operation.
-            LOG.error("Failed to write audit log (non-fatal): operation={} tenant={} resource_type={} resource_id={} status={} request_id={} trace_id={}",
-                entry != null ? entry.getOperation() : null,
-                entry != null ? LogSanitizer.sanitize(entry.getTenantId()) : null,
-                entry != null ? entry.getResourceType() : null,
-                entry != null ? LogSanitizer.sanitize(entry.getResourceId()) : null,
-                entry != null ? entry.getStatus() : null,
-                entry != null ? entry.getRequestId() : null,
-                entry != null ? entry.getTraceId() : null,
-                e);
+    /**
+     * Applies the single canonical log-id, timestamp, JSON, score, and retention
+     * policy used by atomic audit writers. Serialization failures propagate so a
+     * normative admin mutation cannot succeed without its audit row.
+     */
+    public PreparedAudit prepare(AuditLogEntry entry) throws Exception {
+        Objects.requireNonNull(entry, "entry");
+        if (entry.getLogId() == null || entry.getLogId().isBlank()) {
+            entry.setLogId("log_" + UUID.randomUUID().toString().substring(0, 16));
         }
+        if (entry.getTimestamp() == null) {
+            entry.setTimestamp(Instant.now());
+        }
+        long ttlSeconds = retentionDays > 0 ? (long) retentionDays * 86_400L : 0L;
+        return new PreparedAudit(
+            objectMapper.writeValueAsString(entry), entry.getLogId(), entry.getTenantId(),
+            ttlSeconds, entry.getTimestamp().toEpochMilli());
     }
+
+    public record PreparedAudit(String json, String logId, String tenantId,
+                                long ttlSeconds, long score) {}
 
     /**
      * Daily sweep of the audit sorted-set indexes to remove pointers whose

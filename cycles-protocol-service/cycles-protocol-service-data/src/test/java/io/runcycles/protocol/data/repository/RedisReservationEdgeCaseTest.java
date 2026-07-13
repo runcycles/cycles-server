@@ -111,7 +111,7 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
         void shouldWrapGenericExceptionInGetReservationById() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hgetAll("reservation:res_wrap-id"))
+            when(jedis.hmget(eq("reservation:res_wrap-id"), any(String[].class)))
                 .thenThrow(new IllegalStateException("Unexpected error"));
 
             assertThatThrownBy(() -> repository.getReservationById("wrap-id"))

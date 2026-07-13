@@ -58,6 +58,69 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(original.getStatusCode().value()).isEqualTo(200);
             assertThat(((Map<?, ?>) original.getBody().get("reserved")).get("amount"))
                 .isEqualTo(amount);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(10L);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
+        void commitPreservesInt64AmountsAndBalancesBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            Map<String, Object> reserveBody = reservationBody(TENANT_A, amount - 1);
+            reserveBody.put("overage_policy", "ALLOW_IF_AVAILABLE");
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reserveBody);
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> commitBody = commitBody(amount);
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) original.getBody().get("charged")).get("amount"))
+                .isEqualTo(amount);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(10L);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isZero();
+            assertThat(((Number) ((Map<?, ?>) balance.get("spent")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
+        void releasePreservesInt64AmountsAndBalancesBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reservationBody(TENANT_A, amount));
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> releaseBody = releaseBody();
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, releaseBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, releaseBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) original.getBody().get("released")).get("amount"))
+                .isEqualTo(amount);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(amount + 10);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isZero();
             assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 

@@ -1,6 +1,24 @@
 -- Cycles Protocol v0.1.24 - Release Lua Script
 --local cjson = require("cjson")
 
+local function normalize_int(value)
+    if value == nil or value == false then return nil end
+    local s = tostring(value)
+    if not string.match(s, "^%-?%d+$") then return nil end
+    local negative = string.sub(s, 1, 1) == "-"
+    local digits = negative and string.sub(s, 2) or s
+    digits = string.gsub(digits, "^0+", "")
+    if digits == "" then return "0" end
+    return negative and ("-" .. digits) or digits
+end
+
+local function negate_int(value)
+    local normalized = normalize_int(value)
+    if normalized == "0" then return "0" end
+    return string.sub(normalized, 1, 1) == "-"
+        and string.sub(normalized, 2) or ("-" .. normalized)
+end
+
 local reservation_id = ARGV[1]
 local idempotency_key = ARGV[2]
 local payload_hash    = ARGV[3] or ""
@@ -36,50 +54,10 @@ if state == "RELEASED" and idempotency_key ~= "" and idempotency_key ~= nil
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        local response_snapshot = redis.call('HGET', reservation_key, 'release_response_json')
-        if response_snapshot then
-            local ok_snapshot, replay_response = pcall(cjson.decode, response_snapshot)
-            if ok_snapshot and type(replay_response) == 'table'
-               and replay_response['reservation_id'] == reservation_id
-               and replay_response['estimate_amount'] ~= nil
-               and replay_response['estimate_unit'] ~= nil
-               and replay_response['balances'] ~= nil then
-                replay_response['replay'] = true
-                replay_response['response_snapshot'] = response_snapshot
-                return cjson.encode(replay_response)
-            end
-        end
-        -- Rolling-upgrade fallback for reservations finalized before immutable
-        -- response snapshots existed (or whose snapshot is malformed).
-        local idem_vals = redis.call('HMGET', reservation_key,
-            'estimate_amount', 'estimate_unit', 'affected_scopes')
-        -- Spec MUST: replay returns original successful response payload including balances.
-        local replay_balances = {}
-        if idem_vals[3] then
-            local scopes = cjson.decode(idem_vals[3])
-            for _, scope in ipairs(scopes) do
-                local budget_key = "budget:" .. scope .. ":" .. idem_vals[2]
-                local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
-                table.insert(replay_balances, {
-                    scope = scope,
-                    remaining = tonumber(b[1] or 0),
-                    reserved = tonumber(b[2] or 0),
-                    spent = tonumber(b[3] or 0),
-                    allocated = tonumber(b[4] or 0),
-                    debt = tonumber(b[5] or 0),
-                    overdraft_limit = tonumber(b[6] or 0),
-                    is_over_limit = (b[7] == "true")
-                })
-            end
-        end
         return cjson.encode({
             reservation_id = reservation_id,
-            state = "RELEASED",
             replay = true,
-            response_snapshot = response_snapshot,
-            estimate_amount = tonumber(idem_vals[1]),
-            estimate_unit = idem_vals[2],
-            balances = replay_balances
+            response_snapshot = redis.call('HGET', reservation_key, 'release_response_json')
         })
 end
 
@@ -143,7 +121,7 @@ end
 
 -- Get reservation data using HMGET for efficiency
 local rvals = redis.call('HMGET', reservation_key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
-local estimate_amount = tonumber(rvals[1])
+local estimate_amount = normalize_int(rvals[1])
 local estimate_unit = rvals[2]
 local affected_scopes_json = rvals[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
@@ -164,7 +142,7 @@ end
 -- Release from all scopes
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
-    redis.call('HINCRBY', budget_key, 'reserved', -estimate_amount)
+    redis.call('HINCRBY', budget_key, 'reserved', negate_int(estimate_amount))
     redis.call('HINCRBY', budget_key, 'remaining', estimate_amount)
 end
 
@@ -203,12 +181,12 @@ for _, scope in ipairs(affected_scopes) do
     local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
     table.insert(balances, {
         scope = scope,
-        remaining = tonumber(b[1] or 0),
-        reserved = tonumber(b[2] or 0),
-        spent = tonumber(b[3] or 0),
-        allocated = tonumber(b[4] or 0),
-        debt = tonumber(b[5] or 0),
-        overdraft_limit = tonumber(b[6] or 0),
+        remaining = normalize_int(b[1] or "0"),
+        reserved = normalize_int(b[2] or "0"),
+        spent = normalize_int(b[3] or "0"),
+        allocated = normalize_int(b[4] or "0"),
+        debt = normalize_int(b[5] or "0"),
+        overdraft_limit = normalize_int(b[6] or "0"),
         is_over_limit = (b[7] == "true")
     })
 end
@@ -223,7 +201,8 @@ local response = cjson.encode({
 })
 -- Store the immutable post-mutation snapshot in the reservation hash before
 -- returning. It shares the terminal hash TTL and survives body-cache misses.
-redis.call('HSET', reservation_key,
-    'release_response_json', response,
-    'release_response_state', 'PENDING')
+redis.call('HSET', reservation_key, 'release_response_state', 'PENDING')
+if idempotency_key ~= "" and idempotency_key ~= nil then
+    redis.call('HSET', reservation_key, 'release_response_json', response)
+end
 return response

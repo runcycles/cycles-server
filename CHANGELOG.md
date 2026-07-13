@@ -14,6 +14,37 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.50] — 2026-07-13
+
+### Fixed
+
+- **All reservation lifecycle amounts retain int64 precision.** Reserve,
+  commit, and release now keep requested amounts, ledger arithmetic, debt, and
+  balance snapshots as decimal strings while executing in Redis Lua. This
+  prevents Redis cjson's 14-significant-digit formatting from rounding large
+  values before Java constructs the public response or durable replay body.
+- **Lifecycle replay code reflects its real compatibility boundary.** Dead
+  commit/release reconstruction blocks were removed from Lua. A finalized
+  pre-0.1.25.49 row still replays through its canonical body cache; if that
+  cache is gone and no immutable snapshot exists, the server returns the
+  existing retriable 500 instead of synthesizing a non-identical response.
+- **Audit preparation has one owner.** `AuditRepository` now prepares the log
+  id, timestamp, serialized entry, score, and retention used by the atomic
+  admin-release script. Its unused fail-open write API and duplicate Java
+  marshalling were removed.
+
+### Performance
+
+- Reservation detail, both reservation list paths, and the expiry event path
+  now use explicit `HMGET` projections. Immutable response snapshots and other
+  unrelated hash fields are no longer transferred and parsed on every read.
+  Lua also omits snapshot JSON when invoked without an idempotency key.
+
+### Compatibility
+
+- No public schema or successful-response shape changes. Large int64 values
+  that were previously rounded are now returned and replayed exactly.
+
 ## [0.1.25.49] — 2026-07-12
 
 ### Added

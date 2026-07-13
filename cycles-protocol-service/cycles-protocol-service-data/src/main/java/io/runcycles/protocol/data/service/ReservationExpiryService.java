@@ -93,28 +93,31 @@ public class ReservationExpiryService {
                 return;
             }
 
-            // Fetch reservation hash for event payload — one HGETALL per expired reservation.
+            // Fetch only event-payload fields. Immutable idempotency snapshots can be
+            // several times larger than the summary data and are irrelevant here.
             // Hash key has the "res_" prefix (consistent with expire.lua and all other scripts);
             // the TTL zset stores plain ids, so we must re-add the prefix here. This was
-            // previously wrong (missing prefix) — dormant because hgetAll on a non-existent key
-            // returns an empty map rather than throwing, so the method just silently no-op'd.
+            // previously wrong (missing prefix) — dormant because HMGET on a non-existent key
+            // returns null fields rather than throwing, so the method just silently no-op'd.
             // Surfaced by the new cycles.reservations.expired counter test in v0.1.25.10.
-            Map<String, String> hash = jedis.hgetAll("reservation:res_" + reservationId);
-            if (hash == null || hash.isEmpty()) return;
+            List<String> fields = jedis.hmget("reservation:res_" + reservationId,
+                "tenant", "scope_path", "estimate_unit", "estimate_amount",
+                "created_at", "expires_at", "extension_count");
+            if (fields == null || fields.isEmpty()) return;
 
-            tenantId = hash.get("tenant");
+            tenantId = fields.get(0);
             if (tenantId == null) return;
 
             // Counter is bumped once per actual EXPIRED transition (SKIP results from
             // still-in-grace or already-finalised reservations are filtered out above).
             metrics.recordExpired(tenantId);
 
-            scopePath = hash.get("scope_path");
-            String unit = hash.get("estimate_unit");
-            Long estimateAmount = parseLong(hash.get("estimate_amount"));
-            Long createdAtMs = parseLong(hash.get("created_at"));
-            Long expiresAtMs = parseLong(hash.get("expires_at"));
-            Integer extensionCount = parseInt(hash.get("extension_count"));
+            scopePath = fields.get(1);
+            String unit = fields.get(2);
+            Long estimateAmount = parseLong(fields.get(3));
+            Long createdAtMs = parseLong(fields.get(4));
+            Long expiresAtMs = parseLong(fields.get(5));
+            Integer extensionCount = parseInt(fields.get(6));
             Integer ttlMs = (createdAtMs != null && expiresAtMs != null)
                     ? (int) (expiresAtMs - createdAtMs) : null;
 
