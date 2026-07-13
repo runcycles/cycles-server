@@ -93,8 +93,8 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             ResponseEntity<Map> resp1 = post(
                     "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
-            // Rolling-upgrade compatibility: pre-snapshot reservations still use the
-            // legacy replay path and the canonical Java body cache.
+            // Rolling-upgrade compatibility: a pre-snapshot row can still replay
+            // through its surviving canonical Java body cache.
             try (Jedis jedis = jedisPool.getResource()) {
                 assertThat(jedis.hdel("reservation:res_" + reservationId, "commit_response_json"))
                         .isEqualTo(1L);
@@ -150,7 +150,7 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             ResponseEntity<Map> resp1 = post(
                     "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
-            // Rolling-upgrade compatibility for reservations finalized before snapshots.
+            // A pre-snapshot row can still replay through its surviving canonical body cache.
             try (Jedis jedis = jedisPool.getResource()) {
                 assertThat(jedis.hdel("reservation:res_" + reservationId, "release_response_json"))
                         .isEqualTo(1L);

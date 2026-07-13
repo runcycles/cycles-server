@@ -48,8 +48,10 @@ decide similarly combine their body/hash cache writes with evidence enqueueing,
 preventing duplicate envelopes after a cache failure; a dropped prepared record
 is included in the evidence-failure metric.
 Commit/release replay validates and returns the snapshot before any per-scope
-budget reads; reservations finalized before snapshots existed retain the legacy
-reconstruction fallback for rolling-upgrade compatibility.
+budget reads. Reservations finalized before snapshots existed can replay through
+their surviving canonical body cache; if that cache is missing, the server
+returns a retriable 500 for the remainder of the idempotency window rather than
+synthesizing a response that may differ from the original.
 Removing current-ledger reconstruction also made `fetchBalancesForScopes` dead
 code, so it was deleted.
 
