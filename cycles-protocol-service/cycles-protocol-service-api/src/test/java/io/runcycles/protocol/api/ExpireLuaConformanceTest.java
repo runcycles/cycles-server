@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import redis.clients.jedis.Jedis;
 
 import java.io.InputStream;
@@ -32,13 +34,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   C5. Honors grace_ms — within (expires_at, expires_at + grace_ms], returns SKIP
  *       in_grace_period.
  *   C6. NOT_FOUND for missing reservations, and still cleans up the TTL index.
- *   C7. Uses Redis TIME (no Java clock), so behavior depends only on Redis server time.
+ *   C7. Missing or malformed estimate data returns ERROR and leaves state/budgets
+ *       untouched, but removes the poison entry from the bounded TTL sweep index.
+ *   C8. Uses Redis TIME (no Java clock), so behavior depends only on Redis server time.
  */
 @DisplayName("expire.lua conformance")
 class ExpireLuaConformanceTest extends BaseIntegrationTest {
 
     /** Cached script source, loaded from classpath once per test class. */
-    private static final String EXPIRE_LUA = loadLuaScript("lua/expire.lua");
+    private static final String EXPIRE_LUA = loadLuaScript("lua/int64-helpers.lua")
+        + "\n" + loadLuaScript("lua/expire.lua");
 
     private static String loadLuaScript(String resource) {
         try (InputStream in = ExpireLuaConformanceTest.class.getClassLoader().getResourceAsStream(resource)) {
@@ -124,6 +129,39 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
                         .as("30-day audit TTL should be set")
                         .isGreaterThan(0)
                         .isLessThanOrEqualTo(2_592_000_000L);
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(longs = {9_007_199_254_740_993L, Long.MAX_VALUE})
+        void refundsExactInt64AmountAboveLuaSafeIntegerRange(long amount) throws Exception {
+            long allocated = amount;
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String scope = "tenant:" + TENANT_A;
+                String resId = "expireexact_" + System.nanoTime();
+                jedis.hset("reservation:res_" + resId, Map.of(
+                    "reservation_id", resId,
+                    "state", "ACTIVE",
+                    "estimate_amount", String.valueOf(amount),
+                    "estimate_unit", "TOKENS",
+                    "expires_at", String.valueOf(pastExpires),
+                    "grace_ms", "0",
+                    "affected_scopes", "[\"" + scope + "\"]",
+                    "budgeted_scopes", "[\"" + scope + "\"]"));
+                jedis.zadd("reservation:ttl", pastExpires, resId);
+                jedis.hset("budget:" + scope + ":TOKENS", Map.of(
+                    "allocated", String.valueOf(allocated),
+                    "remaining", "0",
+                    "reserved", String.valueOf(amount),
+                    "spent", "0",
+                    "debt", "0"));
+
+                assertThat(evalExpire(jedis, resId)).containsEntry("status", "EXPIRED");
+                assertThat(jedis.hget("budget:" + scope + ":TOKENS", "reserved"))
+                    .isEqualTo("0");
+                assertThat(jedis.hget("budget:" + scope + ":TOKENS", "remaining"))
+                    .isEqualTo(String.valueOf(allocated));
             }
         }
     }
@@ -252,7 +290,44 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
     }
 
     @Nested
-    @DisplayName("C7 — uses Redis TIME, not client-supplied time")
+    @DisplayName("C7 — corrupt estimates are quarantined")
+    class CorruptEstimates {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"__missing__", "not-an-integer", "-1"})
+        void removesPoisonEntryWithoutChangingStateOrBudget(String corruptAmount)
+                throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String scope = "tenant:" + TENANT_A;
+                String resId = seedActiveReservation(
+                        jedis, 500, pastExpires, 0, scope, 500);
+                if ("__missing__".equals(corruptAmount)) {
+                    jedis.hdel("reservation:res_" + resId, "estimate_amount");
+                } else {
+                    jedis.hset("reservation:res_" + resId,
+                            "estimate_amount", corruptAmount);
+                }
+
+                Map<String, Object> result = evalExpire(jedis, resId);
+
+                assertThat(result)
+                        .containsEntry("status", "ERROR")
+                        .containsEntry("error", "INTERNAL_ERROR");
+                assertThat(jedis.zscore("reservation:ttl", resId))
+                        .as("corrupt rows must not poison the bounded sweep batch")
+                        .isNull();
+                assertThat(jedis.hget("reservation:res_" + resId, "state"))
+                        .isEqualTo("ACTIVE");
+                assertThat(jedis.hgetAll("budget:" + scope + ":TOKENS"))
+                        .containsEntry("reserved", "500")
+                        .containsEntry("remaining", "999500");
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("C8 — uses Redis TIME, not client-supplied time")
     class RedisTimeSource {
 
         @Test

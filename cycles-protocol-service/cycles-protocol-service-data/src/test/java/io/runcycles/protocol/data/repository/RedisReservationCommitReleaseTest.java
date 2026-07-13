@@ -270,6 +270,9 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
+            verify(metrics).recordCommit(
+                "tenant-a", "COMMITTED", "IDEMPOTENT_REPLAY", "UNKNOWN");
+            verify(metrics, never()).recordOverdraftIncurred(anyString());
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(jedis, never()).psetex(eq("commit:body:res-cr"), anyLong(), anyString());
         }
@@ -521,6 +524,8 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("d".repeat(64));
+            verify(metrics).recordRelease(
+                "tenant-a", "tenant", "RELEASED", "IDEMPOTENT_REPLAY");
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(jedis, never()).psetex(eq("release:body:res-rr"), anyLong(), anyString());
         }
@@ -605,7 +610,6 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
         @Test
         void adminAuditPayloadIsPassedToReleaseScriptAtomically() throws Exception {
             objectMapper.findAndRegisterModules();
-            setField("auditRetentionDays", 400);
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             Map<String, Object> luaMap = new LinkedHashMap<>();
@@ -624,6 +628,9 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
                     .resourceId("res-audit")
                     .status(200)
                     .build();
+            when(auditRepository.prepare(audit)).thenReturn(new AuditRepository.PreparedAudit(
+                objectMapper.writeValueAsString(audit), "log_atomic", "tenant-a",
+                400L * 86_400L, timestamp.toEpochMilli()));
 
             repository.releaseReservation("res-audit",
                     ReleaseRequest.builder().idempotencyKey("rel-audit").build(),
@@ -641,9 +648,8 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
         }
 
         @Test
-        void adminAuditDefaultsAreGeneratedWithoutRetentionTtl() throws Exception {
+        void preparedAuditValuesAreDelegatedToReleaseScript() throws Exception {
             objectMapper.findAndRegisterModules();
-            setField("auditRetentionDays", 0);
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
@@ -655,6 +661,10 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
                     .operation("releaseReservation")
                     .status(200)
                     .build();
+            Instant timestamp = Instant.parse("2026-07-13T12:00:00Z");
+            when(auditRepository.prepare(audit)).thenReturn(new AuditRepository.PreparedAudit(
+                "{\"log_id\":\"log_prepared\"}", "log_prepared", "tenant-a", 0L,
+                timestamp.toEpochMilli()));
 
             repository.releaseReservation("res-audit-defaults",
                     ReleaseRequest.builder().build(), "tenant-a",
@@ -662,11 +672,10 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             org.mockito.ArgumentCaptor<String[]> args = org.mockito.ArgumentCaptor.forClass(String[].class);
             verify(luaScripts).eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), args.capture());
-            assertThat(audit.getLogId()).startsWith("log_");
-            assertThat(audit.getTimestamp()).isNotNull();
-            assertThat(args.getValue()[4]).isEqualTo(audit.getLogId());
+            verify(auditRepository).prepare(audit);
+            assertThat(args.getValue()[4]).isEqualTo("log_prepared");
             assertThat(args.getValue()[6]).isEqualTo("0");
-            assertThat(args.getValue()[7]).isEqualTo(String.valueOf(audit.getTimestamp().toEpochMilli()));
+            assertThat(args.getValue()[7]).isEqualTo(String.valueOf(timestamp.toEpochMilli()));
         }
     }
 

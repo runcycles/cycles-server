@@ -2,13 +2,28 @@
 -- Atomically commit actual spend with overdraft support
 --local cjson = require("cjson")
 
+-- debt_incurred is a commit-level aggregate used by the int64 webhook event
+-- schema. A commit can touch multiple hierarchical budgets, so the sum of
+-- otherwise valid per-scope int64 deficits can exceed signed int64 even though
+-- every ledger mutation remains in range. Saturate only this observability
+-- aggregate; the per-scope debt and balance fields below remain exact.
+local MAX_INT64 = "9223372036854775807"
+
+local function add_debt_aggregate(total, deficit)
+    return min_int(add_int(total, deficit), MAX_INT64)
+end
+
 local reservation_id = ARGV[1]
-local actual_amount = tonumber(ARGV[2])
+local actual_amount = normalize_int(ARGV[2])
 local actual_unit = ARGV[3]
 local idempotency_key = ARGV[4]
 local payload_hash    = ARGV[5] or ""
 local metrics_json    = ARGV[6] or ""
 local metadata_json   = ARGV[7] or ""
+
+if not actual_amount or compare_int(actual_amount, "0") < 0 then
+    return cjson.encode({error = "INVALID_REQUEST", message = "actual amount must be a non-negative int64"})
+end
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -23,7 +38,7 @@ if not state then
     return cjson.encode({error = "NOT_FOUND"})
 end
 
-local estimate_amount = tonumber(rdata[2])
+local estimate_amount = normalize_int(rdata[2])
 local estimate_unit = rdata[3]
 local affected_scopes_json = rdata[4]
 -- Use budgeted_scopes (scopes that actually had budgets at reserve time) for mutations;
@@ -49,56 +64,10 @@ if state == "COMMITTED" and idempotency_key ~= "" and idempotency_key ~= nil
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
-        local response_snapshot = redis.call('HGET', reservation_key, 'commit_response_json')
-        if response_snapshot then
-            local ok_snapshot, replay_response = pcall(cjson.decode, response_snapshot)
-            if ok_snapshot and type(replay_response) == 'table'
-               and replay_response['reservation_id'] == reservation_id
-               and replay_response['charged'] ~= nil
-               and replay_response['estimate_amount'] ~= nil
-               and replay_response['estimate_unit'] ~= nil
-               and replay_response['balances'] ~= nil then
-                replay_response['replay'] = true
-                replay_response['response_snapshot'] = response_snapshot
-                return cjson.encode(replay_response)
-            end
-        end
-        -- Rolling-upgrade fallback for reservations finalized before immutable
-        -- response snapshots existed (or whose snapshot is malformed).
-        local idem_vals = redis.call('HMGET', reservation_key,
-            'charged_amount', 'debt_incurred', 'estimate_amount', 'estimate_unit', 'affected_scopes')
-        -- Spec MUST: replay returns original successful response payload including balances.
-        local replay_balances = {}
-        if idem_vals[5] then
-            local scopes = cjson.decode(idem_vals[5])
-            for _, scope in ipairs(scopes) do
-                local budget_key = "budget:" .. scope .. ":" .. idem_vals[4]
-                local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
-                table.insert(replay_balances, {
-                    scope = scope,
-                    remaining = tonumber(b[1] or 0),
-                    reserved = tonumber(b[2] or 0),
-                    spent = tonumber(b[3] or 0),
-                    allocated = tonumber(b[4] or 0),
-                    debt = tonumber(b[5] or 0),
-                    overdraft_limit = tonumber(b[6] or 0),
-                    is_over_limit = (b[7] == "true")
-                })
-            end
-        end
         return cjson.encode({
             reservation_id = reservation_id,
-            state = "COMMITTED",
             replay = true,
-            response_snapshot = response_snapshot,
-            charged = tonumber(idem_vals[1] or 0),
-            debt_incurred = tonumber(idem_vals[2] or 0),
-            estimate_amount = tonumber(idem_vals[3] or 0),
-            estimate_unit = idem_vals[4],
-            affected_scopes_json = idem_vals[5],
-            overage_policy = overage_policy,
-            scope_path = scope_path,
-            balances = replay_balances
+            response_snapshot = redis.call('HGET', reservation_key, 'commit_response_json')
         })
 end
 
@@ -149,6 +118,10 @@ elseif state ~= "ACTIVE" then
     return cjson.encode({error = "RESERVATION_FINALIZED", state = state})
 end
 
+if not estimate_amount or not estimate_unit then
+    return cjson.encode({error = "INTERNAL_ERROR", message = "Reservation missing estimate data"})
+end
+
 if overage_policy ~= "REJECT"
    and overage_policy ~= "ALLOW_IF_AVAILABLE"
    and overage_policy ~= "ALLOW_WITH_OVERDRAFT" then
@@ -187,9 +160,9 @@ if not ok then
 end
 
 -- Calculate delta (actual - estimate)
-local delta = actual_amount - estimate_amount
+local delta = subtract_int(actual_amount, estimate_amount)
 local charged_amount = actual_amount
-local total_debt_incurred = 0
+local total_debt_incurred = "0"
 local scope_debt_incurred = {}  -- per-scope debt delta for event data
 -- Pre-mutation state for transition detection. Populated from existing reads
 -- in overage paths (no extra HMGET). For delta <= 0, remaining can only stay
@@ -197,7 +170,7 @@ local scope_debt_incurred = {}  -- per-scope debt delta for event data
 local pre_budget_state = {}
 
 -- Handle overage
-if delta > 0 then
+if compare_int(delta, "0") > 0 then
     if overage_policy == "REJECT" then
         return cjson.encode({error = "BUDGET_EXCEEDED", message = "Actual exceeds estimate and policy is REJECT"})
     elseif overage_policy == "ALLOW_IF_AVAILABLE" then
@@ -208,25 +181,25 @@ if delta > 0 then
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local cvals = redis.call('HMGET', budget_key, 'remaining', 'is_over_limit')
-            local remaining = tonumber(cvals[1] or 0)
+            local remaining = normalize_int(cvals[1] or "0")
             pre_budget_state[scope] = {remaining = remaining, is_over_limit = (cvals[2] == "true")}
-            capped_delta = math.min(capped_delta, math.max(remaining, 0))
+            capped_delta = min_int(capped_delta, max_int(remaining, "0"))
         end
 
         -- Charge the capped delta from remaining
-        if capped_delta > 0 then
+        if compare_int(capped_delta, "0") > 0 then
             for _, scope in ipairs(affected_scopes) do
                 local budget_key = "budget:" .. scope .. ":" .. actual_unit
-                redis.call('HINCRBY', budget_key, 'remaining', -capped_delta)
+                redis.call('HINCRBY', budget_key, 'remaining', negate_int(capped_delta))
                 redis.call('HINCRBY', budget_key, 'spent', capped_delta)
             end
         end
 
         -- Adjust charged_amount: estimate + whatever overage we could cover
-        charged_amount = estimate_amount + capped_delta
+        charged_amount = add_int(estimate_amount, capped_delta)
 
         -- Mark over-limit if we couldn't cover the full delta — blocks future reservations
-        if capped_delta < delta then
+        if compare_int(capped_delta, delta) < 0 then
             for _, scope in ipairs(affected_scopes) do
                 local budget_key = "budget:" .. scope .. ":" .. actual_unit
                 redis.call('HSET', budget_key, 'is_over_limit', 'true')
@@ -243,25 +216,26 @@ if delta > 0 then
         for _, scope in ipairs(affected_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local vals = redis.call('HMGET', budget_key, 'remaining', 'debt', 'overdraft_limit', 'is_over_limit')
-            local remaining = tonumber(vals[1] or 0)
-            local current_debt = tonumber(vals[2] or 0)
-            local overdraft_limit = tonumber(vals[3] or 0)
+            local remaining = normalize_int(vals[1] or "0")
+            local current_debt = normalize_int(vals[2] or "0")
+            local overdraft_limit = normalize_int(vals[3] or "0")
             scope_budget_cache[scope] = {remaining = remaining, debt = current_debt, overdraft_limit = overdraft_limit}
             pre_budget_state[scope] = {remaining = remaining, is_over_limit = (vals[4] == "true")}
 
-            if overdraft_limit == 0 and remaining < delta then
+            if compare_int(overdraft_limit, "0") == 0 and compare_int(remaining, delta) < 0 then
                 -- Spec: behaves as ALLOW_IF_AVAILABLE — cap delta to available (floor 0)
-                capped_delta = math.min(capped_delta, math.max(remaining, 0))
+                capped_delta = min_int(capped_delta, max_int(remaining, "0"))
             end
         end
 
         -- Phase 2: check non-zero scopes against capped_delta (fail fast, no mutations)
         for _, scope in ipairs(affected_scopes) do
             local cached = scope_budget_cache[scope]
-            if cached.overdraft_limit > 0 and cached.remaining < capped_delta then
-                local funded = math.max(cached.remaining, 0)
-                local deficit = capped_delta - funded
-                if cached.debt + deficit > cached.overdraft_limit then
+            if compare_int(cached.overdraft_limit, "0") > 0
+               and compare_int(cached.remaining, capped_delta) < 0 then
+                local funded = max_int(cached.remaining, "0")
+                local deficit = subtract_int(capped_delta, funded)
+                if compare_int(add_int(cached.debt, deficit), cached.overdraft_limit) > 0 then
                     return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
                         current_debt = cached.debt, deficit = deficit, overdraft_limit = cached.overdraft_limit})
                 end
@@ -272,9 +246,9 @@ if delta > 0 then
             local budget_key = "budget:" .. scope .. ":" .. actual_unit
             local cached = scope_budget_cache[scope]
 
-            if cached.remaining >= capped_delta then
+            if compare_int(cached.remaining, capped_delta) >= 0 then
                 -- Sufficient remaining - charge normally
-                redis.call('HINCRBY', budget_key, 'remaining', -capped_delta)
+                redis.call('HINCRBY', budget_key, 'remaining', negate_int(capped_delta))
                 redis.call('HINCRBY', budget_key, 'spent', capped_delta)
             else
                 -- Create debt for the shortfall
@@ -282,27 +256,28 @@ if delta > 0 then
                 -- spent tracks only the funded portion; debt tracks the unfunded portion.
                 -- When remaining is already negative (prior overdraft), the funded portion is 0,
                 -- not negative — otherwise spent would decrease and debt would over-count.
-                local funded = math.max(cached.remaining, 0)
-                local deficit = capped_delta - funded
-                redis.call('HINCRBY', budget_key, 'remaining', -capped_delta)
+                local funded = max_int(cached.remaining, "0")
+                local deficit = subtract_int(capped_delta, funded)
+                redis.call('HINCRBY', budget_key, 'remaining', negate_int(capped_delta))
                 redis.call('HINCRBY', budget_key, 'spent', funded)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
-                total_debt_incurred = total_debt_incurred + deficit
+                total_debt_incurred = add_debt_aggregate(total_debt_incurred, deficit)
                 scope_debt_incurred[scope] = deficit
 
                 -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
-                local new_debt = cached.debt + deficit
-                if cached.overdraft_limit > 0 and new_debt > cached.overdraft_limit then
+                local new_debt = add_int(cached.debt, deficit)
+                if compare_int(cached.overdraft_limit, "0") > 0
+                   and compare_int(new_debt, cached.overdraft_limit) > 0 then
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end
             end
         end
         -- Adjust charged_amount: estimate + effective overage
-        charged_amount = estimate_amount + capped_delta
+        charged_amount = add_int(estimate_amount, capped_delta)
         -- Mark over-limit on zero-limit scopes if full delta couldn't be covered
-        if capped_delta < delta then
+        if compare_int(capped_delta, delta) < 0 then
             for _, scope in ipairs(affected_scopes) do
-                if scope_budget_cache[scope].overdraft_limit == 0 then
+                if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0 then
                     local budget_key = "budget:" .. scope .. ":" .. actual_unit
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end
@@ -336,11 +311,11 @@ end
 -- block has already modified `spent` for the delta > 0 cases.
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. actual_unit
-    redis.call('HINCRBY', budget_key, 'reserved', -estimate_amount)
+    redis.call('HINCRBY', budget_key, 'reserved', negate_int(estimate_amount))
 
-    if delta < 0 then
+    if compare_int(delta, "0") < 0 then
         -- Return unused portion of the reservation to remaining
-        redis.call('HINCRBY', budget_key, 'remaining', -delta)
+        redis.call('HINCRBY', budget_key, 'remaining', negate_int(delta))
         redis.call('HINCRBY', budget_key, 'spent', actual_amount)
     else
         -- Overage block (if any) already charged `delta` to spent above;
@@ -375,15 +350,15 @@ for _, scope in ipairs(affected_scopes) do
     local pre = pre_budget_state[scope] or {}
     table.insert(balances, {
         scope = scope,
-        remaining = tonumber(b[1] or 0),
-        reserved = tonumber(b[2] or 0),
-        spent = tonumber(b[3] or 0),
-        allocated = tonumber(b[4] or 0),
-        debt = tonumber(b[5] or 0),
-        overdraft_limit = tonumber(b[6] or 0),
+        remaining = normalize_int(b[1] or "0"),
+        reserved = normalize_int(b[2] or "0"),
+        spent = normalize_int(b[3] or "0"),
+        allocated = normalize_int(b[4] or "0"),
+        debt = normalize_int(b[5] or "0"),
+        overdraft_limit = normalize_int(b[6] or "0"),
         is_over_limit = (b[7] == "true"),
-        debt_incurred = scope_debt_incurred[scope] or 0,
-        pre_remaining = pre.remaining or 0,
+        debt_incurred = scope_debt_incurred[scope] or "0",
+        pre_remaining = pre.remaining or "0",
         pre_is_over_limit = pre.is_over_limit or false
     })
 end
@@ -402,7 +377,8 @@ local response = cjson.encode({
 })
 -- Store the immutable post-mutation snapshot in the reservation hash before
 -- returning. It shares the terminal hash TTL and survives body-cache misses.
-redis.call('HSET', reservation_key,
-    'commit_response_json', response,
-    'commit_response_state', 'PENDING')
+redis.call('HSET', reservation_key, 'commit_response_state', 'PENDING')
+if idempotency_key ~= "" and idempotency_key ~= nil then
+    redis.call('HSET', reservation_key, 'commit_response_json', response)
+end
 return response

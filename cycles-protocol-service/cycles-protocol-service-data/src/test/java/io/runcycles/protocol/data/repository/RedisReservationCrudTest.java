@@ -66,7 +66,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         void shouldThrowNotFoundWhenEmpty() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hgetAll("reservation:res_missing")).thenReturn(Map.of());
+            mockReservationHash("reservation:res_missing", Map.of());
 
             assertThatThrownBy(() -> repository.getReservationById("missing"))
                     .isInstanceOf(CyclesProtocolException.class)
@@ -77,7 +77,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         void shouldThrowNotFoundWhenNull() {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
-            when(jedis.hgetAll("reservation:res_gone")).thenReturn(null);
+            mockReservationHash("reservation:res_gone", (Map<String, String>) null);
 
             assertThatThrownBy(() -> repository.getReservationById("gone"))
                     .isInstanceOf(CyclesProtocolException.class)
@@ -89,13 +89,15 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             Map<String, String> fields = reservationFields("res123", "ACTIVE");
-            when(jedis.hgetAll("reservation:res_res123")).thenReturn(fields);
+            mockReservationHash("reservation:res_res123", fields);
 
             ReservationDetail detail = repository.getReservationById("res123");
 
             assertThat(detail.getReservationId()).isEqualTo("res123");
             assertThat(detail.getStatus()).isEqualTo(Enums.ReservationStatus.ACTIVE);
             assertThat(detail.getReserved().getAmount()).isEqualTo(5000L);
+            assertNoResponseSnapshotHmget(jedis);
+            verify(jedis, never()).hgetAll("reservation:res_res123");
         }
     }
 
@@ -112,7 +114,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             Map<String, String> fields = reservationFields("res-committed", "COMMITTED");
             fields.put("charged_amount", "3000");
             fields.put("committed_at", "1700001000000");
-            when(jedis.hgetAll("reservation:res_res-committed")).thenReturn(fields);
+            mockReservationHash("reservation:res_res-committed", fields);
 
             ReservationDetail detail = repository.getReservationById("res-committed");
 
@@ -128,7 +130,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             Map<String, String> fields = reservationFields("res-released", "RELEASED");
             fields.put("released_at", "1700002000000");
-            when(jedis.hgetAll("reservation:res_res-released")).thenReturn(fields);
+            mockReservationHash("reservation:res_res-released", fields);
 
             ReservationDetail detail = repository.getReservationById("res-released");
 
@@ -142,7 +144,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             Map<String, String> fields = reservationFields("res-meta", "ACTIVE");
             fields.put("metadata_json", "{\"model\":\"gpt-4\",\"temperature\":0.7}");
-            when(jedis.hgetAll("reservation:res_res-meta")).thenReturn(fields);
+            mockReservationHash("reservation:res_res-meta", fields);
 
             ReservationDetail detail = repository.getReservationById("res-meta");
 
@@ -160,7 +162,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             Map<String, String> fields = reservationFields("res-cmeta", "COMMITTED");
             fields.put("metadata_json", "{\"phase\":\"reserve\"}");
             fields.put("committed_metadata_json", "{\"request_id\":\"req-abc-123\"}");
-            when(jedis.hgetAll("reservation:res_res-cmeta")).thenReturn(fields);
+            mockReservationHash("reservation:res_res-cmeta", fields);
 
             ReservationDetail detail = repository.getReservationById("res-cmeta");
 
@@ -175,7 +177,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
             Map<String, String> fields = reservationFields("res-nocmeta", "ACTIVE");
-            when(jedis.hgetAll("reservation:res_res-nocmeta")).thenReturn(fields);
+            mockReservationHash("reservation:res_res-nocmeta", fields);
 
             ReservationDetail detail = repository.getReservationById("res-nocmeta");
 
@@ -190,7 +192,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             fields.put("reservation_id", "res-corrupt");
             fields.put("state", "ACTIVE");
             // Missing required fields: estimate_unit, estimate_amount, subject_json, etc.
-            when(jedis.hgetAll("reservation:res_res-corrupt")).thenReturn(fields);
+            mockReservationHash("reservation:res_res-corrupt", fields);
 
             assertThatThrownBy(() -> repository.getReservationById("res-corrupt"))
                     .isInstanceOf(RuntimeException.class);
@@ -210,7 +212,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             Map<String, String> fields = reservationFields("committed-res", "COMMITTED");
             fields.put("charged_amount", "3000");
             fields.put("committed_at", "1700050000000");
-            when(jedis.hgetAll("reservation:res_committed-res")).thenReturn(fields);
+            mockReservationHash("reservation:res_committed-res", fields);
 
             ReservationDetail detail = repository.getReservationById("committed-res");
 
@@ -225,7 +227,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             Map<String, String> fields = reservationFields("released-res", "RELEASED");
             fields.put("released_at", "1700055000000");
-            when(jedis.hgetAll("reservation:res_released-res")).thenReturn(fields);
+            mockReservationHash("reservation:res_released-res", fields);
 
             ReservationDetail detail = repository.getReservationById("released-res");
 
@@ -238,7 +240,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             doNothing().when(jedis).close();
             Map<String, String> fields = reservationFields("meta-res", "ACTIVE");
             fields.put("metadata_json", "{\"env\":\"production\",\"team\":\"backend\"}");
-            when(jedis.hgetAll("reservation:res_meta-res")).thenReturn(fields);
+            mockReservationHash("reservation:res_meta-res", fields);
 
             ReservationDetail detail = repository.getReservationById("meta-res");
 

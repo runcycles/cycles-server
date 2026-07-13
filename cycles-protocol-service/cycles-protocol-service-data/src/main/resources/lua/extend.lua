@@ -120,12 +120,12 @@ if scope_list_json and estimate_unit then
         local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
         table.insert(balances, {
             scope = scope,
-            remaining = tonumber(b[1] or 0),
-            reserved = tonumber(b[2] or 0),
-            spent = tonumber(b[3] or 0),
-            allocated = tonumber(b[4] or 0),
-            debt = tonumber(b[5] or 0),
-            overdraft_limit = tonumber(b[6] or 0),
+            remaining = normalize_int(b[1] or "0"),
+            reserved = normalize_int(b[2] or "0"),
+            spent = normalize_int(b[3] or "0"),
+            allocated = normalize_int(b[4] or "0"),
+            debt = normalize_int(b[5] or "0"),
+            overdraft_limit = normalize_int(b[6] or "0"),
             is_over_limit = (b[7] == "true")
         })
     end

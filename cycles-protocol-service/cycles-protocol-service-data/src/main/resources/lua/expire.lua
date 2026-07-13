@@ -38,18 +38,27 @@ end
 -- Past grace period: release reserved budget back to all scopes.
 -- Fetch remaining fields in one round-trip
 local detail = redis.call('HMGET', key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
-local estimate_amount      = tonumber(detail[1])
+local estimate_amount      = normalize_int(detail[1])
 local estimate_unit        = detail[2]
 local affected_scopes_json = detail[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
 local budgeted_scopes_json = detail[4]
 
-if estimate_amount and estimate_unit and (budgeted_scopes_json or affected_scopes_json) then
+if not estimate_amount or compare_int(estimate_amount, "0") < 0
+   or not estimate_unit or estimate_unit == "" then
+    -- Persistent row corruption cannot be repaired by retrying every sweep.
+    -- Quarantine the reservation outside the hot candidate index while
+    -- leaving state and budgets untouched for operator reconciliation.
+    redis.call('ZREM', 'reservation:ttl', reservation_id)
+    return cjson.encode({status = "ERROR", error = "INTERNAL_ERROR", message = "Reservation has invalid estimate data"})
+end
+
+if budgeted_scopes_json or affected_scopes_json then
     local ok, affected_scopes = pcall(cjson.decode, budgeted_scopes_json or affected_scopes_json)
     if not ok then affected_scopes = {} end
     for _, scope in ipairs(affected_scopes) do
         local budget_key = "budget:" .. scope .. ":" .. estimate_unit
-        redis.call('HINCRBY', budget_key, 'reserved',  -estimate_amount)
+        redis.call('HINCRBY', budget_key, 'reserved',  negate_int(estimate_amount))
         redis.call('HINCRBY', budget_key, 'remaining',  estimate_amount)
     end
 end

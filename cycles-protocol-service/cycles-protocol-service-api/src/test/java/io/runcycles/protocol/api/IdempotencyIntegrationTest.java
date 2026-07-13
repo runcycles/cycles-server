@@ -58,7 +58,149 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(original.getStatusCode().value()).isEqualTo(200);
             assertThat(((Map<?, ?>) original.getBody().get("reserved")).get("amount"))
                 .isEqualTo(amount);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(10L);
             assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
+        void extendPreservesInt64BalancesBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reservationBody(TENANT_A, amount));
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> extendBody = extendBody(30_000);
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/extend", API_KEY_SECRET_A, extendBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/extend", API_KEY_SECRET_A, extendBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(((Number) ((Map<?, ?>) balance.get("allocated")).get("amount")).longValue())
+                .isEqualTo(amount + 10);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
+        void commitPreservesInt64AmountsAndBalancesBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            Map<String, Object> reserveBody = reservationBody(TENANT_A, amount - 1);
+            reserveBody.put("overage_policy", "ALLOW_IF_AVAILABLE");
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reserveBody);
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> commitBody = commitBody(amount);
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) original.getBody().get("charged")).get("amount"))
+                .isEqualTo(amount);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(10L);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isZero();
+            assertThat(((Number) ((Map<?, ?>) balance.get("spent")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
+        void commitSaturatesCrossScopeDebtAggregateWithoutPoisoningReplay() {
+            long amount = Long.MAX_VALUE;
+            String workspaceScope = "tenant:" + TENANT_A + "/workspace:dev";
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedZeroBudgetWithOverdraft(jedis, "tenant:" + TENANT_A, "TOKENS", amount);
+                seedZeroBudgetWithOverdraft(jedis, workspaceScope, "TOKENS", amount);
+            }
+            Map<String, Object> reserveBody = reservationBody(TENANT_A, 0);
+            reserveBody.put("subject", Map.of("tenant", TENANT_A, "workspace", "dev"));
+            reserveBody.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reserveBody);
+            assertThat(reserve.getStatusCode().value()).isEqualTo(200);
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> commitBody = commitBody(amount);
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, commitBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) original.getBody().get("charged")).get("amount"))
+                .isEqualTo(amount);
+            assertThat((List<Map<?, ?>>) original.getBody().get("balances"))
+                .hasSize(2)
+                .allSatisfy(balance -> {
+                    assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                        .isEqualTo(-amount);
+                    assertThat(((Number) ((Map<?, ?>) balance.get("debt")).get("amount")).longValue())
+                        .isEqualTo(amount);
+                });
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("reservation:res_" + reservationId, "debt_incurred"))
+                    .isEqualTo(String.valueOf(Long.MAX_VALUE));
+            }
+        }
+
+        @Test
+        void releasePreservesInt64AmountsAndBalancesBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reservationBody(TENANT_A, amount));
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> releaseBody = releaseBody();
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, releaseBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, releaseBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) original.getBody().get("released")).get("amount"))
+                .isEqualTo(amount);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(amount + 10);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isZero();
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        private void seedZeroBudgetWithOverdraft(Jedis jedis, String scope, String unit,
+                                                  long overdraftLimit) {
+            jedis.hset("budget:" + scope + ":" + unit, Map.of(
+                "scope", scope,
+                "unit", unit,
+                "allocated", "0",
+                "remaining", "0",
+                "reserved", "0",
+                "spent", "0",
+                "debt", "0",
+                "overdraft_limit", String.valueOf(overdraftLimit),
+                "is_over_limit", "false"));
         }
 
         @Test

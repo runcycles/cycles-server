@@ -9,6 +9,7 @@ import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
+import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
@@ -26,7 +27,6 @@ import redis.clients.jedis.resps.ScanResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -40,6 +40,7 @@ public class RedisReservationRepository {
     @Autowired private ScopeDerivationService scopeService;
     @Autowired private LuaScriptRegistry luaScripts;
     @Autowired private CyclesMetrics metrics;
+    @Autowired private AuditRepository auditRepository;
     // CyclesEvidence (cycles-evidence-v0.1): computing + emitting + stamping +
     // caching the `reserve` evidence lives HERE, inside the reservation-creation
     // flow, so it is part of the same idempotent unit — replay returns the cached
@@ -61,6 +62,19 @@ public class RedisReservationRepository {
 
     /** Warn when the naive sorted list path hydrates a large result set. */
     static final int SORTED_HYDRATE_WARN_THRESHOLD = 2000;
+    private static final List<String> RESERVATION_SUMMARY_FIELDS = List.of(
+        "reservation_id", "tenant", "state", "subject_json", "action_json",
+        "estimate_amount", "estimate_unit", "scope_path", "affected_scopes",
+        "created_at", "expires_at", "idempotency_key", "charged_amount",
+        "committed_at", "released_at");
+    private static final List<String> RESERVATION_EVIDENCE_FIELDS = List.of(
+        "reserve_evidence_id", "reserve_evidence_url",
+        "commit_evidence_id", "commit_evidence_url",
+        "release_evidence_id", "release_evidence_url");
+    private static final List<String> RESERVATION_DETAIL_FIELDS = List.copyOf(
+        reservationProjection(EnumSet.allOf(ReservationInclude.class), true));
+    private static final String[] RESERVATION_DETAIL_FIELD_ARRAY =
+        RESERVATION_DETAIL_FIELDS.toArray(String[]::new);
     private static final long IDEMPOTENCY_CACHE_TTL_MS = 86_400_000L;
     // commit/release are terminal: reserve/commit/release.lua set a 30-day TTL on the
     // finalized reservation hash (audit trail), so the commit/release idempotent replay is
@@ -100,9 +114,6 @@ public class RedisReservationRepository {
     private static final String RESPONSE_STATE_PENDING = "PENDING";
     private static final String RESPONSE_STATE_BASE = "BASE";
     private static final String RESPONSE_STATE_EVIDENCE = "EVIDENCE";
-
-    @Value("${audit.retention.days:400}")
-    private int auditRetentionDays;
 
     @Value("${cycles.evidence.queue.pending-key:evidence:pending}")
     private String evidencePendingKey = "evidence:pending";
@@ -513,7 +524,7 @@ public class RedisReservationRepository {
             .affectedScopes(affectedScopes)
             .scopePath(response.get("scope_path").toString())
             .reserved(new Amount(unit, parseLong(response.get("estimate_amount"))))
-            .expiresAtMs(((Number) response.get("expires_at")).longValue())
+            .expiresAtMs(parseLong(response.get("expires_at")))
             .caps(caps)
             .balances(parseLuaBalances(response, unit))
             .preRemaining(parsePreRemaining(response))
@@ -526,6 +537,10 @@ public class RedisReservationRepository {
             return number.longValue();
         }
         return Long.parseLong(value.toString());
+    }
+
+    private static Long parseNullableLong(Object value) {
+        return value == null ? null : parseLong(value);
     }
 
     private static long replayCacheTtl(Object value) {
@@ -717,11 +732,11 @@ public class RedisReservationRepository {
             }
             Map<String, Object> snapshot = objectMapper.readValue(replayState.snapshotJson(), Map.class);
             Enums.UnitEnum unit = Enums.UnitEnum.valueOf(snapshot.get("estimate_unit").toString());
-            long chargedAmount = ((Number) snapshot.get("charged")).longValue();
-            long estimateAmount = ((Number) snapshot.get("estimate_amount")).longValue();
+            long chargedAmount = parseLong(snapshot.get("charged"));
+            long estimateAmount = parseLong(snapshot.get("estimate_amount"));
             Amount released = chargedAmount < estimateAmount
                 ? new Amount(unit, estimateAmount - chargedAmount) : null;
-            Number debt = (Number) snapshot.get("debt_incurred");
+            Long debt = parseNullableLong(snapshot.get("debt_incurred"));
             CommitResponse restored = CommitResponse.builder()
                 .status(Enums.CommitStatus.COMMITTED)
                 .charged(new Amount(unit, chargedAmount))
@@ -730,7 +745,7 @@ public class RedisReservationRepository {
                 .estimateAmount(estimateAmount)
                 .scopePath(Objects.toString(snapshot.get("scope_path"), null))
                 .overagePolicy(Objects.toString(snapshot.get("overage_policy"), null))
-                .debtIncurred(debt == null ? null : debt.longValue())
+                .debtIncurred(debt)
                 .scopeDebtIncurred(parseScopeDebtIncurred(snapshot))
                 .preRemaining(parsePreRemaining(snapshot))
                 .preIsOverLimit(parsePreIsOverLimit(snapshot))
@@ -777,7 +792,7 @@ public class RedisReservationRepository {
             Enums.UnitEnum unit = Enums.UnitEnum.valueOf(snapshot.get("estimate_unit").toString());
             ReleaseResponse restored = ReleaseResponse.builder()
                 .status(Enums.ReleaseStatus.RELEASED)
-                .released(new Amount(unit, ((Number) snapshot.get("estimate_amount")).longValue()))
+                .released(new Amount(unit, parseLong(snapshot.get("estimate_amount"))))
                 .balances(parseLuaBalances(snapshot, unit))
                 .build();
             String state = resolvedResponseState(replayState);
@@ -1203,13 +1218,34 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
-            long chargedAmount = ((Number) response.get("charged")).longValue();
+            // Replay responses intentionally carry only the durable snapshot pointer.
+            // Resolve them before parsing fresh-operation fields so pre-snapshot rows
+            // fail retriably instead of depending on obsolete reconstructed values.
+            if (Boolean.TRUE.equals(response.get("replay"))) {
+                jedis.close();
+                jedis = null;
+                CommitResponse replayed = readCachedLifecycleBody(
+                    "commit", reservationId, CommitResponse.class);
+                if (replayed != null) {
+                    replayed.setIdempotentReplay(true);
+                } else {
+                    replayed = restoreCommitResponse(
+                        reservationId, response.get("response_snapshot"));
+                }
+                if (replayed == null) {
+                    throw idempotencyReplayUnavailable();
+                }
+                metrics.recordCommit(tenant, "COMMITTED", "IDEMPOTENT_REPLAY", "UNKNOWN");
+                return replayed;
+            }
+
+            long chargedAmount = parseLong(response.get("charged"));
 
             // Lua now returns estimate_amount — use it for released calculation
             Amount released = null;
-            Number luaEstimate = (Number) response.get("estimate_amount");
+            Long luaEstimate = parseNullableLong(response.get("estimate_amount"));
             if (luaEstimate != null) {
-                long est = luaEstimate.longValue();
+                long est = luaEstimate;
                 if (chargedAmount < est) {
                     released = new Amount(request.getActual().getUnit(), est - chargedAmount);
                 }
@@ -1221,10 +1257,10 @@ public class RedisReservationRepository {
             // Internal fields from Lua for event emission (not serialized to client)
             String scopePath = response.get("scope_path") != null ? response.get("scope_path").toString() : null;
             String overagePolicy = response.get("overage_policy") != null ? response.get("overage_policy").toString() : null;
-            Number luaDebt = (Number) response.get("debt_incurred");
+            Long luaDebt = parseNullableLong(response.get("debt_incurred"));
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
 
-            long debtIncurredAmount = luaDebt != null ? luaDebt.longValue() : 0L;
+            long debtIncurredAmount = luaDebt != null ? luaDebt : 0L;
             metrics.recordCommit(tenant, "COMMITTED", "OK",
                 overagePolicy != null ? overagePolicy : "DEFAULT");
             if (debtIncurredAmount > 0) {
@@ -1235,35 +1271,14 @@ public class RedisReservationRepository {
                 .charged(new Amount(request.getActual().getUnit(), chargedAmount))
                 .released(released)
                 .balances(balances)
-                .estimateAmount(luaEstimate != null ? luaEstimate.longValue() : null)
+                .estimateAmount(luaEstimate)
                 .scopePath(scopePath)
                 .overagePolicy(overagePolicy)
-                .debtIncurred(luaDebt != null ? luaDebt.longValue() : null)
+                .debtIncurred(luaDebt)
                 .scopeDebtIncurred(scopeDebtIncurred)
                 .preRemaining(parsePreRemaining(response))
                 .preIsOverLimit(parsePreIsOverLimit(response))
                 .build();
-
-            // Idempotent replay (Lua signals `replay`): return the ORIGINAL cached body
-            // (with its original cycles_evidence) verbatim; never re-emit. The internal
-            // event-emission fields are intentionally absent on the cached body, and the
-            // controller skips event emission on a replay.
-            if (Boolean.TRUE.equals(response.get("replay"))) {
-                committed.setIdempotentReplay(true);
-                jedis.close();
-                jedis = null;
-                CommitResponse cached = readCachedLifecycleBody("commit", reservationId, CommitResponse.class);
-                if (cached != null) {
-                    cached.setIdempotentReplay(true);
-                    return cached;
-                }
-                CommitResponse restored = restoreCommitResponse(
-                    reservationId, response.get("response_snapshot"));
-                if (restored != null) {
-                    return restored;
-                }
-                throw idempotencyReplayUnavailable();
-            }
 
             // Fresh commit: emit `commit` evidence over {reservation_id, request, response}
             // (response AS-IS, before cycles_evidence is stamped), stamp the ref, then cache
@@ -1333,32 +1348,17 @@ public class RedisReservationRepository {
         Jedis jedis = null;
         try {
             jedis = jedisPool.getResource();
-            String auditJson = "";
-            String auditLogId = "";
-            long auditTtlSeconds = 0L;
-            if (auditEntry != null) {
-                auditLogId = auditEntry.getLogId();
-                if (auditLogId == null || auditLogId.isBlank()) {
-                    auditLogId = "log_" + UUID.randomUUID().toString().substring(0, 16);
-                    auditEntry.setLogId(auditLogId);
-                }
-                if (auditEntry.getTimestamp() == null) {
-                    auditEntry.setTimestamp(Instant.now());
-                }
-                auditJson = objectMapper.writeValueAsString(auditEntry);
-                auditTtlSeconds = auditRetentionDays > 0
-                        ? (long) auditRetentionDays * 86_400L : 0L;
-            }
+            AuditRepository.PreparedAudit preparedAudit = auditEntry != null
+                ? auditRepository.prepare(auditEntry) : null;
             List<String> args = Arrays.asList(
                 reservationId,
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
                 computePayloadHash(request),
-                auditJson,
-                auditLogId,
-                tenant != null ? tenant : "",
-                String.valueOf(auditTtlSeconds),
-                auditEntry != null && auditEntry.getTimestamp() != null
-                        ? String.valueOf(auditEntry.getTimestamp().toEpochMilli()) : "0"
+                preparedAudit != null ? preparedAudit.json() : "",
+                preparedAudit != null ? preparedAudit.logId() : "",
+                preparedAudit != null ? preparedAudit.tenantId() : "",
+                preparedAudit != null ? String.valueOf(preparedAudit.ttlSeconds()) : "0",
+                preparedAudit != null ? String.valueOf(preparedAudit.score()) : "0"
             );
 
             Object result = luaScripts.eval(jedis, "release", releaseScript, args.toArray(new String[0]));
@@ -1368,14 +1368,32 @@ public class RedisReservationRepository {
                 handleScriptError(response);
             }
 
+            if (Boolean.TRUE.equals(response.get("replay"))) {
+                jedis.close();
+                jedis = null;
+                ReleaseResponse replayed = readCachedLifecycleBody(
+                    "release", reservationId, ReleaseResponse.class);
+                if (replayed != null) {
+                    replayed.setIdempotentReplay(true);
+                } else {
+                    replayed = restoreReleaseResponse(
+                        reservationId, response.get("response_snapshot"));
+                }
+                if (replayed == null) {
+                    throw idempotencyReplayUnavailable();
+                }
+                metrics.recordRelease(tenant, actorType, "RELEASED", "IDEMPOTENT_REPLAY");
+                return replayed;
+            }
+
             // Lua now returns estimate_amount and estimate_unit — use them directly
             Amount releasedAmount;
-            Number luaEstimate = (Number) response.get("estimate_amount");
+            Long luaEstimate = parseNullableLong(response.get("estimate_amount"));
             String luaUnit = (String) response.get("estimate_unit");
             if (luaEstimate != null && luaUnit != null) {
                 releasedAmount = new Amount(
                     Enums.UnitEnum.valueOf(luaUnit),
-                    luaEstimate.longValue()
+                    luaEstimate
                 );
             } else {
                 // Spec requires released to be present; fall back to zero with the request unit context
@@ -1393,24 +1411,6 @@ public class RedisReservationRepository {
                 .released(releasedAmount)
                 .balances(balances)
                 .build();
-
-            // Idempotent replay: return the original cached body verbatim; never re-emit.
-            if (Boolean.TRUE.equals(response.get("replay"))) {
-                releasedResponse.setIdempotentReplay(true);
-                jedis.close();
-                jedis = null;
-                ReleaseResponse cached = readCachedLifecycleBody("release", reservationId, ReleaseResponse.class);
-                if (cached != null) {
-                    cached.setIdempotentReplay(true);
-                    return cached;
-                }
-                ReleaseResponse restored = restoreReleaseResponse(
-                    reservationId, response.get("response_snapshot"));
-                if (restored != null) {
-                    return restored;
-                }
-                throw idempotencyReplayUnavailable();
-            }
 
             // Fresh release: emit `release` evidence over {reservation_id, request, response}
             // (before cycles_evidence is stamped), stamp the ref, cache the body for replay.
@@ -1508,7 +1508,8 @@ public class RedisReservationRepository {
     public ReservationDetail getReservationById(String reservationId) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "reservation:res_" + reservationId;
-            Map<String, String> fields = jedis.hgetAll(key);
+            Map<String, String> fields = HashProjections.mapHashFields(
+                RESERVATION_DETAIL_FIELDS, jedis.hmget(key, RESERVATION_DETAIL_FIELD_ARRAY));
             if (fields == null || fields.isEmpty()) {
                 throw CyclesProtocolException.notFound(reservationId);
             }
@@ -1594,6 +1595,8 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
+            List<String> projection = reservationProjection(includeFields, false);
+            String[] projectionFields = projection.toArray(String[]::new);
             ScanPageCursor pageCursor = ScanPageCursor.decode(startCursor);
             String cursor = pageCursor.redisCursor();
             int batchOffset = pageCursor.offset();
@@ -1611,9 +1614,9 @@ public class RedisReservationRepository {
 
                 if (!keys.isEmpty()) {
                     Pipeline pipeline = jedis.pipelined();
-                    Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+                    Map<String, Response<List<String>>> responses = new HashMap<>();
                     for (String key : keys) {
-                        responses.put(key, pipeline.hgetAll(key));
+                        responses.put(key, pipeline.hmget(key, projectionFields));
                     }
                     pipeline.sync();
 
@@ -1622,7 +1625,7 @@ public class RedisReservationRepository {
                     for (int i = startIndex; i < keys.size(); i++) {
                         String key = keys.get(i);
                         try {
-                            Map<String, String> fields = responses.get(key).get();
+                            Map<String, String> fields = HashProjections.mapHashFields(projection, responses.get(key).get());
                             if (fields.isEmpty()) continue;
                             if (!tenant.equals(fields.get("tenant"))) continue;
                             if (status != null && !status.equals(fields.get("state"))) continue;
@@ -1710,6 +1713,8 @@ public class RedisReservationRepository {
         try (Jedis jedis = jedisPool.getResource()) {
             ScanParams params = new ScanParams().match("reservation:res_*").count(500);
             List<ReservationSummary> matching = new ArrayList<>();
+            List<String> projection = reservationProjection(include, false);
+            String[] projectionFields = projection.toArray(String[]::new);
 
             String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
             String appSegment = app != null ? "app:" + app.toLowerCase() : null;
@@ -1723,15 +1728,15 @@ public class RedisReservationRepository {
                 List<String> keys = scan.getResult();
                 if (!keys.isEmpty()) {
                     Pipeline pipeline = jedis.pipelined();
-                    Map<String, Response<Map<String, String>>> responses = new HashMap<>();
+                    Map<String, Response<List<String>>> responses = new HashMap<>();
                     for (String key : keys) {
-                        responses.put(key, pipeline.hgetAll(key));
+                        responses.put(key, pipeline.hmget(key, projectionFields));
                     }
                     pipeline.sync();
 
                     for (String key : keys) {
                         try {
-                            Map<String, String> fields = responses.get(key).get();
+                            Map<String, String> fields = HashProjections.mapHashFields(projection, responses.get(key).get());
                             if (fields.isEmpty()) continue;
                             ReservationSummary summary = matchingReservation(fields, tenant,
                                     idempotencyKey, status, workspaceSegment, appSegment,
@@ -2326,9 +2331,9 @@ public class RedisReservationRepository {
 
             // Lua returns charged amount (may be less than requested with ALLOW_IF_AVAILABLE capping)
             Amount charged = null;
-            Number chargedNum = (Number) response.get("charged");
-            if (chargedNum != null) {
-                charged = new Amount(request.getActual().getUnit(), chargedNum.longValue());
+            Long chargedAmount = parseNullableLong(response.get("charged"));
+            if (chargedAmount != null) {
+                charged = new Amount(request.getActual().getUnit(), chargedAmount);
             }
 
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
@@ -2447,6 +2452,21 @@ public class RedisReservationRepository {
             builder.evidence(detail.getEvidence());
         }
         return builder.build();
+    }
+
+    private static List<String> reservationProjection(Set<ReservationInclude> include,
+                                                       boolean detail) {
+        List<String> fields = new ArrayList<>(RESERVATION_SUMMARY_FIELDS);
+        if (detail || include.contains(ReservationInclude.METADATA)) {
+            fields.add("metadata_json");
+        }
+        if (detail || include.contains(ReservationInclude.COMMITTED_METADATA)) {
+            fields.add("committed_metadata_json");
+        }
+        if (detail || include.contains(ReservationInclude.EVIDENCE)) {
+            fields.addAll(RESERVATION_EVIDENCE_FIELDS);
+        }
+        return fields;
     }
 
     private ReservationDetail buildReservationSummary(Map<String, String> fields) throws Exception {
@@ -2568,7 +2588,7 @@ public class RedisReservationRepository {
         Map<String, Long> result = new java.util.HashMap<>();
         for (Map<String, Object> lb : luaBalances) {
             String scope = (String) lb.get("scope");
-            long preRemaining = ((Number) lb.getOrDefault("pre_remaining", 0)).longValue();
+            long preRemaining = parseLong(lb.getOrDefault("pre_remaining", "0"));
             result.put(scope, preRemaining);
         }
         return result;
@@ -2602,7 +2622,7 @@ public class RedisReservationRepository {
         Map<String, Long> result = new java.util.HashMap<>();
         for (Map<String, Object> lb : luaBalances) {
             String scope = (String) lb.get("scope");
-            long debtIncurred = ((Number) lb.getOrDefault("debt_incurred", 0)).longValue();
+            long debtIncurred = parseLong(lb.getOrDefault("debt_incurred", "0"));
             if (debtIncurred > 0) {
                 result.put(scope, debtIncurred);
             }
@@ -2619,16 +2639,16 @@ public class RedisReservationRepository {
         List<Balance> balances = new ArrayList<>();
         for (Map<String, Object> lb : luaBalances) {
             String scope = (String) lb.get("scope");
-            long debtVal = ((Number) lb.getOrDefault("debt", 0)).longValue();
-            long overdraftLimitVal = ((Number) lb.getOrDefault("overdraft_limit", 0)).longValue();
+            long debtVal = parseLong(lb.getOrDefault("debt", "0"));
+            long overdraftLimitVal = parseLong(lb.getOrDefault("overdraft_limit", "0"));
             boolean isOverLimit = Boolean.TRUE.equals(lb.get("is_over_limit"));
             balances.add(Balance.builder()
                 .scope(leafScope(scope))
                 .scopePath(scope)
-                .remaining(new SignedAmount(unit, ((Number) lb.getOrDefault("remaining", 0)).longValue()))
-                .reserved(new Amount(unit, ((Number) lb.getOrDefault("reserved", 0)).longValue()))
-                .spent(new Amount(unit, ((Number) lb.getOrDefault("spent", 0)).longValue()))
-                .allocated(new Amount(unit, ((Number) lb.getOrDefault("allocated", 0)).longValue()))
+                .remaining(new SignedAmount(unit, parseLong(lb.getOrDefault("remaining", "0"))))
+                .reserved(new Amount(unit, parseLong(lb.getOrDefault("reserved", "0"))))
+                .spent(new Amount(unit, parseLong(lb.getOrDefault("spent", "0"))))
+                .allocated(new Amount(unit, parseLong(lb.getOrDefault("allocated", "0"))))
                 .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
                 .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
                 .isOverLimit(isOverLimit ? true : null)

@@ -6,8 +6,7 @@
 local reservation_id = ARGV[1]
 local subject_json = ARGV[2]
 local action_json = ARGV[3]
-local estimate_amount_raw = ARGV[4]
-local estimate_amount = tonumber(estimate_amount_raw)
+local estimate_amount_raw = normalize_int(ARGV[4])
 local estimate_unit = ARGV[5]
 local ttl_ms = tonumber(ARGV[6])
 local grace_ms = tonumber(ARGV[7])
@@ -19,6 +18,10 @@ local metadata_json   = ARGV[12] or ""
 local payload_hash    = ARGV[13] or ""
 local max_extensions  = tonumber(ARGV[14]) or 10
 local units_csv       = ARGV[15] or ""
+
+if not estimate_amount_raw or compare_int(estimate_amount_raw, "0") < 0 then
+    return cjson.encode({error = "INVALID_REQUEST", message = "estimate amount must be a non-negative int64"})
+end
 
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key
@@ -105,8 +108,8 @@ for _, scope in ipairs(affected_scopes) do
         table.insert(budgeted_scopes, scope)
 
         local budget_status = vals[1] or 'ACTIVE'
-        local remaining = tonumber(vals[2] or 0)
-        local debt = tonumber(vals[3] or 0)
+        local remaining = normalize_int(vals[2] or "0")
+        local debt = normalize_int(vals[3] or "0")
         local is_over_limit = vals[4]
         pre_budget_state[scope] = {remaining = remaining, is_over_limit = (is_over_limit == "true")}
 
@@ -119,12 +122,12 @@ for _, scope in ipairs(affected_scopes) do
         if is_over_limit == "true" then
             return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope, message = "Scope is over-limit, no new reservations allowed"})
         end
-        local overdraft_limit = tonumber(vals[5] or 0)
-        if debt > 0 and overdraft_limit == 0 then
+        local overdraft_limit = normalize_int(vals[5] or "0")
+        if compare_int(debt, "0") > 0 and compare_int(overdraft_limit, "0") == 0 then
             return cjson.encode({error = "DEBT_OUTSTANDING", scope = scope, debt = debt})
         end
-        if remaining < estimate_amount then
-            return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = estimate_amount})
+        if compare_int(remaining, estimate_amount_raw) < 0 then
+            return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = estimate_amount_raw})
         end
     end
 end
@@ -160,8 +163,8 @@ end
 -- All checks passed - reserve across budgeted scopes only
 for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
-    redis.call('HINCRBY', budget_key, 'reserved', estimate_amount)
-    redis.call('HINCRBY', budget_key, 'remaining', -estimate_amount)
+    redis.call('HINCRBY', budget_key, 'reserved', estimate_amount_raw)
+    redis.call('HINCRBY', budget_key, 'remaining', negate_int(estimate_amount_raw))
 end
 
 -- Create reservation
@@ -210,14 +213,14 @@ for _, scope in ipairs(budgeted_scopes) do
     local pre = pre_budget_state[scope] or {}
     table.insert(balances, {
         scope = scope,
-        remaining = tonumber(b[1] or 0),
-        reserved = tonumber(b[2] or 0),
-        spent = tonumber(b[3] or 0),
-        allocated = tonumber(b[4] or 0),
-        debt = tonumber(b[5] or 0),
-        overdraft_limit = tonumber(b[6] or 0),
+        remaining = normalize_int(b[1] or "0"),
+        reserved = normalize_int(b[2] or "0"),
+        spent = normalize_int(b[3] or "0"),
+        allocated = normalize_int(b[4] or "0"),
+        debt = normalize_int(b[5] or "0"),
+        overdraft_limit = normalize_int(b[6] or "0"),
         is_over_limit = (b[7] == "true"),
-        pre_remaining = pre.remaining or 0,
+        pre_remaining = pre.remaining or "0",
         pre_is_over_limit = pre.is_over_limit or false
     })
 end
@@ -225,7 +228,7 @@ end
 local response = cjson.encode({
     reservation_id = reservation_id,
     state = "ACTIVE",
-    expires_at = expires_at,
+    expires_at = tostring(expires_at),
     affected_scopes = affected_scopes,
     balances = balances,
     -- Redis cjson emits numbers with only 14 significant digits. Preserve the
@@ -237,7 +240,8 @@ local response = cjson.encode({
 })
 -- Durable source for exact idempotent replay. Unlike the fast body cache,
 -- this snapshot is committed atomically with the budget mutation.
-redis.call('HSET', reservation_key,
-    'reserve_response_json', response,
-    'reserve_response_state', 'PENDING')
+redis.call('HSET', reservation_key, 'reserve_response_state', 'PENDING')
+if idempotency_key ~= "" and idempotency_key ~= nil then
+    redis.call('HSET', reservation_key, 'reserve_response_json', response)
+end
 return response

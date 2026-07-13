@@ -16,6 +16,7 @@ import java.time.Duration;
 @Configuration
 public class RedisConfig {
     private static final Logger LOG = LoggerFactory.getLogger(RedisConfig.class);
+    private static final String INT64_HELPERS = "lua/int64-helpers.lua";
     
     @Autowired(required = false) private BuildProperties buildProperties;
     @Value("${redis.host:localhost}") private String host;
@@ -54,32 +55,36 @@ public class RedisConfig {
     
     @Bean(name = "reserveLuaScript")
     public String reserveLuaScript() throws IOException {
-        return loadLuaScript("lua/reserve.lua");
+        return loadLedgerLuaScript("lua/reserve.lua");
     }
     
     @Bean(name = "commitLuaScript")
     public String commitLuaScript() throws IOException {
-        return loadLuaScript("lua/commit.lua");
+        return loadLedgerLuaScript("lua/commit.lua");
     }
     
     @Bean(name = "releaseLuaScript")
     public String releaseLuaScript() throws IOException {
-        return loadLuaScript("lua/release.lua");
+        return loadLedgerLuaScript("lua/release.lua");
     }
     
     @Bean(name = "extendLuaScript")
     public String extendLuaScript() throws IOException {
-        return loadLuaScript("lua/extend.lua");
+        return loadLedgerLuaScript("lua/extend.lua");
     }
 
     @Bean(name = "eventLuaScript")
     public String eventLuaScript() throws IOException {
-        return loadLuaScript("lua/event.lua");
+        return loadLedgerLuaScript("lua/event.lua");
     }
 
     @Bean(name = "expireLuaScript")
     public String expireLuaScript() throws IOException {
-        return loadLuaScript("lua/expire.lua");
+        return loadLedgerLuaScript("lua/expire.lua");
+    }
+
+    private String loadLedgerLuaScript(String path) throws IOException {
+        return loadLuaScript(INT64_HELPERS) + "\n" + loadLuaScript(path);
     }
 
     private String loadLuaScript(String path) throws IOException {

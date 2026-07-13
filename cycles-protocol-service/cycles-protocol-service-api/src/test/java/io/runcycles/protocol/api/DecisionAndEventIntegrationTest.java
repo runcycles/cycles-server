@@ -6,6 +6,8 @@ import io.runcycles.protocol.model.auth.ApiKeyStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mindrot.jbcrypt.BCrypt;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
@@ -190,6 +192,37 @@ class DecisionAndEventIntegrationTest extends BaseIntegrationTest {
             Map body = resp.getBody();
             assertThat(body.get("status")).isEqualTo("APPLIED");
             assertThat(body.get("event_id")).isNotNull();
+        }
+
+        @ParameterizedTest
+        @ValueSource(longs = {9_007_199_254_740_993L, Long.MAX_VALUE})
+        void eventPreservesLedgerAndWireInt64AboveLuaSafeIntegerRange(long amount) {
+            long headroom = amount == Long.MAX_VALUE ? 0L : 10L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + headroom);
+            }
+            Map<String, Object> request = eventBody(TENANT_A, amount);
+
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, request);
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, request);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(201);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
+                .isEqualTo(headroom);
+            assertThat(((Number) ((Map<?, ?>) balance.get("spent")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(((Number) ((Map<?, ?>) balance.get("allocated")).get("amount")).longValue())
+                .isEqualTo(amount + headroom);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+
+            String eventId = original.getBody().get("event_id").toString();
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("event:evt_" + eventId, "amount"))
+                    .isEqualTo(String.valueOf(amount));
+                assertThat(jedis.hget("event:evt_" + eventId, "charged_amount"))
+                    .isEqualTo(String.valueOf(amount));
+            }
         }
 
         @Test

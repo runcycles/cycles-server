@@ -7,7 +7,6 @@ import io.runcycles.protocol.model.audit.AuditLogEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import redis.clients.jedis.Jedis;
@@ -19,6 +18,7 @@ import java.lang.reflect.Field;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -64,58 +64,54 @@ class AuditRepositoryTest {
     }
 
     @Test
-    void log_passesTtlAsArgv4() {
+    void prepare_appliesCanonicalTtlAndStorageFields() throws Exception {
         AuditLogEntry entry = AuditLogEntry.builder()
             .tenantId("tenant_test")
             .operation("test.op")
             .status(200)
             .build();
 
-        repository.log(entry);
+        AuditRepository.PreparedAudit prepared = repository.prepare(entry);
 
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<String>> argvCaptor = ArgumentCaptor.forClass(List.class);
-        verify(jedis).eval(anyString(), any(List.class), argvCaptor.capture());
-        List<String> argv = argvCaptor.getValue();
-        assertThat(argv).hasSize(4);
-        // ARGV[4] = ttl in seconds. 400 days * 86400.
-        assertThat(argv.get(3)).isEqualTo(String.valueOf(400L * 86400L));
+        assertThat(prepared.ttlSeconds()).isEqualTo(400L * 86_400L);
+        assertThat(prepared.logId()).isEqualTo(entry.getLogId()).startsWith("log_");
+        assertThat(prepared.tenantId()).isEqualTo("tenant_test");
+        assertThat(prepared.score()).isEqualTo(entry.getTimestamp().toEpochMilli());
+        assertThat(prepared.json()).contains("\"tenant_id\":\"tenant_test\"");
     }
 
     @Test
-    void log_whenRetentionZero_passesZeroTtl() {
+    void prepare_whenRetentionZero_usesIndefiniteTtl() throws Exception {
         setField(repository, "retentionDays", 0);
         AuditLogEntry entry = AuditLogEntry.builder()
             .tenantId("tenant_test").operation("test.op").status(200).build();
 
-        repository.log(entry);
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<String>> argvCaptor = ArgumentCaptor.forClass(List.class);
-        verify(jedis).eval(anyString(), any(List.class), argvCaptor.capture());
-        assertThat(argvCaptor.getValue().get(3)).isEqualTo("0");
+        assertThat(repository.prepare(entry).ttlSeconds()).isZero();
     }
 
     @Test
-    void log_setsLogIdAndTimestamp() {
+    void prepare_setsLogIdAndTimestamp() throws Exception {
         AuditLogEntry entry = AuditLogEntry.builder()
             .tenantId("tenant_test").operation("test.op").status(200).build();
 
-        repository.log(entry);
+        repository.prepare(entry);
 
         assertThat(entry.getLogId()).startsWith("log_");
         assertThat(entry.getTimestamp()).isNotNull();
     }
 
     @Test
-    void log_redisFailureIsNonFatal() {
-        when(jedis.eval(anyString(), any(List.class), any(List.class)))
-            .thenThrow(new RuntimeException("redis down"));
-        AuditLogEntry entry = AuditLogEntry.builder()
-            .tenantId("tenant_test").operation("test.op").status(200).build();
+    void prepare_rejectsMissingTenantBeforeSerialization() {
+        AuditLogEntry missing = AuditLogEntry.builder().operation("test.op").status(200).build();
+        AuditLogEntry blank = AuditLogEntry.builder()
+            .tenantId("  ").operation("test.op").status(200).build();
 
-        // Must not throw.
-        repository.log(entry);
+        assertThatThrownBy(() -> repository.prepare(missing))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("tenantId");
+        assertThatThrownBy(() -> repository.prepare(blank))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("tenantId");
     }
 
     @Test

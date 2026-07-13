@@ -23,6 +23,7 @@ import java.util.*;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 @ExtendWith(MockitoExtension.class)
 abstract class BaseRedisReservationRepositoryTest {
@@ -33,13 +34,13 @@ abstract class BaseRedisReservationRepositoryTest {
     @Mock protected ScopeDerivationService scopeService;
     @Mock protected LuaScriptRegistry luaScripts;
     @Mock protected CyclesMetrics metrics;
+    @Mock protected AuditRepository auditRepository;
     // Unconfigured by default: prepare() returns null → no cycles_evidence stamped, so
     // existing reservation tests are unaffected. Evidence-specific tests stub it.
     @Mock protected io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;
     @InjectMocks protected RedisReservationRepository repository;
 
     protected final ObjectMapper objectMapper = new ObjectMapper();
-
     @BeforeEach
     void setUp() throws Exception {
         var omField = RedisReservationRepository.class.getDeclaredField("objectMapper");
@@ -77,6 +78,56 @@ abstract class BaseRedisReservationRepositoryTest {
         Response<Map<String, String>> resp = mock(Response.class);
         lenient().when(resp.get()).thenReturn(data);
         lenient().when(pipeline.hgetAll(key)).thenReturn(resp);
+    }
+
+    /** Mock a direct reservation-hash HMGET projection. */
+    protected void mockReservationHash(String key, Map<String, String> data) {
+        lenient().doAnswer(invocation -> projectHash(data, invocation.getArguments()))
+            .when(jedis).hmget(eq(key), any(String[].class));
+    }
+
+    /** Mock a pipelined reservation-hash HMGET projection from an existing map response. */
+    @SuppressWarnings("unchecked")
+    protected void mockReservationHash(String key, Response<Map<String, String>> source) {
+        Pipeline target = jedis.pipelined();
+        lenient().when(target.hmget(eq(key), any(String[].class))).thenAnswer(invocation -> {
+            Response<List<String>> projected = mock(Response.class);
+            lenient().doAnswer(ignored -> projectHash(source.get(), invocation.getArguments()))
+                .when(projected).get();
+            return projected;
+        });
+    }
+
+    private static List<String> projectHash(Map<String, String> data, Object[] arguments) {
+        if (arguments == null) {
+            return Collections.emptyList();
+        }
+        Object[] names = arguments.length == 2 && arguments[1] instanceof String[] array
+            ? array
+            : Arrays.copyOfRange(arguments, 1, arguments.length);
+        return Arrays.stream(names)
+            .map(String.class::cast)
+            .map(name -> data != null ? data.get(name) : null)
+            .toList();
+    }
+
+    /** Assert that a Redis mock was projected with HMGET and never requested a response snapshot. */
+    protected void assertNoResponseSnapshotHmget(Object redisMock) {
+        boolean sawHmget = false;
+        for (var invocation : mockingDetails(redisMock).getInvocations()) {
+            if (!"hmget".equals(invocation.getMethod().getName())) {
+                continue;
+            }
+            sawHmget = true;
+            for (Object argument : invocation.getArguments()) {
+                if (argument instanceof String name) {
+                    assertThat(name).doesNotEndWith("_response_json");
+                } else if (argument instanceof String[] names) {
+                    assertThat(names).noneMatch(name -> name.endsWith("_response_json"));
+                }
+            }
+        }
+        assertThat(sawHmget).isTrue();
     }
 
     /** Mock caps_json via pipeline.hmget for evaluateDryRun/decide which use pipeline */

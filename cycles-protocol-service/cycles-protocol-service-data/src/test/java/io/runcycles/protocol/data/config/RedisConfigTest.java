@@ -9,6 +9,7 @@ import org.springframework.boot.info.BuildProperties;
 import redis.clients.jedis.JedisPool;
 
 import java.lang.reflect.Field;
+import java.util.List;
 import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.*;
@@ -106,6 +107,21 @@ class RedisConfigTest {
         String script = redisConfig.expireLuaScript();
 
         assertThat(script).isNotNull().isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("should prepend one shared int64 helper library to every ledger script")
+    void shouldComposeLedgerScriptsWithSharedInt64Helpers() throws Exception {
+        List<String> scripts = List.of(
+            redisConfig.reserveLuaScript(), redisConfig.commitLuaScript(),
+            redisConfig.releaseLuaScript(), redisConfig.extendLuaScript(),
+            redisConfig.eventLuaScript(), redisConfig.expireLuaScript());
+
+        assertThat(scripts).allSatisfy(script -> {
+            assertThat(script).contains("local function normalize_int(value)");
+            assertThat(script.indexOf("local function normalize_int(value)"))
+                .isEqualTo(script.lastIndexOf("local function normalize_int(value)"));
+        });
     }
 
     @Test

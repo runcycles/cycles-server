@@ -436,7 +436,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+            mockReservationHash("reservation:res_r1", resp);
 
             // Filter for ACTIVE but reservation is COMMITTED
             ReservationListResponse response = repository.listReservations(
@@ -466,8 +466,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
@@ -498,8 +498,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, "dev", null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
@@ -530,8 +530,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, "myapp", null, null, null, 100, null, null, null, null, null, null, null, null, null);
@@ -560,8 +560,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("42");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, null, null, null, null, null, null, null, null, null);
@@ -596,7 +596,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+            mockReservationHash("reservation:res_r1", resp);
 
             // Filter for COMMITTED and reservation IS COMMITTED
             ReservationListResponse response = repository.listReservations(
@@ -639,7 +639,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+            mockReservationHash("reservation:res_r1", resp);
 
             return repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -713,7 +713,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+            mockReservationHash("reservation:res_r1", resp);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -754,8 +754,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                 "acme", "idem-abc", null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
@@ -782,7 +782,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp);
+            mockReservationHash("reservation:res_r1", resp);
 
             ReservationListResponse response = repository.listReservations(
                 "acme", "idem-nonexistent", null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
@@ -820,8 +820,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r2", resp1);
+            mockReservationHash("reservation:res_r1", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null, null, null, null, null, null, null);
@@ -867,9 +867,9 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
-            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
+            mockReservationHash("reservation:res_r3", resp3);
 
             ReservationListResponse response = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 100, null,
@@ -879,6 +879,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
                 .containsExactly("r2", "r3", "r1");
             assertThat(response.getHasMore()).isFalse();
             assertThat(response.getNextCursor()).isNull();
+            assertNoResponseSnapshotHmget(pipeline);
+            verify(pipeline, never()).hgetAll(startsWith("reservation:"));
         }
 
         @SuppressWarnings("unchecked")
@@ -909,10 +911,10 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
-            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
-            when(pipeline.hgetAll("reservation:res_r4")).thenReturn(resp4);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
+            mockReservationHash("reservation:res_r3", resp3);
+            mockReservationHash("reservation:res_r4", resp4);
 
             ReservationListResponse page1 = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 2, null,
@@ -966,10 +968,10 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
-            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
-            when(pipeline.hgetAll("reservation:res_r4")).thenReturn(resp4);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
+            mockReservationHash("reservation:res_r3", resp3);
+            mockReservationHash("reservation:res_r4", resp4);
 
             // Page 1: no include → committed_metadata omitted; capture the cursor.
             ReservationListResponse page1 = repository.listReservations(
@@ -1023,8 +1025,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse page1 = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, 1, null,
@@ -1068,7 +1070,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
                 f.put("created_at", String.valueOf(1_700_000_000_000L + i));
                 Response<Map<String, String>> resp = mock(Response.class);
                 lenient().when(resp.get()).thenReturn(f);
-                lenient().when(pipeline.hgetAll("reservation:res_" + id)).thenReturn(resp);
+                mockReservationHash("reservation:res_" + id, resp);
             }
 
             ReservationListResponse response = repository.listReservations(
@@ -1136,8 +1138,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1169,8 +1171,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1213,10 +1215,10 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
-            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
-            when(pipeline.hgetAll("reservation:res_r4")).thenReturn(resp4);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
+            mockReservationHash("reservation:res_r3", resp3);
+            mockReservationHash("reservation:res_r4", resp4);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1254,9 +1256,9 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
-            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
+            mockReservationHash("reservation:res_r3", resp3);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null,
@@ -1287,8 +1289,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse page1 = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, null,
@@ -1330,8 +1332,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1363,8 +1365,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1406,8 +1408,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1438,8 +1440,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1472,8 +1474,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1507,8 +1509,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1552,9 +1554,9 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
-            when(pipeline.hgetAll("reservation:res_r3")).thenReturn(resp3);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
+            mockReservationHash("reservation:res_r3", resp3);
 
             ReservationListResponse response = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 100, null, null, null,
@@ -1593,7 +1595,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
+            mockReservationHash("reservation:res_r1", resp1);
 
             // Window [4000, 6000] — would match released_at=5000 but NOT committed_at=3000.
             // Pre-fix the predicate would have excluded this row (committed-wins);
@@ -1631,8 +1633,8 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(scanResult.getCursor()).thenReturn("0");
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
-            when(pipeline.hgetAll("reservation:res_r1")).thenReturn(resp1);
-            when(pipeline.hgetAll("reservation:res_r2")).thenReturn(resp2);
+            mockReservationHash("reservation:res_r1", resp1);
+            mockReservationHash("reservation:res_r2", resp2);
 
             ReservationListResponse page1 = repository.listReservations(
                     "acme", null, null, null, null, null, null, null, 1, null,

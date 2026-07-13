@@ -5,6 +5,98 @@
 
 ---
 
+### 2026-07-13 — v0.1.25.50: replay storage and int64 follow-up (#236)
+
+This follow-up closes the non-blocking items left after the v0.1.25.49 runtime
+hardening review. It keeps the public contract unchanged and removes work from
+reservation reads while making the durable replay representation exact across
+the protocol's full signed-int64 amount domain.
+
+**Exact lifecycle and event numerics.** Redis embeds Lua 5.1 numbers as IEEE-754 doubles,
+and its cjson encoder formats numbers with 14 significant digits. The prior
+reserve echo fix protected only the top-level reserved amount; balances and the
+commit/release scalars could still be rounded before being frozen into the
+immutable snapshot. Worse, expiry and direct-event mutations still converted
+amounts through Lua doubles, which could leave budget drift above `2^53`.
+All six budget-aware scripts now receive one shared signed-decimal helper
+prelude from `RedisConfig`: reserve, commit, release, expiry, event, and extend.
+Ledger amounts stay as strings until Redis `HINCRBY` performs checked int64
+mutation; response balances also stay strings until Java builds the typed wire
+model. Java accepts both the new strings and numeric responses from older
+scripts. Real-Redis tests exercise exact event debit and expiry refund at
+`2^53 + 1` and `Long.MAX_VALUE`, extend balances at `100000000000001`, and the
+existing reserve, commit, release, balance, and replay cases.
+
+**Corrupt expiry-row quarantine.** Exact expiry refunds must fail closed when
+an ACTIVE reservation has missing, non-integer, or negative estimate data: the
+script cannot infer a safe budget mutation. The first exactness guard returned
+before removing such a row from `reservation:ttl`, however, so a persistent
+corrupt row was selected every five seconds and 1,000 old rows could occupy the
+entire bounded candidate batch indefinitely. The error path now atomically
+removes the row from the hot index while leaving its ACTIVE state and budgets
+untouched for manual reconciliation. `ReservationExpiryService` parses the Lua
+result once and logs a sanitized WARN for the quarantined reservation.
+
+The commit-level `debt_incurred` observability aggregate is distinct from the
+per-scope ledgers: multiple valid int64 deficits can have a mathematical sum
+outside the signed-int64 event schema. That aggregate now saturates at
+`Long.MAX_VALUE`, while every per-scope debt and returned balance remains exact.
+An adversarial two-budget integration test commits `Long.MAX_VALUE` of debt to
+each scope and verifies a successful byte-equal replay instead of a
+post-mutation parse failure.
+
+**Smaller reads and snapshots.** Reservation detail, legacy and sorted list
+paths, and expiry event hydration now request only their required fields with
+`HMGET`; the potentially large `*_response_json` snapshots no longer ride on
+every `HGETALL`. Mutation scripts also omit snapshot JSON when invoked without
+an idempotency key. The response-state marker remains available for the
+evidence finalization state machine, so this optimization does not weaken its
+race guarantees. Detail uses a static projection and both list paths construct
+their projection array once per request rather than once per Redis key. All
+`HMGET` replies are zipped to field names by one shared `HashProjections`
+helper; the expiry event path now reads fields by name rather than positional
+index, so reordering a projection cannot silently shift columns.
+
+**Clear replay compatibility and metrics.** The Lua commit/release replay
+branches now do only payload-hash validation and return the immutable snapshot
+pointer. Their old current-ledger reconstruction values were never used to
+construct the returned body and could not satisfy the protocol requirement to
+return the original successful response; a subset had only fed observability
+tags. Successful replays now record commit/release request metrics explicitly
+with `IDEMPOTENT_REPLAY`, without re-recording the original overdraft event.
+Pre-snapshot rows therefore retain the documented behavior: replay succeeds
+while the canonical body cache survives, otherwise it returns a retriable 500
+for the remainder of that idempotency window.
+
+**Single audit preparation path.** `AuditRepository.prepare` is now the owner
+of log-id generation, timestamp defaulting, serialization, score, and retention
+calculation passed to atomic `release.lua`. The duplicate marshalling and the
+unused fail-open `AuditRepository.log()` API were removed, reducing the chance
+that a future normative admin mutation accidentally writes its audit record in
+a separate failure domain. `prepare` also rejects a null or blank tenant before
+the release script runs, keeping future callers fail-closed.
+
+**Release defaults.** Both production compose variants self-pin the matching
+`0.1.25.50` image instead of retaining the older `0.1.25.48` default.
+
+**Validation.** A clean Docker integration-profile build completed 1,111 tests
+(31 model, 525 data, 555 API) with zero failures, errors, or skips; contract
+coverage remained 11/11. JaCoCo line coverage was 95.09% data and 95.56% API.
+The targeted real-Redis suites also verified exact event debits and expiry
+refunds at `2^53 + 1` and `Long.MAX_VALUE`, extend replay balances at
+`100000000000001`, the existing exact reserve/commit/release cases, and a
+two-budget `Long.MAX_VALUE` debt commit and replay.
+
+Three benchmark-profile trials completed all 15 benchmarks with zero
+concurrent errors. Median reserve/commit/release p50 was 14.5/13.7/14.3 ms and
+32-thread throughput was 698.2 ops/s. Against the immediately preceding
+v0.1.25.49 same-host medians (14.2/14.1/14.4 ms and 601.6 ops/s), the deltas are
++2.1%/-2.8%/-0.7% and +16.1%. The latency changes remain well inside the 30%
+environmental-noise threshold; the throughput increase is favorable but also
+host-sensitive.
+
+Version/revision 0.1.25.49 → 0.1.25.50.
+
 ### 2026-07-12 — v0.1.25.49: runtime correctness and performance hardening
 
 Follow-up audit of the runtime server against the current
