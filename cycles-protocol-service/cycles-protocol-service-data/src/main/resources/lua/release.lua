@@ -223,5 +223,7 @@ local response = cjson.encode({
 })
 -- Store the immutable post-mutation snapshot in the reservation hash before
 -- returning. It shares the terminal hash TTL and survives body-cache misses.
-redis.call('HSET', reservation_key, 'release_response_json', response)
+redis.call('HSET', reservation_key,
+    'release_response_json', response,
+    'release_response_state', 'PENDING')
 return response

@@ -482,6 +482,7 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
                     eq(List.of("idem:acme:decide:decide-cache-fail")), anyList());
             verify(evidenceEmitter, times(1)).prepare(eq("decide"), anyLong(), any(), any());
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
+            verify(metrics).recordEvidenceEmitFailed("decide");
         }
 
         @Test

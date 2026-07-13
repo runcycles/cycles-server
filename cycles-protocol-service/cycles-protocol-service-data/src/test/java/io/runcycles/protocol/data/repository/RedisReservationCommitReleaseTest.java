@@ -225,7 +225,7 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
                     .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
                         new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
                             evId, "https://cycles.example.com/v1/evidence/" + evId), "{}"));
-            when(jedis.eval(contains("local rt"), anyList(), anyList())).thenReturn(0L);
+            when(jedis.eval(contains("local rt"), anyList(), anyList())).thenReturn(-1L);
 
             CommitRequest request = new CommitRequest();
             request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
@@ -319,8 +319,8 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
                         "estimate_unit", "USD_MICROCENTS", "response_snapshot", snapshotJson)));
             when(jedis.get("commit:body:res-cr")).thenReturn(null);
             when(jedis.hmget("reservation:res_res-cr", "commit_response_json",
-                    "commit_evidence_id", "commit_evidence_url"))
-                    .thenReturn(List.of(snapshotJson, "f".repeat(64),
+                    "commit_response_state", "commit_evidence_id", "commit_evidence_url"))
+                    .thenReturn(List.of(snapshotJson, "EVIDENCE", "f".repeat(64),
                         "https://cycles.example.com/v1/evidence/" + "f".repeat(64)));
 
             CommitRequest request = new CommitRequest();
@@ -332,7 +332,35 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getReleased().getAmount()).isEqualTo(2000L);
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("f".repeat(64));
-            verify(jedis).psetex(eq("commit:body:res-cr"), eq(2_592_000_000L), anyString());
+            verify(jedis).set(eq("commit:body:res-cr"), anyString(), any());
+        }
+
+        @Test
+        void commitReplayFinalizesPendingSnapshotAsBase() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            String snapshotJson = objectMapper.writeValueAsString(Map.of(
+                "reservation_id", "res-cp", "charged", 3000L,
+                "estimate_amount", 5000L, "estimate_unit", "USD_MICROCENTS",
+                "balances", List.of()));
+            when(luaScripts.eval(eq(jedis), eq("commit"), eq("COMMIT_SCRIPT"), any(String[].class)))
+                .thenReturn(objectMapper.writeValueAsString(Map.of(
+                    "replay", true, "charged", 3000L, "estimate_amount", 5000L,
+                    "estimate_unit", "USD_MICROCENTS", "response_snapshot", snapshotJson)));
+            when(jedis.hmget("reservation:res_res-cp", "commit_response_json",
+                "commit_response_state", "commit_evidence_id", "commit_evidence_url"))
+                .thenReturn(Arrays.asList(snapshotJson, "PENDING", null, null));
+
+            CommitRequest request = new CommitRequest();
+            request.setActual(new Amount(Enums.UnitEnum.USD_MICROCENTS, 3000L));
+            request.setIdempotencyKey("commit-pending");
+            CommitResponse response = repository.commitReservation(
+                "res-cp", request, "tenant-a", "trace-c");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence()).isNull();
+            verify(jedis).eval(contains("'BASE'"),
+                eq(List.of("commit:body:res-cp", "reservation:res_res-cp")), anyList());
         }
     }
 
@@ -535,8 +563,8 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
                         "estimate_unit", "USD_MICROCENTS", "response_snapshot", snapshotJson)));
             when(jedis.get("release:body:res-rr")).thenReturn(null);
             when(jedis.hmget("reservation:res_res-rr", "release_response_json",
-                    "release_evidence_id", "release_evidence_url"))
-                    .thenReturn(List.of(snapshotJson, "8".repeat(64),
+                    "release_response_state", "release_evidence_id", "release_evidence_url"))
+                    .thenReturn(List.of(snapshotJson, "EVIDENCE", "8".repeat(64),
                         "https://cycles.example.com/v1/evidence/" + "8".repeat(64)));
 
             ReleaseResponse response = repository.releaseReservation("res-rr",
@@ -546,7 +574,32 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getReleased().getAmount()).isEqualTo(5000L);
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("8".repeat(64));
-            verify(jedis).psetex(eq("release:body:res-rr"), eq(2_592_000_000L), anyString());
+            verify(jedis).set(eq("release:body:res-rr"), anyString(), any());
+        }
+
+        @Test
+        void releaseReplayFinalizesPendingSnapshotAsBase() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            String snapshotJson = objectMapper.writeValueAsString(Map.of(
+                "reservation_id", "res-rp", "estimate_amount", 5000L,
+                "estimate_unit", "USD_MICROCENTS", "balances", List.of()));
+            when(luaScripts.eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), any(String[].class)))
+                .thenReturn(objectMapper.writeValueAsString(Map.of(
+                    "replay", true, "estimate_amount", 5000L,
+                    "estimate_unit", "USD_MICROCENTS", "response_snapshot", snapshotJson)));
+            when(jedis.hmget("reservation:res_res-rp", "release_response_json",
+                "release_response_state", "release_evidence_id", "release_evidence_url"))
+                .thenReturn(Arrays.asList(snapshotJson, "PENDING", null, null));
+
+            ReleaseResponse response = repository.releaseReservation("res-rp",
+                ReleaseRequest.builder().idempotencyKey("release-pending").build(),
+                "tenant-a", "tenant", "trace-r");
+
+            assertThat(response.isIdempotentReplay()).isTrue();
+            assertThat(response.getCyclesEvidence()).isNull();
+            verify(jedis).eval(contains("'BASE'"),
+                eq(List.of("release:body:res-rp", "reservation:res_res-rp")), anyList());
         }
 
         @Test

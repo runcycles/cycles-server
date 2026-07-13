@@ -34,12 +34,18 @@ called out but are not breaking to API clients.
   the successful-release/missing-audit failure window.
 - **Idempotency replay remains truthful and recoverable.** Reserve, commit, and
   release store an immutable response snapshot inside the mutation script and
-  repair a missing fast body cache from that snapshot. Evidence enqueueing,
-  evidence-link storage, and canonical response caching are atomic. Dry-run and
-  decide likewise cache their response and enqueue evidence in one Redis script,
-  so a transient cache failure cannot duplicate signed evidence. Commit/release
-  replays return a valid snapshot before consulting current budget hashes, while
-  retaining the legacy reconstruction path for pre-snapshot reservations.
+  repair a missing fast body cache from that snapshot. A `PENDING` → `BASE` or
+  `EVIDENCE` compare-and-set makes evidence enqueueing, evidence-link storage,
+  and canonical response caching mutually exclusive with replay repair, so a
+  concurrent miss cannot cache an evidence-less variant of a stamped response.
+  Dry-run and decide likewise cache their response and enqueue evidence in one
+  Redis script, and failed prepared-evidence writes now increment the evidence
+  failure metric. Commit/release replays return a valid snapshot before
+  consulting current budget hashes, while retaining the legacy reconstruction
+  path for pre-snapshot reservations. Reserve snapshots preserve the original
+  decimal int64 amount instead of passing it through Redis cjson's 14-digit
+  number formatting, and repaired reserve bodies inherit the remaining
+  idempotency-key TTL rather than a fixed 24 hours.
 - **jqwik runtime overrides work again.** Configuration moved from the retired
   `jqwik.properties` format to `junit-platform.properties`; nightly/manual try
   counts use the supported `jqwik.tries.default` parameter.
