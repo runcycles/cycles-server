@@ -23,6 +23,14 @@ both the new strings and numeric responses from older scripts. Real-Redis tests
 exercise reserve, commit overage arithmetic, release, balances, and byte-equal
 replay at `100000000000001`.
 
+The commit-level `debt_incurred` observability aggregate is distinct from the
+per-scope ledgers: multiple valid int64 deficits can have a mathematical sum
+outside the signed-int64 event schema. That aggregate now saturates at
+`Long.MAX_VALUE`, while every per-scope debt and returned balance remains exact.
+An adversarial two-budget integration test commits `Long.MAX_VALUE` of debt to
+each scope and verifies a successful byte-equal replay instead of a
+post-mutation parse failure.
+
 **Smaller reads and snapshots.** Reservation detail, legacy and sorted list
 paths, and expiry event hydration now request only their required fields with
 `HMGET`; the potentially large `*_response_json` snapshots no longer ride on
@@ -46,11 +54,12 @@ unused fail-open `AuditRepository.log()` API were removed, reducing the chance
 that a future normative admin mutation accidentally writes its audit record in
 a separate failure domain.
 
-**Validation.** A clean Docker integration-profile build completed 1,094 tests
-(31 model, 517 data, 546 API) with zero failures, errors, or skips; contract
+**Validation.** A clean Docker integration-profile build completed 1,095 tests
+(31 model, 517 data, 547 API) with zero failures, errors, or skips; contract
 coverage remained 11/11. JaCoCo line coverage was 95.01% data and 95.56% API.
 The targeted real-Redis idempotency suite also verified exact reserve, commit
-overage, release, balance, and replay bodies at `100000000000001`.
+overage, release, balance, and replay bodies at `100000000000001`, plus a
+two-budget `Long.MAX_VALUE` debt commit and replay.
 
 Three benchmark-profile trials completed all 15 benchmarks with zero
 concurrent errors. Median reserve/commit/release p50 was 14.4/13.8/14.7 ms and

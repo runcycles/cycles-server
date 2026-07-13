@@ -17,7 +17,6 @@ import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Cycles Protocol v0.1.25 - Background job that marks expired reservations.

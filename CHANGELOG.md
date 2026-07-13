@@ -23,6 +23,11 @@ called out but are not breaking to API clients.
   balance snapshots as decimal strings while executing in Redis Lua. This
   prevents Redis cjson's 14-significant-digit formatting from rounding large
   values before Java constructs the public response or durable replay body.
+  The commit-level debt aggregate used by the int64 webhook schema saturates at
+  `Long.MAX_VALUE` when multiple exact per-scope deficits exceed the aggregate
+  domain, preventing a successful ledger mutation from becoming an
+  unrecoverable post-mutation 500; per-scope ledger and balance values remain
+  exact.
 - **Lifecycle replay code reflects its real compatibility boundary.** Dead
   commit/release reconstruction blocks were removed from Lua. A finalized
   pre-0.1.25.49 row still replays through its canonical body cache; if that

@@ -105,6 +105,17 @@ local function max_int(a, b)
     return compare_int(a, b) >= 0 and a or b
 end
 
+-- debt_incurred is a commit-level aggregate used by the int64 webhook event
+-- schema. A commit can touch multiple hierarchical budgets, so the sum of
+-- otherwise valid per-scope int64 deficits can exceed signed int64 even though
+-- every ledger mutation remains in range. Saturate only this observability
+-- aggregate; the per-scope debt and balance fields below remain exact.
+local MAX_INT64 = "9223372036854775807"
+
+local function add_debt_aggregate(total, deficit)
+    return min_int(add_int(total, deficit), MAX_INT64)
+end
+
 local reservation_id = ARGV[1]
 local actual_amount = normalize_int(ARGV[2])
 local actual_unit = ARGV[3]
@@ -349,7 +360,7 @@ if compare_int(delta, "0") > 0 then
                 redis.call('HINCRBY', budget_key, 'remaining', negate_int(capped_delta))
                 redis.call('HINCRBY', budget_key, 'spent', funded)
                 redis.call('HINCRBY', budget_key, 'debt', deficit)
-                total_debt_incurred = add_int(total_debt_incurred, deficit)
+                total_debt_incurred = add_debt_aggregate(total_debt_incurred, deficit)
                 scope_debt_incurred[scope] = deficit
 
                 -- Set is_over_limit once cumulative debt reaches the overdraft ceiling
