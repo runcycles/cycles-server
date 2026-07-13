@@ -67,6 +67,31 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void extendPreservesInt64BalancesBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            ResponseEntity<Map> reserve = post(
+                "/v1/reservations", API_KEY_SECRET_A, reservationBody(TENANT_A, amount));
+            String reservationId = reserve.getBody().get("reservation_id").toString();
+            Map<String, Object> extendBody = extendBody(30_000);
+
+            ResponseEntity<Map> original = post(
+                "/v1/reservations/" + reservationId + "/extend", API_KEY_SECRET_A, extendBody);
+            ResponseEntity<Map> replay = post(
+                "/v1/reservations/" + reservationId + "/extend", API_KEY_SECRET_A, extendBody);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            Map<?, ?> balance = ((List<Map<?, ?>>) original.getBody().get("balances")).get(0);
+            assertThat(((Number) ((Map<?, ?>) balance.get("reserved")).get("amount")).longValue())
+                .isEqualTo(amount);
+            assertThat(((Number) ((Map<?, ?>) balance.get("allocated")).get("amount")).longValue())
+                .isEqualTo(amount + 10);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
         void commitPreservesInt64AmountsAndBalancesBeyondRedisCjsonPrecision() {
             long amount = 100_000_000_000_001L;
             try (Jedis jedis = jedisPool.getResource()) {

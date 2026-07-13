@@ -18,11 +18,13 @@ called out but are not breaking to API clients.
 
 ### Fixed
 
-- **All reservation lifecycle amounts retain int64 precision.** Reserve,
-  commit, and release now keep requested amounts, ledger arithmetic, debt, and
-  balance snapshots as decimal strings while executing in Redis Lua. This
-  prevents Redis cjson's 14-significant-digit formatting from rounding large
-  values before Java constructs the public response or durable replay body.
+- **All budget-aware Lua paths retain int64 precision.** Reserve, commit,
+  release, expiry refunds, direct events, and extend balance snapshots now keep
+  requested amounts, ledger arithmetic, debt, and balances as decimal strings
+  while executing in Redis Lua. This prevents both IEEE-754 ledger drift above
+  `2^53` and Redis cjson's 14-significant-digit response rounding. The scripts
+  share one exact signed-decimal helper prelude instead of maintaining divergent
+  local copies.
   The commit-level debt aggregate used by the int64 webhook schema saturates at
   `Long.MAX_VALUE` when multiple exact per-scope deficits exceed the aggregate
   domain, preventing a successful ledger mutation from becoming an
@@ -35,20 +37,28 @@ called out but are not breaking to API clients.
   existing retriable 500 instead of synthesizing a non-identical response.
 - **Audit preparation has one owner.** `AuditRepository` now prepares the log
   id, timestamp, serialized entry, score, and retention used by the atomic
-  admin-release script. Its unused fail-open write API and duplicate Java
-  marshalling were removed.
+  admin-release script and rejects missing tenant ownership before execution.
+  Its unused fail-open write API and duplicate Java marshalling were removed.
+- **Lifecycle replay metrics remain visible without double counting debt.**
+  Successful commit/release replays are recorded with
+  `reason=IDEMPOTENT_REPLAY`; replaying a commit no longer increments the
+  overdraft-incurred counter a second time.
 
 ### Performance
 
 - Reservation detail, both reservation list paths, and the expiry event path
   now use explicit `HMGET` projections. Immutable response snapshots and other
   unrelated hash fields are no longer transferred and parsed on every read.
-  Lua also omits snapshot JSON when invoked without an idempotency key.
+  Projection arrays are built once per operation rather than once per hydrated
+  reservation. Lua also omits snapshot JSON when invoked without an
+  idempotency key.
 
 ### Compatibility
 
 - No public schema or successful-response shape changes. Large int64 values
   that were previously rounded are now returned and replayed exactly.
+- Production and full-stack compose defaults now self-pin the matching
+  `ghcr.io/runcycles/cycles-server:0.1.25.50` image.
 
 ## [0.1.25.49] — 2026-07-12
 

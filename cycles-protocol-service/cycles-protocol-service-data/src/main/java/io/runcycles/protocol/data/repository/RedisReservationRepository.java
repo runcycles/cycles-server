@@ -70,6 +70,10 @@ public class RedisReservationRepository {
         "reserve_evidence_id", "reserve_evidence_url",
         "commit_evidence_id", "commit_evidence_url",
         "release_evidence_id", "release_evidence_url");
+    private static final List<String> RESERVATION_DETAIL_FIELDS = List.copyOf(
+        reservationProjection(EnumSet.allOf(ReservationInclude.class), true));
+    private static final String[] RESERVATION_DETAIL_FIELD_ARRAY =
+        RESERVATION_DETAIL_FIELDS.toArray(String[]::new);
     private static final long IDEMPOTENCY_CACHE_TTL_MS = 86_400_000L;
     // commit/release are terminal: reserve/commit/release.lua set a 30-day TTL on the
     // finalized reservation hash (audit trail), so the commit/release idempotent replay is
@@ -1219,17 +1223,19 @@ public class RedisReservationRepository {
             if (Boolean.TRUE.equals(response.get("replay"))) {
                 jedis.close();
                 jedis = null;
-                CommitResponse cached = readCachedLifecycleBody("commit", reservationId, CommitResponse.class);
-                if (cached != null) {
-                    cached.setIdempotentReplay(true);
-                    return cached;
+                CommitResponse replayed = readCachedLifecycleBody(
+                    "commit", reservationId, CommitResponse.class);
+                if (replayed != null) {
+                    replayed.setIdempotentReplay(true);
+                } else {
+                    replayed = restoreCommitResponse(
+                        reservationId, response.get("response_snapshot"));
                 }
-                CommitResponse restored = restoreCommitResponse(
-                    reservationId, response.get("response_snapshot"));
-                if (restored != null) {
-                    return restored;
+                if (replayed == null) {
+                    throw idempotencyReplayUnavailable();
                 }
-                throw idempotencyReplayUnavailable();
+                metrics.recordCommit(tenant, "COMMITTED", "IDEMPOTENT_REPLAY", "UNKNOWN");
+                return replayed;
             }
 
             long chargedAmount = parseLong(response.get("charged"));
@@ -1364,17 +1370,19 @@ public class RedisReservationRepository {
             if (Boolean.TRUE.equals(response.get("replay"))) {
                 jedis.close();
                 jedis = null;
-                ReleaseResponse cached = readCachedLifecycleBody("release", reservationId, ReleaseResponse.class);
-                if (cached != null) {
-                    cached.setIdempotentReplay(true);
-                    return cached;
+                ReleaseResponse replayed = readCachedLifecycleBody(
+                    "release", reservationId, ReleaseResponse.class);
+                if (replayed != null) {
+                    replayed.setIdempotentReplay(true);
+                } else {
+                    replayed = restoreReleaseResponse(
+                        reservationId, response.get("response_snapshot"));
                 }
-                ReleaseResponse restored = restoreReleaseResponse(
-                    reservationId, response.get("response_snapshot"));
-                if (restored != null) {
-                    return restored;
+                if (replayed == null) {
+                    throw idempotencyReplayUnavailable();
                 }
-                throw idempotencyReplayUnavailable();
+                metrics.recordRelease(tenant, actorType, "RELEASED", "IDEMPOTENT_REPLAY");
+                return replayed;
             }
 
             // Lua now returns estimate_amount and estimate_unit — use them directly
@@ -1499,10 +1507,8 @@ public class RedisReservationRepository {
     public ReservationDetail getReservationById(String reservationId) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "reservation:res_" + reservationId;
-            List<String> projection = reservationProjection(
-                EnumSet.allOf(ReservationInclude.class), true);
             Map<String, String> fields = mapHashFields(
-                projection, jedis.hmget(key, projection.toArray(String[]::new)));
+                RESERVATION_DETAIL_FIELDS, jedis.hmget(key, RESERVATION_DETAIL_FIELD_ARRAY));
             if (fields == null || fields.isEmpty()) {
                 throw CyclesProtocolException.notFound(reservationId);
             }
@@ -1589,6 +1595,7 @@ public class RedisReservationRepository {
             ScanParams params = new ScanParams().match("reservation:res_*").count(100);
             List<ReservationSummary> result = new ArrayList<>();
             List<String> projection = reservationProjection(includeFields, false);
+            String[] projectionFields = projection.toArray(String[]::new);
             ScanPageCursor pageCursor = ScanPageCursor.decode(startCursor);
             String cursor = pageCursor.redisCursor();
             int batchOffset = pageCursor.offset();
@@ -1608,7 +1615,7 @@ public class RedisReservationRepository {
                     Pipeline pipeline = jedis.pipelined();
                     Map<String, Response<List<String>>> responses = new HashMap<>();
                     for (String key : keys) {
-                        responses.put(key, pipeline.hmget(key, projection.toArray(String[]::new)));
+                        responses.put(key, pipeline.hmget(key, projectionFields));
                     }
                     pipeline.sync();
 
@@ -1706,6 +1713,7 @@ public class RedisReservationRepository {
             ScanParams params = new ScanParams().match("reservation:res_*").count(500);
             List<ReservationSummary> matching = new ArrayList<>();
             List<String> projection = reservationProjection(include, false);
+            String[] projectionFields = projection.toArray(String[]::new);
 
             String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
             String appSegment = app != null ? "app:" + app.toLowerCase() : null;
@@ -1721,7 +1729,7 @@ public class RedisReservationRepository {
                     Pipeline pipeline = jedis.pipelined();
                     Map<String, Response<List<String>>> responses = new HashMap<>();
                     for (String key : keys) {
-                        responses.put(key, pipeline.hmget(key, projection.toArray(String[]::new)));
+                        responses.put(key, pipeline.hmget(key, projectionFields));
                     }
                     pipeline.sync();
 
@@ -2322,9 +2330,9 @@ public class RedisReservationRepository {
 
             // Lua returns charged amount (may be less than requested with ALLOW_IF_AVAILABLE capping)
             Amount charged = null;
-            Number chargedNum = (Number) response.get("charged");
-            if (chargedNum != null) {
-                charged = new Amount(request.getActual().getUnit(), chargedNum.longValue());
+            Long chargedAmount = parseNullableLong(response.get("charged"));
+            if (chargedAmount != null) {
+                charged = new Amount(request.getActual().getUnit(), chargedAmount);
             }
 
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);

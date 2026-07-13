@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import redis.clients.jedis.Jedis;
 
 import java.io.InputStream;
@@ -38,7 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ExpireLuaConformanceTest extends BaseIntegrationTest {
 
     /** Cached script source, loaded from classpath once per test class. */
-    private static final String EXPIRE_LUA = loadLuaScript("lua/expire.lua");
+    private static final String EXPIRE_LUA = loadLuaScript("lua/int64-helpers.lua")
+        + "\n" + loadLuaScript("lua/expire.lua");
 
     private static String loadLuaScript(String resource) {
         try (InputStream in = ExpireLuaConformanceTest.class.getClassLoader().getResourceAsStream(resource)) {
@@ -124,6 +127,39 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
                         .as("30-day audit TTL should be set")
                         .isGreaterThan(0)
                         .isLessThanOrEqualTo(2_592_000_000L);
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(longs = {9_007_199_254_740_993L, Long.MAX_VALUE})
+        void refundsExactInt64AmountAboveLuaSafeIntegerRange(long amount) throws Exception {
+            long allocated = amount;
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String scope = "tenant:" + TENANT_A;
+                String resId = "expireexact_" + System.nanoTime();
+                jedis.hset("reservation:res_" + resId, Map.of(
+                    "reservation_id", resId,
+                    "state", "ACTIVE",
+                    "estimate_amount", String.valueOf(amount),
+                    "estimate_unit", "TOKENS",
+                    "expires_at", String.valueOf(pastExpires),
+                    "grace_ms", "0",
+                    "affected_scopes", "[\"" + scope + "\"]",
+                    "budgeted_scopes", "[\"" + scope + "\"]"));
+                jedis.zadd("reservation:ttl", pastExpires, resId);
+                jedis.hset("budget:" + scope + ":TOKENS", Map.of(
+                    "allocated", String.valueOf(allocated),
+                    "remaining", "0",
+                    "reserved", String.valueOf(amount),
+                    "spent", "0",
+                    "debt", "0"));
+
+                assertThat(evalExpire(jedis, resId)).containsEntry("status", "EXPIRED");
+                assertThat(jedis.hget("budget:" + scope + ":TOKENS", "reserved"))
+                    .isEqualTo("0");
+                assertThat(jedis.hget("budget:" + scope + ":TOKENS", "remaining"))
+                    .isEqualTo(String.valueOf(allocated));
             }
         }
     }

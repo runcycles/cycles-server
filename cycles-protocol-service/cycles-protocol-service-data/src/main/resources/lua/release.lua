@@ -1,24 +1,6 @@
 -- Cycles Protocol v0.1.24 - Release Lua Script
 --local cjson = require("cjson")
 
-local function normalize_int(value)
-    if value == nil or value == false then return nil end
-    local s = tostring(value)
-    if not string.match(s, "^%-?%d+$") then return nil end
-    local negative = string.sub(s, 1, 1) == "-"
-    local digits = negative and string.sub(s, 2) or s
-    digits = string.gsub(digits, "^0+", "")
-    if digits == "" then return "0" end
-    return negative and ("-" .. digits) or digits
-end
-
-local function negate_int(value)
-    local normalized = normalize_int(value)
-    if normalized == "0" then return "0" end
-    return string.sub(normalized, 1, 1) == "-"
-        and string.sub(normalized, 2) or ("-" .. normalized)
-end
-
 local reservation_id = ARGV[1]
 local idempotency_key = ARGV[2]
 local payload_hash    = ARGV[3] or ""

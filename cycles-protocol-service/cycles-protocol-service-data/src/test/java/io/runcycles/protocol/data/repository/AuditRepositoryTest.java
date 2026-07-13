@@ -18,6 +18,7 @@ import java.lang.reflect.Field;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -97,6 +98,20 @@ class AuditRepositoryTest {
 
         assertThat(entry.getLogId()).startsWith("log_");
         assertThat(entry.getTimestamp()).isNotNull();
+    }
+
+    @Test
+    void prepare_rejectsMissingTenantBeforeSerialization() {
+        AuditLogEntry missing = AuditLogEntry.builder().operation("test.op").status(200).build();
+        AuditLogEntry blank = AuditLogEntry.builder()
+            .tenantId("  ").operation("test.op").status(200).build();
+
+        assertThatThrownBy(() -> repository.prepare(missing))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("tenantId");
+        assertThatThrownBy(() -> repository.prepare(blank))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("tenantId");
     }
 
     @Test

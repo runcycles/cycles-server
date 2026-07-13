@@ -4,7 +4,7 @@
 local event_id = ARGV[1]
 local subject_json = ARGV[2]
 local action_json = ARGV[3]
-local amount = tonumber(ARGV[4])
+local amount = normalize_int(ARGV[4])
 local unit = ARGV[5]
 local idempotency_key = ARGV[6]
 local scope_path = ARGV[7]
@@ -15,6 +15,10 @@ local client_time_ms  = ARGV[11] or ""
 local payload_hash    = ARGV[12] or ""
 local metadata_json   = ARGV[13] or ""
 local units_csv       = ARGV[14] or ""
+
+if not amount or compare_int(amount, "0") < 0 then
+    return cjson.encode({error = "INVALID_REQUEST", message = "actual amount must be a non-negative int64"})
+end
 
 -- Check idempotency
 if idempotency_key ~= "" and idempotency_key ~= nil then
@@ -49,21 +53,21 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
                 local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
                 table.insert(replay_balances, {
                     scope = scope,
-                    remaining = tonumber(b[1] or 0),
-                    reserved = tonumber(b[2] or 0),
-                    spent = tonumber(b[3] or 0),
-                    allocated = tonumber(b[4] or 0),
-                    debt = tonumber(b[5] or 0),
-                    overdraft_limit = tonumber(b[6] or 0),
+                    remaining = normalize_int(b[1] or "0"),
+                    reserved = normalize_int(b[2] or "0"),
+                    spent = normalize_int(b[3] or "0"),
+                    allocated = normalize_int(b[4] or "0"),
+                    debt = normalize_int(b[5] or "0"),
+                    overdraft_limit = normalize_int(b[6] or "0"),
                     is_over_limit = (b[7] == "true")
                 })
             end
             replay.balances = replay_balances
         end
         -- charged present only when capping occurred
-        local ca = tonumber(evt[1] or 0)
-        local oa = tonumber(evt[2] or 0)
-        if ca < oa then
+        local ca = normalize_int(evt[1] or "0")
+        local oa = normalize_int(evt[2] or "0")
+        if compare_int(ca, oa) < 0 then
             replay.charged = ca
         end
         return cjson.encode(replay)
@@ -173,16 +177,19 @@ for _, scope in ipairs(affected_scopes) do
                 requested_unit = unit, expected_units = {budget_unit}})
         end
 
-        local remaining = tonumber(bvals[3] or 0)
-        local overdraft_limit = tonumber(bvals[4] or 0)
-        local current_debt = tonumber(bvals[5] or 0)
+        local remaining = normalize_int(bvals[3] or "0")
+        local overdraft_limit = normalize_int(bvals[4] or "0")
+        local current_debt = normalize_int(bvals[5] or "0")
+        if not remaining or not overdraft_limit or not current_debt then
+            return cjson.encode({error = "INTERNAL_ERROR", message = "Malformed budget amount: " .. budget_key})
+        end
         -- Cache for reuse in capping/mutation phases (pre-state for transition detection)
         scope_budget_cache[scope] = {
             remaining = remaining, overdraft_limit = overdraft_limit, debt = current_debt,
             pre_remaining = remaining, pre_is_over_limit = (bvals[6] == "true")
         }
 
-        if remaining < amount then
+        if compare_int(remaining, amount) < 0 then
             if overage_policy == "REJECT" then
                 return cjson.encode({error = "BUDGET_EXCEEDED", scope = scope, remaining = remaining, requested = amount})
             end
@@ -234,11 +241,11 @@ if overage_policy == "ALLOW_IF_AVAILABLE" then
     local capped = amount
     for _, scope in ipairs(budgeted_scopes) do
         local cached = scope_budget_cache[scope]
-        capped = math.min(capped, math.max(cached.remaining, 0))
+        capped = min_int(capped, max_int(cached.remaining, "0"))
     end
     effective_amount = capped
     -- Mark over-limit if we couldn't cover the full amount
-    if effective_amount < amount then
+    if compare_int(effective_amount, amount) < 0 then
         for _, scope in ipairs(budgeted_scopes) do
             local budget_key = "budget:" .. scope .. ":" .. unit
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
@@ -250,27 +257,29 @@ elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
     -- Uses cached values from validation phase
     for _, scope in ipairs(budgeted_scopes) do
         local cached = scope_budget_cache[scope]
-        if cached.overdraft_limit == 0 and cached.remaining < effective_amount then
-            effective_amount = math.min(effective_amount, math.max(cached.remaining, 0))
+        if compare_int(cached.overdraft_limit, "0") == 0
+           and compare_int(cached.remaining, effective_amount) < 0 then
+            effective_amount = min_int(effective_amount, max_int(cached.remaining, "0"))
         end
     end
     -- Phase 2: check non-zero scopes against effective_amount (fail fast)
     -- Uses cached values from validation phase
     for _, scope in ipairs(budgeted_scopes) do
         local cached = scope_budget_cache[scope]
-        if cached.overdraft_limit > 0 and cached.remaining < effective_amount then
-            local funded = math.max(cached.remaining, 0)
-            local deficit = effective_amount - funded
-            if cached.debt + deficit > cached.overdraft_limit then
+        if compare_int(cached.overdraft_limit, "0") > 0
+           and compare_int(cached.remaining, effective_amount) < 0 then
+            local funded = max_int(cached.remaining, "0")
+            local deficit = subtract_int(effective_amount, funded)
+            if compare_int(add_int(cached.debt, deficit), cached.overdraft_limit) > 0 then
                 return cjson.encode({error = "OVERDRAFT_LIMIT_EXCEEDED", scope = scope,
                     current_debt = cached.debt, deficit = deficit, overdraft_limit = cached.overdraft_limit})
             end
         end
     end
     -- Mark over-limit on zero-limit scopes if full amount couldn't be covered
-    if effective_amount < amount then
+    if compare_int(effective_amount, amount) < 0 then
         for _, scope in ipairs(budgeted_scopes) do
-            if scope_budget_cache[scope].overdraft_limit == 0 then
+            if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0 then
                 local budget_key = "budget:" .. scope .. ":" .. unit
                 redis.call('HSET', budget_key, 'is_over_limit', 'true')
             end
@@ -282,23 +291,25 @@ for _, scope in ipairs(budgeted_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. unit
     local cached = scope_budget_cache[scope]
 
-    if overage_policy == "ALLOW_WITH_OVERDRAFT" and cached.remaining < effective_amount then
+    if overage_policy == "ALLOW_WITH_OVERDRAFT"
+       and compare_int(cached.remaining, effective_amount) < 0 then
         -- Spec NORMATIVE: remaining = allocated - spent - reserved - debt (can go negative)
         -- spent tracks only the funded portion; debt tracks the unfunded portion.
         -- When remaining is already negative (prior overdraft), the funded portion is 0,
         -- not negative — otherwise spent would decrease and debt would over-count.
-        local funded = math.max(cached.remaining, 0)
-        local deficit = effective_amount - funded
-        redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
+        local funded = max_int(cached.remaining, "0")
+        local deficit = subtract_int(effective_amount, funded)
+        redis.call('HINCRBY', budget_key, 'remaining', negate_int(effective_amount))
         redis.call('HINCRBY', budget_key, 'spent', funded)
         redis.call('HINCRBY', budget_key, 'debt', deficit)
         scope_debt_incurred[scope] = deficit
-        local new_debt = cached.debt + deficit
-        if cached.overdraft_limit > 0 and new_debt > cached.overdraft_limit then
+        local new_debt = add_int(cached.debt, deficit)
+        if compare_int(cached.overdraft_limit, "0") > 0
+           and compare_int(new_debt, cached.overdraft_limit) > 0 then
             redis.call('HSET', budget_key, 'is_over_limit', 'true')
         end
     else
-        redis.call('HINCRBY', budget_key, 'remaining', -effective_amount)
+        redis.call('HINCRBY', budget_key, 'remaining', negate_int(effective_amount))
         redis.call('HINCRBY', budget_key, 'spent', effective_amount)
     end
 end
@@ -311,15 +322,15 @@ for _, scope in ipairs(budgeted_scopes) do
     local cached = scope_budget_cache[scope] or {}
     table.insert(balances, {
         scope = scope,
-        remaining = tonumber(b[1] or 0),
-        reserved = tonumber(b[2] or 0),
-        spent = tonumber(b[3] or 0),
-        allocated = tonumber(b[4] or 0),
-        debt = tonumber(b[5] or 0),
-        overdraft_limit = tonumber(b[6] or 0),
+        remaining = normalize_int(b[1] or "0"),
+        reserved = normalize_int(b[2] or "0"),
+        spent = normalize_int(b[3] or "0"),
+        allocated = normalize_int(b[4] or "0"),
+        debt = normalize_int(b[5] or "0"),
+        overdraft_limit = normalize_int(b[6] or "0"),
         is_over_limit = (b[7] == "true"),
-        debt_incurred = scope_debt_incurred[scope] or 0,
-        pre_remaining = cached.pre_remaining or 0,
+        debt_incurred = scope_debt_incurred[scope] or "0",
+        pre_remaining = cached.pre_remaining or "0",
         pre_is_over_limit = cached.pre_is_over_limit or false
     })
 end
@@ -355,7 +366,7 @@ local result = {
     status = "APPLIED",
     balances = balances
 }
-if effective_amount < amount then
+if compare_int(effective_amount, amount) < 0 then
     result.charged = effective_amount
 end
 local result_json = cjson.encode(result)

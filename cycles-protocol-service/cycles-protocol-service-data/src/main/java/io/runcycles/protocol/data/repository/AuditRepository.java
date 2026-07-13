@@ -80,6 +80,9 @@ public class AuditRepository {
      */
     public PreparedAudit prepare(AuditLogEntry entry) throws Exception {
         Objects.requireNonNull(entry, "entry");
+        if (entry.getTenantId() == null || entry.getTenantId().isBlank()) {
+            throw new IllegalArgumentException("audit tenantId must not be null or blank");
+        }
         if (entry.getLogId() == null || entry.getLogId().isBlank()) {
             entry.setLogId("log_" + UUID.randomUUID().toString().substring(0, 16));
         }

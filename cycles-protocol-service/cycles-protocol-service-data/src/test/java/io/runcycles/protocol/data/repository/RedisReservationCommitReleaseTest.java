@@ -270,6 +270,9 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("c".repeat(64));
+            verify(metrics).recordCommit(
+                "tenant-a", "COMMITTED", "IDEMPOTENT_REPLAY", "UNKNOWN");
+            verify(metrics, never()).recordOverdraftIncurred(anyString());
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(jedis, never()).psetex(eq("commit:body:res-cr"), anyLong(), anyString());
         }
@@ -521,6 +524,8 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             assertThat(response.isIdempotentReplay()).isTrue();
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("d".repeat(64));
+            verify(metrics).recordRelease(
+                "tenant-a", "tenant", "RELEASED", "IDEMPOTENT_REPLAY");
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(jedis, never()).psetex(eq("release:body:res-rr"), anyLong(), anyString());
         }
