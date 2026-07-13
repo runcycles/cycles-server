@@ -39,7 +39,8 @@ jobs:
           cache: maven
 
       # Testcontainers boots redis:7-alpine via Docker (preinstalled on ubuntu-latest).
-      # jqwik.defaultTries=100 overrides the defaultTries=20 from jqwik.properties to give
+      # jqwik.tries.default=100 overrides the default of 20 from
+      # junit-platform.properties to give
       # nightly 5x deeper interleaving coverage than a PR-feedback run.
       # Use `mvn test` (not `verify`) because -Pproperty-tests restricts
       # surefire to only the 5 property-tagged tests — running `verify` would
@@ -53,7 +54,7 @@ jobs:
           mvn -B test
           --file cycles-protocol-service/pom.xml
           -Pproperty-tests
-          -Djqwik.defaultTries=100
+          -Djqwik.tries.default=100
           -Dsurefire.failIfNoSpecifiedTests=false
 
       - name: Upload surefire reports on failure

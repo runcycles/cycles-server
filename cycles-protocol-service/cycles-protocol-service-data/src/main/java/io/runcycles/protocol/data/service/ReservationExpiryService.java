@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.data.util.TraceContext;
@@ -36,6 +37,7 @@ public class ReservationExpiryService {
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
     @Autowired private EventEmitterService eventEmitter;
     @Autowired private CyclesMetrics metrics;
+    @Autowired private ObjectMapper objectMapper;
 
     /** Max candidates per sweep to avoid OOM after prolonged outages. */
     private static final int SWEEP_BATCH_SIZE = 1000;
@@ -86,7 +88,10 @@ public class ReservationExpiryService {
         try {
             // Only emit if the Lua script actually expired this reservation (status == "EXPIRED")
             String resultStr = luaResult != null ? luaResult.toString() : "";
-            if (!resultStr.contains("EXPIRED")) return;
+            if (resultStr.isBlank()
+                    || !"EXPIRED".equals(objectMapper.readTree(resultStr).path("status").asText())) {
+                return;
+            }
 
             // Fetch reservation hash for event payload — one HGETALL per expired reservation.
             // Hash key has the "res_" prefix (consistent with expire.lua and all other scripts);
@@ -107,8 +112,8 @@ public class ReservationExpiryService {
             scopePath = hash.get("scope_path");
             String unit = hash.get("estimate_unit");
             Long estimateAmount = parseLong(hash.get("estimate_amount"));
-            Long createdAtMs = parseLong(hash.get("created_at_ms"));
-            Long expiresAtMs = parseLong(hash.get("expires_at_ms"));
+            Long createdAtMs = parseLong(hash.get("created_at"));
+            Long expiresAtMs = parseLong(hash.get("expires_at"));
             Integer extensionCount = parseInt(hash.get("extension_count"));
             Integer ttlMs = (createdAtMs != null && expiresAtMs != null)
                     ? (int) (expiresAtMs - createdAtMs) : null;

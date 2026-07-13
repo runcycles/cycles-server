@@ -434,6 +434,7 @@ don't fit.
 | `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+) and operational endpoint access. Production Compose requires it. |
 | `audit.retention.days` | `400` | Retention for runtime-written audit rows (v0.1.25.15+). Default matches admin's `audit.retention.authenticated.days` — SOC2 Type II 12-month lookback + 1-month auditor-lag buffer. Set `0` for indefinite retention (legal hold, archive-store deployments). |
 | `audit.sweep.cron` | `0 0 3 * * *` | Daily cron for pruning stale ZSET index pointers (v0.1.25.15+). Lower cadence if audit write volume is very high; leave as-is otherwise. Skipped when `audit.retention.days=0`. |
+| `events.retention.sweep-cron` | `0 30 3 * * *` | Daily cleanup of stale `events:*` and `deliveries:*` ZSET pointers after their backing rows expire. Override with `EVENT_RETENTION_SWEEP_CRON` when Redis maintenance needs a different window. |
 | `management.endpoints.web.exposure.include` | `health,info,prometheus` | Add more actuator endpoints if you need them, but `prometheus` is the one ops cares about. |
 | `springdoc.api-docs.enabled` | `true` | Set `false` in production unless API docs are intentionally exposed to callers with `X-Admin-API-Key`. Production Compose disables it. |
 | `springdoc.swagger-ui.enabled` | `true` | Set `false` in production unless Swagger UI is intentionally exposed to callers with `X-Admin-API-Key`. Production Compose disables it. |

@@ -4,6 +4,11 @@
 local reservation_id = ARGV[1]
 local idempotency_key = ARGV[2]
 local payload_hash    = ARGV[3] or ""
+local audit_json      = ARGV[4] or ""
+local audit_log_id    = ARGV[5] or ""
+local audit_tenant    = ARGV[6] or ""
+local audit_ttl       = tonumber(ARGV[7] or 0)
+local audit_score     = tonumber(ARGV[8] or 0)
 
 local reservation_key = "reservation:res_" .. reservation_id
 
@@ -31,6 +36,21 @@ if state == "RELEASED" and idempotency_key ~= "" and idempotency_key ~= nil
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
+        local response_snapshot = redis.call('HGET', reservation_key, 'release_response_json')
+        if response_snapshot then
+            local ok_snapshot, replay_response = pcall(cjson.decode, response_snapshot)
+            if ok_snapshot and type(replay_response) == 'table'
+               and replay_response['reservation_id'] == reservation_id
+               and replay_response['estimate_amount'] ~= nil
+               and replay_response['estimate_unit'] ~= nil
+               and replay_response['balances'] ~= nil then
+                replay_response['replay'] = true
+                replay_response['response_snapshot'] = response_snapshot
+                return cjson.encode(replay_response)
+            end
+        end
+        -- Rolling-upgrade fallback for reservations finalized before immutable
+        -- response snapshots existed (or whose snapshot is malformed).
         local idem_vals = redis.call('HMGET', reservation_key,
             'estimate_amount', 'estimate_unit', 'affected_scopes')
         -- Spec MUST: replay returns original successful response payload including balances.
@@ -56,6 +76,7 @@ if state == "RELEASED" and idempotency_key ~= "" and idempotency_key ~= nil
             reservation_id = reservation_id,
             state = "RELEASED",
             replay = true,
+            response_snapshot = response_snapshot,
             estimate_amount = tonumber(idem_vals[1]),
             estimate_unit = idem_vals[2],
             balances = replay_balances
@@ -155,6 +176,20 @@ redis.call('HMSET', reservation_key,
     'released_payload_hash', payload_hash
 )
 
+-- Admin-on-behalf-of releases have a normative audit requirement. Persist the
+-- audit row and both governance-readable indexes inside the same Lua execution
+-- as the release so a successful fresh release cannot omit its audit record.
+if audit_json ~= "" and audit_log_id ~= "" and audit_tenant ~= "" then
+    local audit_key = "audit:log:" .. audit_log_id
+    if audit_ttl and audit_ttl > 0 then
+        redis.call('SET', audit_key, audit_json, 'EX', audit_ttl)
+    else
+        redis.call('SET', audit_key, audit_json)
+    end
+    redis.call('ZADD', "audit:logs:" .. audit_tenant, audit_score, audit_log_id)
+    redis.call('ZADD', "audit:logs:_all", audit_score, audit_log_id)
+end
+
 -- Remove from TTL sorted set — reservation is finalized, no expiry sweep needed.
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
@@ -178,7 +213,7 @@ for _, scope in ipairs(affected_scopes) do
     })
 end
 
-return cjson.encode({
+local response = cjson.encode({
     reservation_id = reservation_id,
     state = "RELEASED",
     estimate_amount = estimate_amount,
@@ -186,3 +221,9 @@ return cjson.encode({
     affected_scopes_json = affected_scopes_json,
     balances = balances
 })
+-- Store the immutable post-mutation snapshot in the reservation hash before
+-- returning. It shares the terminal hash TTL and survives body-cache misses.
+redis.call('HSET', reservation_key,
+    'release_response_json', response,
+    'release_response_state', 'PENDING')
+return response

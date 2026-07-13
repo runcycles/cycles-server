@@ -6,7 +6,8 @@
 local reservation_id = ARGV[1]
 local subject_json = ARGV[2]
 local action_json = ARGV[3]
-local estimate_amount = tonumber(ARGV[4])
+local estimate_amount_raw = ARGV[4]
+local estimate_amount = tonumber(estimate_amount_raw)
 local estimate_unit = ARGV[5]
 local ttl_ms = tonumber(ARGV[6])
 local grace_ms = tonumber(ARGV[7])
@@ -34,6 +35,8 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         return cjson.encode({
             reservation_id = existing_res_id,
             idempotency_key = idempotency_key,
+            response_snapshot = redis.call('HGET', 'reservation:res_' .. existing_res_id, 'reserve_response_json'),
+            response_cache_ttl_ms = redis.call('PTTL', idem_key)
         })
     end
 end
@@ -169,7 +172,7 @@ redis.call('HMSET', reservation_key,
     'state', 'ACTIVE',
     'subject_json', subject_json,
     'action_json', action_json,
-    'estimate_amount', estimate_amount,
+    'estimate_amount', estimate_amount_raw,
     'estimate_unit', estimate_unit,
     'scope_path', scope_path,
     'affected_scopes', cjson.encode(affected_scopes),
@@ -219,10 +222,22 @@ for _, scope in ipairs(budgeted_scopes) do
     })
 end
 
-return cjson.encode({
+local response = cjson.encode({
     reservation_id = reservation_id,
     state = "ACTIVE",
     expires_at = expires_at,
     affected_scopes = affected_scopes,
-    balances = balances
+    balances = balances,
+    -- Redis cjson emits numbers with only 14 significant digits. Preserve the
+    -- protocol int64 exactly by snapshotting the original decimal argument.
+    estimate_amount = estimate_amount_raw,
+    estimate_unit = estimate_unit,
+    scope_path = scope_path,
+    caps_json = redis.call('HGET', 'budget:' .. scope_path .. ':' .. estimate_unit, 'caps_json')
 })
+-- Durable source for exact idempotent replay. Unlike the fast body cache,
+-- this snapshot is committed atomically with the budget mutation.
+redis.call('HSET', reservation_key,
+    'reserve_response_json', response,
+    'reserve_response_state', 'PENDING')
+return response

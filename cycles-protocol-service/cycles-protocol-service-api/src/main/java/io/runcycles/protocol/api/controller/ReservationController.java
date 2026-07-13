@@ -2,7 +2,6 @@ package io.runcycles.protocol.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
-import io.runcycles.protocol.data.repository.AuditRepository;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.EventEmitterService;
 import io.runcycles.protocol.model.*;
@@ -39,12 +38,6 @@ public class ReservationController extends BaseController{
 
     @Autowired
     private EventEmitterService eventEmitter;
-
-    // v0.1.25.8: writes admin-driven release audit entries to the
-    // shared Redis store. Same repo the governance plane reads from
-    // via /v1/admin/audit/logs.
-    @Autowired
-    private AuditRepository auditRepository;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -210,45 +203,31 @@ public class ReservationController extends BaseController{
         logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/release", tenant, reservationId);
         authorizeTenant(tenant);
         String actorType = isAdminAuth() ? "admin_on_behalf_of" : "tenant";
-        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType,
-                resolveTraceId(httpRequest));
-
-        // v0.1.25.8: on admin-driven release, write an audit-log entry
-        // to the shared Redis store. Entry surfaces in the governance
-        // dashboard's Audit view via cycles-server-admin's existing
-        // GET /v1/admin/audit/logs endpoint — both services point at
-        // the same Redis and use the same audit:log:* key layout.
-        //
-        // Satisfies cycles-protocol revision 2026-04-13 NORMATIVE:
-        //   "audit-log entry ... MUST record actor_type=admin_on_behalf_of"
-        // Audit failure is non-fatal (repository swallows exceptions);
-        // the release itself has already succeeded by the time we get
-        // here, so a failed audit write doesn't affect the response.
-        //
-        // `reason` is user-controlled and stored in metadata. Strip
-        // CR/LF before recording to prevent log-line forgery via
-        // newline injection in any consumer that naively concatenates
-        // audit entries (e.g. operator-facing grep output).
-        // Skip on an idempotent replay: the original admin release already wrote the audit
-        // entry; re-logging it would make the trail show a second admin release action.
-        if (isAdminAuth() && !response.isIdempotentReplay()) {
-            String safeReason = request.getReason() != null
-                ? request.getReason().replaceAll("[\\r\\n]", " ")
+        String safeReason = request.getReason() != null
+                ? request.getReason().replaceAll("[\\r\\n]", " ") : null;
+        AuditLogEntry auditEntry = isAdminAuth()
+                ? AuditLogEntry.builder()
+                    .tenantId(tenant)
+                    .operation("releaseReservation")
+                    .resourceType("reservation")
+                    .resourceId(reservationId)
+                    .status(200)
+                    .sourceIp(httpRequest != null ? httpRequest.getRemoteAddr() : null)
+                    .userAgent(httpRequest != null ? httpRequest.getHeader("User-Agent") : null)
+                    .requestId(resolveRequestId(httpRequest))
+                    .traceId(resolveTraceId(httpRequest))
+                    .metadata(java.util.Map.of(
+                        "actor_type", "admin_on_behalf_of",
+                        "reason", safeReason != null ? safeReason : ""))
+                    .build()
                 : null;
-            auditRepository.log(AuditLogEntry.builder()
-                .tenantId(tenant)
-                .operation("releaseReservation")
-                .resourceType("reservation")
-                .resourceId(reservationId)
-                .status(200)
-                .sourceIp(httpRequest != null ? httpRequest.getRemoteAddr() : null)
-                .userAgent(httpRequest != null ? httpRequest.getHeader("User-Agent") : null)
-                .requestId(resolveRequestId(httpRequest))
-                .traceId(resolveTraceId(httpRequest))
-                .metadata(java.util.Map.of(
-                    "actor_type", "admin_on_behalf_of",
-                    "reason", safeReason != null ? safeReason : ""))
-                .build());
+        ReleaseResponse response = repository.releaseReservation(reservationId, request, tenant, actorType,
+                resolveTraceId(httpRequest), auditEntry);
+
+        // The audit entry above is persisted atomically by release.lua. Keep a
+        // structured operational log for fresh admin actions only; a replay has
+        // already produced both the durable audit row and this warning.
+        if (isAdminAuth() && !response.isIdempotentReplay()) {
             // Keep the structured log too — ops teams watching
             // stdout (dev, incident response) see admin actions in
             // real time without having to query the audit endpoint.

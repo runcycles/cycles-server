@@ -1,6 +1,5 @@
 package io.runcycles.protocol.data.repository;
 
-import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,7 +23,6 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
 
     private static final String HEX_A = "a".repeat(64);
     private static final String HEX_B = "b".repeat(64);
-    private static final String HEX_C = "c".repeat(64);
 
     // ---- hydration (getReservationById builds detail.evidence) ----
 
@@ -73,34 +71,6 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
         assertThat(repository.getReservationById("res-half").getEvidence()).isNull();
     }
 
-    // ---- persistence (persistEvidenceRef writes id + url) ----
-
-    @Test
-    @DisplayName("persistEvidenceRef HSETs both id and url onto the reservation hash")
-    void persistsRef() throws Exception {
-        when(jedisPool.getResource()).thenReturn(jedis);
-        doNothing().when(jedis).close();
-        EvidenceEmitter.EvidenceRef ref =
-                new EvidenceEmitter.EvidenceRef(HEX_C, "http://h/v1/evidence/" + HEX_C);
-
-        invokePersist("res-p", "commit", ref);
-
-        verify(jedis).hset(eq("reservation:res_res-p"), argThat((Map<String, String> m) ->
-                HEX_C.equals(m.get("commit_evidence_id"))
-                        && ("http://h/v1/evidence/" + HEX_C).equals(m.get("commit_evidence_url"))));
-    }
-
-    @Test
-    @DisplayName("persistEvidenceRef is a no-op for a null ref or null reservation id")
-    void persistNoOp() throws Exception {
-        invokePersist("res-p", "reserve", null);
-        invokePersist(null, "reserve",
-                new EvidenceEmitter.EvidenceRef(HEX_C, "http://h/v1/evidence/" + HEX_C));
-        // Never touched the pool / wrote anything.
-        verify(jedisPool, never()).getResource();
-        verify(jedis, never()).hset(anyString(), anyMap());
-    }
-
     // ---- projection (toSummary gates evidence on include=evidence) ----
 
     @Test
@@ -120,13 +90,6 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
     }
 
     // ---- reflection helpers ----
-
-    private void invokePersist(String id, String artifact, EvidenceEmitter.EvidenceRef ref) throws Exception {
-        Method m = RedisReservationRepository.class.getDeclaredMethod(
-                "persistEvidenceRef", String.class, String.class, EvidenceEmitter.EvidenceRef.class);
-        m.setAccessible(true);
-        m.invoke(repository, id, artifact, ref);
-    }
 
     private ReservationSummary invokeToSummary(ReservationDetail detail, Set<ReservationInclude> include)
             throws Exception {

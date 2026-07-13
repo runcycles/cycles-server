@@ -253,11 +253,11 @@ Tagged `@Tag("property-tests")` and excluded from default PR CI. Run locally wit
 
 | Mode | Command | Try count | Runtime |
 |------|---------|-----------|---------|
-| PR-speed default (from `jqwik.properties`) | `mvn test -Pproperty-tests` | 20 | ~20 s |
-| Nightly CI (5× coverage) | `mvn test -Pproperty-tests -Djqwik.defaultTries=100` | 100 | ~2 min |
-| Manual deep run | `mvn test -Pproperty-tests -Djqwik.defaultTries=500` | 500 | ~10 min |
+| PR-speed default (from `junit-platform.properties`) | `mvn test -Pproperty-tests` | 20 | ~20 s |
+| Nightly CI (5× coverage) | `mvn test -Pproperty-tests -Djqwik.tries.default=100` | 100 | ~2 min |
+| Manual deep run | `mvn test -Pproperty-tests -Djqwik.tries.default=500` | 500 | ~10 min |
 
-The property annotation deliberately does **not** set `tries` — the count comes from `cycles-protocol-service-api/src/test/resources/jqwik.properties` (defaults to 20) and can be overridden with `-Djqwik.defaultTries=<N>`. An annotation literal would win over the system property and silently ignore the override.
+The property annotation deliberately does **not** set `tries` — the count comes from `cycles-protocol-service-api/src/test/resources/junit-platform.properties` (defaults to 20) and can be overridden with `-Djqwik.tries.default=<N>`. An annotation literal would win over the system property and silently ignore the override.
 
 **Reproducing a failure:** jqwik prints a `seed = <number>` line on failure. Pass it back via `-Djqwik.seeds.tries.default=<number>` to replay the exact same interleaving against the fixed code.
 

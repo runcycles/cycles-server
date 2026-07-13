@@ -11,6 +11,7 @@ import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.*;
+import io.runcycles.protocol.model.audit.AuditLogEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +26,7 @@ import redis.clients.jedis.resps.ScanResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -75,6 +77,35 @@ public class RedisReservationRepository {
     private static final String COMPARE_AND_DELETE_SCRIPT =
         "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
             "return redis.call('DEL', KEYS[1]) else return 0 end";
+    private static final String CACHE_IDEMPOTENT_WITH_EVIDENCE_SCRIPT =
+        "if ARGV[4] ~= '' then local qt = redis.call('TYPE', KEYS[3]).ok " +
+        "if qt ~= 'none' and qt ~= 'list' then return 0 end end " +
+        "if ARGV[1] ~= '' then redis.call('PSETEX', KEYS[2], ARGV[2], ARGV[1]) end " +
+        "redis.call('PSETEX', KEYS[1], ARGV[2], ARGV[3]) " +
+        "if ARGV[4] ~= '' then redis.call('LPUSH', KEYS[3], ARGV[4]) end return 1";
+    private static final String CACHE_LIFECYCLE_WITH_EVIDENCE_SCRIPT =
+        "local rt = redis.call('TYPE', KEYS[2]).ok " +
+        "local qt = redis.call('TYPE', KEYS[3]).ok " +
+        "if rt ~= 'hash' or (qt ~= 'none' and qt ~= 'list') then return -1 end " +
+        "if redis.call('HGET', KEYS[2], ARGV[8]) ~= 'PENDING' then return 0 end " +
+        "redis.call('PSETEX', KEYS[1], ARGV[1], ARGV[2]) " +
+        "redis.call('HSET', KEYS[2], ARGV[3], ARGV[4], ARGV[5], ARGV[6], " +
+            "ARGV[8], 'EVIDENCE') " +
+        "redis.call('LPUSH', KEYS[3], ARGV[7]) return 1";
+    private static final String FINALIZE_LIFECYCLE_BASE_SCRIPT =
+        "if redis.call('TYPE', KEYS[2]).ok ~= 'hash' then return -1 end " +
+        "if redis.call('HGET', KEYS[2], ARGV[3]) ~= 'PENDING' then return 0 end " +
+        "redis.call('PSETEX', KEYS[1], ARGV[1], ARGV[2]) " +
+        "redis.call('HSET', KEYS[2], ARGV[3], 'BASE') return 1";
+    private static final String RESPONSE_STATE_PENDING = "PENDING";
+    private static final String RESPONSE_STATE_BASE = "BASE";
+    private static final String RESPONSE_STATE_EVIDENCE = "EVIDENCE";
+
+    @Value("${audit.retention.days:400}")
+    private int auditRetentionDays;
+
+    @Value("${cycles.evidence.queue.pending-key:evidence:pending}")
+    private String evidencePendingKey = "evidence:pending";
 
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
@@ -164,39 +195,26 @@ public class RedisReservationRepository {
                     if (original != null) {
                         return original;
                     }
-                    // Fallback (cache expired/absent, e.g. a reservation created before the
-                    // full-response cache existed): rebuild from the stored reservation. Balances
-                    // reflect current state and no cycles_evidence is replayed — a bounded
-                    // degradation only when the original body is no longer available.
-                    return rebuildReserveReplay(existingId);
+                    ReservationCreateResponse restored = restoreReserveResponse(
+                        existingId, response.get("response_snapshot"),
+                        replayCacheTtl(response.get("response_cache_ttl_ms")));
+                    if (restored != null) {
+                        return restored;
+                    }
+                    throw idempotencyReplayUnavailable();
                 }
 
-                // Parse balances from Lua response (read atomically with mutation)
-                List<Balance> balances = parseLuaBalances(response, request.getEstimate().getUnit());
-
-                // Check deepest scope for ALLOW_WITH_CAPS (operator-configured caps)
-                Enums.DecisionEnum decision = Enums.DecisionEnum.ALLOW;
-                Caps caps = null;
-                String deepestBudgetKey = "budget:" + scopePath + ":" + request.getEstimate().getUnit().name();
-                String capsJson = jedis.hget(deepestBudgetKey, "caps_json");
-                if (capsJson != null && !capsJson.isEmpty()) {
-                    caps = objectMapper.readValue(capsJson, Caps.class);
-                    decision = Enums.DecisionEnum.ALLOW_WITH_CAPS;
+                response.putIfAbsent("estimate_amount", request.getEstimate().getAmount());
+                response.putIfAbsent("estimate_unit", request.getEstimate().getUnit().name());
+                response.putIfAbsent("scope_path", scopePath);
+                response.putIfAbsent("affected_scopes", affectedScopes);
+                if (!response.containsKey("caps_json")) {
+                    String deepestBudgetKey = "budget:" + scopePath + ":" + request.getEstimate().getUnit().name();
+                    response.put("caps_json", jedis.hget(deepestBudgetKey, "caps_json"));
                 }
+                ReservationCreateResponse created = buildReserveResponse(response);
 
-                metrics.recordReserve(tenant, decision.name(), "OK", overagePolicyTag);
-                ReservationCreateResponse created = ReservationCreateResponse.builder()
-                    .decision(decision)
-                    .reservationId(reservationId)
-                    .affectedScopes(affectedScopes)
-                    .scopePath(scopePath)
-                    .reserved(request.getEstimate())
-                    .expiresAtMs(((Number) response.get("expires_at")).longValue())
-                    .caps(caps)
-                    .balances(balances)
-                    .preRemaining(parsePreRemaining(response))
-                    .preIsOverLimit(parsePreIsOverLimit(response))
-                    .build();
+                metrics.recordReserve(tenant, created.getDecision().name(), "OK", overagePolicyTag);
                 // Fresh reserve: emit + stamp evidence (over the pre-evidence body), then cache
                 // the WHOLE response so an idempotent replay returns it verbatim. Cache for the
                 // SAME TTL as reserve.lua's idempotency mapping (max(ttl_ms+grace_ms, 24h)) so the
@@ -208,8 +226,7 @@ public class RedisReservationRepository {
                 long bodyTtlMs = Math.max(effectiveTtl + graceMs, 86400000L);
                 jedis.close();
                 jedis = null;
-                stampAndEmitEvidence(created, request, traceId);
-                cacheReserveResponse(reservationId, created, bodyTtlMs);
+                persistReserveResponse(created, request, traceId, bodyTtlMs);
                 return created;
             } finally {
                 if (jedis != null) {
@@ -368,13 +385,21 @@ public class RedisReservationRepository {
 
         ReservationCreateResponse dryRunResponse = dryRun.response();
         if (!dryRunResponse.isIdempotentReplay()) {
-            stampAndEmitEvidence(dryRunResponse, request, traceId);
-            // cacheIdempotentBody/clearIdempotencyClaim self-acquire fail-open connections,
-            // so a pool failure here can't fail the response or leak the claim past its TTL.
+            if (request.getIdempotencyKey() == null || request.getIdempotencyKey().isEmpty()) {
+                stampAndEmitEvidence(dryRunResponse, request, traceId);
+                return dryRunResponse;
+            }
+            EvidenceEmitter.PreparedEvidence prepared =
+                prepareReserveEvidence(dryRunResponse, request, traceId);
+            if (prepared != null) {
+                dryRunResponse.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
+            }
             boolean cached = cacheIdempotentBody("dry_run", tenant, request.getIdempotencyKey(),
-                computePayloadHash(request), dryRunResponse);
+                computePayloadHash(request), dryRunResponse, prepared);
             if (!cached) {
+                dryRunResponse.setCyclesEvidence(null);
                 clearIdempotencyClaim(dryRun.claimKey(), dryRun.claimMarker());
+                throw idempotencyResponsePersistenceFailed();
             }
         }
         return dryRunResponse;
@@ -399,34 +424,6 @@ public class RedisReservationRepository {
                     .evidenceId(ref.evidenceId())
                     .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
                     .build());
-            // Record the ref on the reservation so it is linkable later via
-            // include=evidence. Null reservation_id (dry_run) is a no-op.
-            persistEvidenceRef(response.getReservationId(), "reserve", ref);
-        }
-    }
-
-    /**
-     * Cache the FULL original reserve response (with {@code cycles_evidence} stamped),
-     * keyed by {@code reservation_id}, so an idempotent replay returns the byte-identical
-     * original payload (original balances + original evidence, matching the envelope the
-     * {@code evidence_id} points to). The {@code ttlMs} MUST be ≥ reserve.lua's idempotency
-     * TTL ({@code max(ttl_ms+grace_ms, 24h)}) so the body never expires before the
-     * idempotency key (else a replay in the gap falls back to rebuilt current balances).
-     *
-     * <p>Fail-open: a write failure is logged, never thrown — it only degrades a later
-     * replay to the rebuild fallback, never fails the committed reservation.
-     */
-    private void cacheReserveResponse(String reservationId,
-                                      ReservationCreateResponse response, long ttlMs) {
-        if (reservationId == null || reservationId.isEmpty()) {
-            return;
-        }
-        try (Jedis jedis = jedisPool.getResource()) {
-            jedis.psetex(reserveResponseCacheKey(reservationId), ttlMs,
-                    objectMapper.writeValueAsString(response));
-        } catch (Exception e) {
-            LOG.warn("Failed to cache reserve response: reservation_id={} ttl_ms={} error={}",
-                    LogSanitizer.sanitize(reservationId), ttlMs, LogSanitizer.sanitize(e.toString()), e);
         }
     }
 
@@ -442,6 +439,103 @@ public class RedisReservationRepository {
         return original;
     }
 
+    private ReservationCreateResponse restoreReserveResponse(String reservationId,
+                                                              Object suppliedSnapshot,
+                                                              long ttlMs) {
+        try {
+            ReplayState replayState = readReplayState(
+                reservationId, "reserve", "reserve_response_json", suppliedSnapshot);
+            if (replayState == null || replayState.snapshotJson() == null) {
+                return null;
+            }
+            Map<String, Object> snapshot = objectMapper.readValue(replayState.snapshotJson(), Map.class);
+            ReservationCreateResponse restored = buildReserveResponse(snapshot);
+            String state = resolvedResponseState(replayState);
+            if (RESPONSE_STATE_PENDING.equals(state)) {
+                if (!finalizeBaseResponse("reserve", reservationId, restored, ttlMs)) {
+                    return readCachedReserveResponse(reservationId);
+                }
+                restored.setIdempotentReplay(true);
+                return restored;
+            } else if (RESPONSE_STATE_EVIDENCE.equals(state)) {
+                if (replayState.evidence() == null) {
+                    return null;
+                }
+                restored.setCyclesEvidence(replayState.evidence());
+            }
+            restored.setIdempotentReplay(true);
+            cacheRestoredResponseIfAbsent(
+                reserveResponseCacheKey(reservationId), restored, ttlMs);
+            return restored;
+        } catch (Exception e) {
+            LOG.warn("Failed to restore reserve response snapshot: reservation_id={} error={}",
+                LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(e.toString()), e);
+            return null;
+        }
+    }
+
+    private EvidenceEmitter.PreparedEvidence prepareReserveEvidence(
+            ReservationCreateResponse response, ReservationCreateRequest request, String traceId) {
+        Map<String, Object> evidenceBody = new LinkedHashMap<>();
+        evidenceBody.put("request", request);
+        evidenceBody.put("response", response);
+        return evidenceEmitter.prepare("reserve", System.currentTimeMillis(), traceId, evidenceBody);
+    }
+
+    private void persistReserveResponse(ReservationCreateResponse response,
+                                        ReservationCreateRequest request,
+                                        String traceId, long ttlMs) {
+        EvidenceEmitter.PreparedEvidence prepared = prepareReserveEvidence(response, request, traceId);
+        if (prepared == null) {
+            finalizeBaseResponse("reserve", response.getReservationId(), response, ttlMs);
+            return;
+        }
+        response.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
+        if (!cacheLifecycleWithEvidence("reserve", response.getReservationId(), response,
+                ttlMs, prepared)) {
+            response.setCyclesEvidence(null);
+            finalizeBaseResponse("reserve", response.getReservationId(), response, ttlMs);
+        }
+    }
+
+    private ReservationCreateResponse buildReserveResponse(Map<String, Object> response) throws Exception {
+        Enums.UnitEnum unit = Enums.UnitEnum.valueOf(response.get("estimate_unit").toString());
+        Caps caps = null;
+        Object capsJson = response.get("caps_json");
+        if (capsJson instanceof String value && !value.isEmpty()) {
+            caps = objectMapper.readValue(value, Caps.class);
+        }
+        List<String> affectedScopes = ((List<?>) response.getOrDefault("affected_scopes", List.of()))
+            .stream().map(Object::toString).collect(Collectors.toList());
+        return ReservationCreateResponse.builder()
+            .decision(caps == null ? Enums.DecisionEnum.ALLOW : Enums.DecisionEnum.ALLOW_WITH_CAPS)
+            .reservationId(response.get("reservation_id").toString())
+            .affectedScopes(affectedScopes)
+            .scopePath(response.get("scope_path").toString())
+            .reserved(new Amount(unit, parseLong(response.get("estimate_amount"))))
+            .expiresAtMs(((Number) response.get("expires_at")).longValue())
+            .caps(caps)
+            .balances(parseLuaBalances(response, unit))
+            .preRemaining(parsePreRemaining(response))
+            .preIsOverLimit(parsePreIsOverLimit(response))
+            .build();
+    }
+
+    private static long parseLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        return Long.parseLong(value.toString());
+    }
+
+    private static long replayCacheTtl(Object value) {
+        if (value == null) {
+            return IDEMPOTENCY_CACHE_TTL_MS;
+        }
+        long ttlMs = parseLong(value);
+        return ttlMs > 0 ? ttlMs : IDEMPOTENCY_CACHE_TTL_MS;
+    }
+
     // ---- commit / release CyclesEvidence (mirrors the reserve evidence flow) ----
 
     private static String lifecycleBodyCacheKey(String artifactType, String reservationId) {
@@ -455,37 +549,128 @@ public class RedisReservationRepository {
      * it is built BEFORE {@code cycles_evidence} is stamped onto the response, so the attested
      * payload never references its own id.
      */
-    private EvidenceEmitter.EvidenceRef emitLifecycleEvidence(String artifactType, String traceId,
-                                                              Object payloadBody) {
-        return evidenceEmitter.emit(artifactType, System.currentTimeMillis(), traceId, payloadBody);
+    private EvidenceEmitter.PreparedEvidence prepareLifecycleEvidence(String artifactType, String traceId,
+                                                                      Object payloadBody) {
+        return evidenceEmitter.prepare(artifactType, System.currentTimeMillis(), traceId, payloadBody);
+    }
+
+    private static CyclesEvidenceRef toCyclesEvidenceRef(EvidenceEmitter.EvidenceRef ref) {
+        return CyclesEvidenceRef.builder()
+            .evidenceId(ref.evidenceId())
+            .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
+            .build();
+    }
+
+    private boolean cacheLifecycleWithEvidence(String artifactType, String reservationId,
+                                               Object response, long ttlMs,
+                                               EvidenceEmitter.PreparedEvidence prepared) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            EvidenceEmitter.EvidenceRef ref = prepared.ref();
+            Object result = jedis.eval(CACHE_LIFECYCLE_WITH_EVIDENCE_SCRIPT,
+                List.of(lifecycleBodyCacheKey(artifactType, reservationId),
+                    "reservation:res_" + reservationId, evidencePendingKey),
+                List.of(String.valueOf(ttlMs), objectMapper.writeValueAsString(response),
+                    artifactType + "_evidence_id", ref.evidenceId(),
+                    artifactType + "_evidence_url", ref.cyclesEvidenceUrl(),
+                    prepared.recordJson(), responseStateField(artifactType)));
+            if (!(result instanceof Number number)) {
+                throw new IllegalStateException("lifecycle evidence keys have incompatible Redis types");
+            }
+            if (number.longValue() == 1L) {
+                return true;
+            }
+            if (number.longValue() == 0L) {
+                return false;
+            }
+            throw new IllegalStateException("lifecycle evidence keys have incompatible Redis types");
+        } catch (Exception e) {
+            LOG.warn("Failed to atomically persist lifecycle evidence: artifact_type={} reservation_id={} ttl_ms={} error={}",
+                artifactType, LogSanitizer.sanitize(reservationId), ttlMs,
+                LogSanitizer.sanitize(e.toString()), e);
+            metrics.recordEvidenceEmitFailed(artifactType);
+            return false;
+        }
     }
 
     /**
-     * Persist the just-computed evidence ref for an artifact onto the reservation
-     * hash ({@code <artifact>_evidence_id} / {@code <artifact>_evidence_url}), so
-     * {@code listReservations} / {@code getReservation} can surface it via
-     * {@code include=evidence} — letting a consumer link a reservation to its
-     * signed envelope(s) without having captured the id off the original
-     * response. Both id and url are stored so hydration needs no server-id
-     * reconstruction. No-op when the ref is null (evidence emission disabled) or
-     * for dry-run (no reservation_id). Fail-open: a write failure is logged,
-     * never thrown — it only degrades the evidence projection, never the op.
+     * Finalize a pending durable response without evidence. The state compare-and-set
+     * makes this mutually exclusive with evidence finalization, so a slow replay repair
+     * can never overwrite a freshly stamped response (and vice versa).
      */
-    private void persistEvidenceRef(String reservationId, String artifactType,
-                                    EvidenceEmitter.EvidenceRef ref) {
-        if (ref == null || reservationId == null || reservationId.isEmpty()) {
-            return;
-        }
+    private boolean finalizeBaseResponse(String artifactType, String reservationId,
+                                         Object response, long ttlMs) {
         try (Jedis jedis = jedisPool.getResource()) {
-            Map<String, String> f = new LinkedHashMap<>();
-            f.put(artifactType + "_evidence_id", ref.evidenceId());
-            f.put(artifactType + "_evidence_url", ref.cyclesEvidenceUrl());
-            jedis.hset("reservation:res_" + reservationId, f);
+            Object result = jedis.eval(FINALIZE_LIFECYCLE_BASE_SCRIPT,
+                List.of(lifecycleBodyCacheKey(artifactType, reservationId),
+                    "reservation:res_" + reservationId),
+                List.of(String.valueOf(ttlMs), objectMapper.writeValueAsString(response),
+                    responseStateField(artifactType)));
+            if (!(result instanceof Number number) || number.longValue() < 0L) {
+                throw new IllegalStateException("lifecycle response keys have incompatible Redis types");
+            }
+            return number.longValue() == 1L;
         } catch (Exception e) {
-            LOG.warn("Failed to persist reservation evidence ref: artifact_type={} reservation_id={} evidence_id={} error={}",
-                    artifactType, LogSanitizer.sanitize(reservationId), ref.evidenceId(), LogSanitizer.sanitize(e.toString()), e);
+            LOG.warn("Failed to finalize base lifecycle response: artifact_type={} reservation_id={} ttl_ms={} error={}",
+                artifactType, LogSanitizer.sanitize(reservationId), ttlMs,
+                LogSanitizer.sanitize(e.toString()), e);
+            return false;
         }
     }
+
+    private static String responseStateField(String artifactType) {
+        return artifactType + "_response_state";
+    }
+
+    private static String resolvedResponseState(ReplayState replayState) {
+        if (replayState.responseState() != null) {
+            String state = replayState.responseState();
+            if (RESPONSE_STATE_PENDING.equals(state) || RESPONSE_STATE_BASE.equals(state)
+                    || RESPONSE_STATE_EVIDENCE.equals(state)) {
+                return state;
+            }
+            throw new IllegalStateException("invalid durable response state: " + state);
+        }
+        // Compatibility for snapshots written by the immediately preceding draft:
+        // evidence fields were written only after the body became canonical.
+        return replayState.evidence() == null ? RESPONSE_STATE_BASE : RESPONSE_STATE_EVIDENCE;
+    }
+
+    private void cacheRestoredResponseIfAbsent(String cacheKey, Object response,
+                                               long ttlMs) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set(cacheKey, objectMapper.writeValueAsString(response),
+                SetParams.setParams().nx().px(ttlMs));
+        } catch (Exception e) {
+            LOG.warn("Failed to repair replay body cache: cache_key={} ttl_ms={} error={}",
+                LogSanitizer.sanitize(cacheKey), ttlMs,
+                LogSanitizer.sanitize(e.toString()), e);
+        }
+    }
+
+    private ReplayState readReplayState(String reservationId, String artifactType,
+                                        String snapshotField, Object suppliedSnapshot) {
+        try (Jedis jedis = jedisPool.getResource()) {
+            List<String> values = jedis.hmget("reservation:res_" + reservationId,
+                snapshotField, responseStateField(artifactType),
+                artifactType + "_evidence_id", artifactType + "_evidence_url");
+            String snapshot = suppliedSnapshot instanceof String value && !value.isEmpty()
+                ? value : values.get(0);
+            CyclesEvidenceRef evidence = null;
+            if (values.get(2) != null && values.get(3) != null) {
+                evidence = CyclesEvidenceRef.builder()
+                    .evidenceId(values.get(2)).cyclesEvidenceUrl(values.get(3)).build();
+            }
+            return new ReplayState(snapshot, values.get(1), evidence);
+        } catch (Exception e) {
+            LOG.warn("Failed to read replay snapshot: artifact_type={} reservation_id={} error={}",
+                artifactType, LogSanitizer.sanitize(reservationId),
+                LogSanitizer.sanitize(e.toString()), e);
+            return null;
+        }
+    }
+
+    private record ReplayState(String snapshotJson, String responseState,
+                               CyclesEvidenceRef evidence) {}
 
     /**
      * Hydrate the {@code evidence} projection from the persisted
@@ -514,19 +699,6 @@ public class RedisReservationRepository {
         return any ? b.build() : null;
     }
 
-    /** Cache a finalized lifecycle response body (with evidence stamped) for verbatim replay,
-     *  keyed by {@code <artifact>:body:<reservation_id>}, 30-day TTL matching the terminal
-     *  reservation hash. Fail-open. */
-    private void cacheLifecycleBody(String artifactType, String reservationId, Object response) {
-        try (Jedis jedis = jedisPool.getResource()) {
-            jedis.psetex(lifecycleBodyCacheKey(artifactType, reservationId),
-                    TERMINAL_BODY_CACHE_TTL_MS, objectMapper.writeValueAsString(response));
-        } catch (Exception e) {
-            LOG.warn("Failed to cache lifecycle response body: artifact_type={} reservation_id={} ttl_ms={} error={}",
-                    artifactType, LogSanitizer.sanitize(reservationId), TERMINAL_BODY_CACHE_TTL_MS, LogSanitizer.sanitize(e.toString()), e);
-        }
-    }
-
     /** Read a cached lifecycle response body (per-poll connections, bounded wait), or
      *  {@code null} if absent. */
     private <T> T readCachedLifecycleBody(String artifactType, String reservationId, Class<T> type)
@@ -536,25 +708,106 @@ public class RedisReservationRepository {
         return cached == null ? null : objectMapper.readValue(cached, type);
     }
 
-    private ReservationCreateResponse rebuildReserveReplay(String existingId) throws Exception {
-        try (Jedis jedis = jedisPool.getResource()) {
-            Map<String, String> existingFields = jedis.hgetAll("reservation:res_" + existingId);
-            if (existingFields == null || existingFields.isEmpty()) {
-                throw CyclesProtocolException.notFound(existingId);
+    private CommitResponse restoreCommitResponse(String reservationId, Object suppliedSnapshot) {
+        try {
+            ReplayState replayState = readReplayState(
+                reservationId, "commit", "commit_response_json", suppliedSnapshot);
+            if (replayState == null || replayState.snapshotJson() == null) {
+                return null;
             }
-            ReservationSummary existing = buildReservationSummary(existingFields);
-            List<Balance> idempotencyBalances = fetchBalancesForScopes(
-                jedis, existing.getAffectedScopes(), existing.getReserved().getUnit());
-            return ReservationCreateResponse.builder()
-                .decision(Enums.DecisionEnum.ALLOW)
-                .reservationId(existingId)
-                .affectedScopes(existing.getAffectedScopes())
-                .scopePath(existing.getScopePath())
-                .reserved(existing.getReserved())
-                .expiresAtMs(existing.getExpiresAtMs())
-                .balances(idempotencyBalances)
-                .idempotentReplay(true)
+            Map<String, Object> snapshot = objectMapper.readValue(replayState.snapshotJson(), Map.class);
+            Enums.UnitEnum unit = Enums.UnitEnum.valueOf(snapshot.get("estimate_unit").toString());
+            long chargedAmount = ((Number) snapshot.get("charged")).longValue();
+            long estimateAmount = ((Number) snapshot.get("estimate_amount")).longValue();
+            Amount released = chargedAmount < estimateAmount
+                ? new Amount(unit, estimateAmount - chargedAmount) : null;
+            Number debt = (Number) snapshot.get("debt_incurred");
+            CommitResponse restored = CommitResponse.builder()
+                .status(Enums.CommitStatus.COMMITTED)
+                .charged(new Amount(unit, chargedAmount))
+                .released(released)
+                .balances(parseLuaBalances(snapshot, unit))
+                .estimateAmount(estimateAmount)
+                .scopePath(Objects.toString(snapshot.get("scope_path"), null))
+                .overagePolicy(Objects.toString(snapshot.get("overage_policy"), null))
+                .debtIncurred(debt == null ? null : debt.longValue())
+                .scopeDebtIncurred(parseScopeDebtIncurred(snapshot))
+                .preRemaining(parsePreRemaining(snapshot))
+                .preIsOverLimit(parsePreIsOverLimit(snapshot))
                 .build();
+            String state = resolvedResponseState(replayState);
+            if (RESPONSE_STATE_PENDING.equals(state)) {
+                if (!finalizeBaseResponse("commit", reservationId, restored,
+                        TERMINAL_BODY_CACHE_TTL_MS)) {
+                    CommitResponse cached = readCachedLifecycleBody(
+                        "commit", reservationId, CommitResponse.class);
+                    if (cached != null) {
+                        cached.setIdempotentReplay(true);
+                    }
+                    return cached;
+                }
+                restored.setIdempotentReplay(true);
+                return restored;
+            } else if (RESPONSE_STATE_EVIDENCE.equals(state)) {
+                if (replayState.evidence() == null) {
+                    return null;
+                }
+                restored.setCyclesEvidence(replayState.evidence());
+            }
+            restored.setIdempotentReplay(true);
+            cacheRestoredResponseIfAbsent(
+                lifecycleBodyCacheKey("commit", reservationId), restored,
+                TERMINAL_BODY_CACHE_TTL_MS);
+            return restored;
+        } catch (Exception e) {
+            LOG.warn("Failed to restore commit response snapshot: reservation_id={} error={}",
+                LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(e.toString()), e);
+            return null;
+        }
+    }
+
+    private ReleaseResponse restoreReleaseResponse(String reservationId, Object suppliedSnapshot) {
+        try {
+            ReplayState replayState = readReplayState(
+                reservationId, "release", "release_response_json", suppliedSnapshot);
+            if (replayState == null || replayState.snapshotJson() == null) {
+                return null;
+            }
+            Map<String, Object> snapshot = objectMapper.readValue(replayState.snapshotJson(), Map.class);
+            Enums.UnitEnum unit = Enums.UnitEnum.valueOf(snapshot.get("estimate_unit").toString());
+            ReleaseResponse restored = ReleaseResponse.builder()
+                .status(Enums.ReleaseStatus.RELEASED)
+                .released(new Amount(unit, ((Number) snapshot.get("estimate_amount")).longValue()))
+                .balances(parseLuaBalances(snapshot, unit))
+                .build();
+            String state = resolvedResponseState(replayState);
+            if (RESPONSE_STATE_PENDING.equals(state)) {
+                if (!finalizeBaseResponse("release", reservationId, restored,
+                        TERMINAL_BODY_CACHE_TTL_MS)) {
+                    ReleaseResponse cached = readCachedLifecycleBody(
+                        "release", reservationId, ReleaseResponse.class);
+                    if (cached != null) {
+                        cached.setIdempotentReplay(true);
+                    }
+                    return cached;
+                }
+                restored.setIdempotentReplay(true);
+                return restored;
+            } else if (RESPONSE_STATE_EVIDENCE.equals(state)) {
+                if (replayState.evidence() == null) {
+                    return null;
+                }
+                restored.setCyclesEvidence(replayState.evidence());
+            }
+            restored.setIdempotentReplay(true);
+            cacheRestoredResponseIfAbsent(
+                lifecycleBodyCacheKey("release", reservationId), restored,
+                TERMINAL_BODY_CACHE_TTL_MS);
+            return restored;
+        } catch (Exception e) {
+            LOG.warn("Failed to restore release response snapshot: reservation_id={} error={}",
+                LogSanitizer.sanitize(reservationId), LogSanitizer.sanitize(e.toString()), e);
+            return null;
         }
     }
 
@@ -737,22 +990,29 @@ public class RedisReservationRepository {
      *  and is fully fail-open: returns {@code false} on ANY failure (incl. pool exhaustion), so
      *  the caller can clear the pending claim. No-op (true) without an idempotency_key. */
     private boolean cacheIdempotentBody(String kind, String tenant, String idempotencyKey,
-                                        String payloadHash, Object response) {
+                                        String payloadHash, Object response,
+                                        EvidenceEmitter.PreparedEvidence prepared) {
         if (idempotencyKey == null || idempotencyKey.isEmpty()) {
             return true;
         }
         try (Jedis jedis = jedisPool.getResource()) {
             String idemKey = idempotencyCacheKey(kind, tenant, idempotencyKey);
-            Pipeline pipe = jedis.pipelined();
-            if (payloadHash != null && !payloadHash.isEmpty()) {
-                pipe.psetex(idemKey + ":hash", IDEMPOTENCY_CACHE_TTL_MS, payloadHash);
+            Object result = jedis.eval(CACHE_IDEMPOTENT_WITH_EVIDENCE_SCRIPT,
+                List.of(idemKey, idemKey + ":hash", evidencePendingKey),
+                List.of(payloadHash == null ? "" : payloadHash,
+                    String.valueOf(IDEMPOTENCY_CACHE_TTL_MS),
+                    objectMapper.writeValueAsString(response),
+                    prepared == null ? "" : prepared.recordJson()));
+            if (!(result instanceof Number number) || number.longValue() != 1L) {
+                throw new IllegalStateException("evidence queue has an incompatible Redis type");
             }
-            pipe.psetex(idemKey, IDEMPOTENCY_CACHE_TTL_MS, objectMapper.writeValueAsString(response));
-            pipe.sync();
             return true;
         } catch (Exception e) {
             LOG.warn("Failed to cache idempotent response: kind={} tenant={} idempotency_key_present={} ttl_ms={} error={}",
                     kind, LogSanitizer.sanitize(tenant), true, IDEMPOTENCY_CACHE_TTL_MS, LogSanitizer.sanitize(e.toString()), e);
+            if (prepared != null) {
+                metrics.recordEvidenceEmitFailed("dry_run".equals(kind) ? "reserve" : kind);
+            }
             return false;
         }
     }
@@ -862,6 +1122,16 @@ public class RedisReservationRepository {
     private CyclesProtocolException idempotencyStillPending() {
         return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
             "Idempotency result is still being prepared; retry with the same idempotency_key", 500);
+    }
+
+    private CyclesProtocolException idempotencyReplayUnavailable() {
+        return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
+            "Original idempotency response is temporarily unavailable; retry with the same idempotency_key", 500);
+    }
+
+    private CyclesProtocolException idempotencyResponsePersistenceFailed() {
+        return new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
+            "Unable to persist idempotency response; retry with the same idempotency_key", 500);
     }
 
     private String readCacheValueWithWait(String key, int attempts) {
@@ -987,7 +1257,12 @@ public class RedisReservationRepository {
                     cached.setIdempotentReplay(true);
                     return cached;
                 }
-                return committed; // fallback (cache absent): no evidence replayed
+                CommitResponse restored = restoreCommitResponse(
+                    reservationId, response.get("response_snapshot"));
+                if (restored != null) {
+                    return restored;
+                }
+                throw idempotencyReplayUnavailable();
             }
 
             // Fresh commit: emit `commit` evidence over {reservation_id, request, response}
@@ -1001,15 +1276,20 @@ public class RedisReservationRepository {
             evidenceBody.put("reservation_id", reservationId);
             evidenceBody.put("request", request);
             evidenceBody.put("response", committed);
-            EvidenceEmitter.EvidenceRef ref = emitLifecycleEvidence("commit", traceId, evidenceBody);
-            if (ref != null) {
-                committed.setCyclesEvidence(CyclesEvidenceRef.builder()
-                        .evidenceId(ref.evidenceId())
-                        .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
-                        .build());
-                persistEvidenceRef(reservationId, "commit", ref);
+            EvidenceEmitter.PreparedEvidence prepared =
+                prepareLifecycleEvidence("commit", traceId, evidenceBody);
+            if (prepared == null) {
+                finalizeBaseResponse("commit", reservationId, committed,
+                    TERMINAL_BODY_CACHE_TTL_MS);
+            } else {
+                committed.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
+                if (!cacheLifecycleWithEvidence("commit", reservationId, committed,
+                        TERMINAL_BODY_CACHE_TTL_MS, prepared)) {
+                    committed.setCyclesEvidence(null);
+                    finalizeBaseResponse("commit", reservationId, committed,
+                        TERMINAL_BODY_CACHE_TTL_MS);
+                }
             }
-            cacheLifecycleBody("commit", reservationId, committed);
             return committed;
         } catch (CyclesProtocolException e){
             LOG.debug("Commit reservation denied: reservation_id={} tenant={} error={}",
@@ -1038,15 +1318,47 @@ public class RedisReservationRepository {
 
     public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
                                                String tenant, String actorType, String traceId) {
+        return releaseReservation(reservationId, request, tenant, actorType, traceId, null);
+    }
+
+    /**
+     * Release with an optional admin audit entry. The entry is passed into release.lua so
+     * the ledger transition and required admin audit record share one Redis atomic unit.
+     */
+    public ReleaseResponse releaseReservation(String reservationId, ReleaseRequest request,
+                                               String tenant, String actorType, String traceId,
+                                               AuditLogEntry auditEntry) {
         LOG.debug("Releasing reservation: {}", reservationId);
 
         Jedis jedis = null;
         try {
             jedis = jedisPool.getResource();
+            String auditJson = "";
+            String auditLogId = "";
+            long auditTtlSeconds = 0L;
+            if (auditEntry != null) {
+                auditLogId = auditEntry.getLogId();
+                if (auditLogId == null || auditLogId.isBlank()) {
+                    auditLogId = "log_" + UUID.randomUUID().toString().substring(0, 16);
+                    auditEntry.setLogId(auditLogId);
+                }
+                if (auditEntry.getTimestamp() == null) {
+                    auditEntry.setTimestamp(Instant.now());
+                }
+                auditJson = objectMapper.writeValueAsString(auditEntry);
+                auditTtlSeconds = auditRetentionDays > 0
+                        ? (long) auditRetentionDays * 86_400L : 0L;
+            }
             List<String> args = Arrays.asList(
                 reservationId,
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
-                computePayloadHash(request)
+                computePayloadHash(request),
+                auditJson,
+                auditLogId,
+                tenant != null ? tenant : "",
+                String.valueOf(auditTtlSeconds),
+                auditEntry != null && auditEntry.getTimestamp() != null
+                        ? String.valueOf(auditEntry.getTimestamp().toEpochMilli()) : "0"
             );
 
             Object result = luaScripts.eval(jedis, "release", releaseScript, args.toArray(new String[0]));
@@ -1092,7 +1404,12 @@ public class RedisReservationRepository {
                     cached.setIdempotentReplay(true);
                     return cached;
                 }
-                return releasedResponse; // fallback (cache absent): no evidence replayed
+                ReleaseResponse restored = restoreReleaseResponse(
+                    reservationId, response.get("response_snapshot"));
+                if (restored != null) {
+                    return restored;
+                }
+                throw idempotencyReplayUnavailable();
             }
 
             // Fresh release: emit `release` evidence over {reservation_id, request, response}
@@ -1104,15 +1421,20 @@ public class RedisReservationRepository {
             evidenceBody.put("reservation_id", reservationId);
             evidenceBody.put("request", request);
             evidenceBody.put("response", releasedResponse);
-            EvidenceEmitter.EvidenceRef ref = emitLifecycleEvidence("release", traceId, evidenceBody);
-            if (ref != null) {
-                releasedResponse.setCyclesEvidence(CyclesEvidenceRef.builder()
-                        .evidenceId(ref.evidenceId())
-                        .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
-                        .build());
-                persistEvidenceRef(reservationId, "release", ref);
+            EvidenceEmitter.PreparedEvidence prepared =
+                prepareLifecycleEvidence("release", traceId, evidenceBody);
+            if (prepared == null) {
+                finalizeBaseResponse("release", reservationId, releasedResponse,
+                    TERMINAL_BODY_CACHE_TTL_MS);
+            } else {
+                releasedResponse.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
+                if (!cacheLifecycleWithEvidence("release", reservationId, releasedResponse,
+                        TERMINAL_BODY_CACHE_TTL_MS, prepared)) {
+                    releasedResponse.setCyclesEvidence(null);
+                    finalizeBaseResponse("release", reservationId, releasedResponse,
+                        TERMINAL_BODY_CACHE_TTL_MS);
+                }
             }
-            cacheLifecycleBody("release", reservationId, releasedResponse);
             return releasedResponse;
         } catch (CyclesProtocolException e){
             LOG.debug("Release reservation denied: reservation_id={} tenant={} actor_type={} error={}",
@@ -1411,20 +1733,11 @@ public class RedisReservationRepository {
                         try {
                             Map<String, String> fields = responses.get(key).get();
                             if (fields.isEmpty()) continue;
-                            if (!tenant.equals(fields.get("tenant"))) continue;
-                            if (status != null && !status.equals(fields.get("state"))) continue;
-                            if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) continue;
-                            String scopePath = fields.getOrDefault("scope_path", "").toLowerCase();
-                            if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) continue;
-                            if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) continue;
-                            if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) continue;
-                            if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) continue;
-                            if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) continue;
-                            if (!createdAtInWindow(fields, fromMs, toMs)) continue;
-                            if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) continue;
-                            if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) continue;
-
-                            matching.add(toSummary(buildReservationSummary(fields), include));
+                            ReservationSummary summary = matchingReservation(fields, tenant,
+                                    idempotencyKey, status, workspaceSegment, appSegment,
+                                    workflowSegment, agentSegment, toolsetSegment, fromMs, toMs,
+                                    expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, include);
+                            if (summary != null) matching.add(summary);
                         } catch (Exception e) {
                             LOG.warn("Failed to parse reservation: {}", LogSanitizer.sanitize(key), e);
                         }
@@ -1473,6 +1786,27 @@ public class RedisReservationRepository {
                 .nextCursor(nextCursor)
                 .build();
         }
+    }
+
+    private ReservationSummary matchingReservation(
+            Map<String, String> fields, String tenant, String idempotencyKey, String status,
+            String workspaceSegment, String appSegment, String workflowSegment,
+            String agentSegment, String toolsetSegment, Long fromMs, Long toMs,
+            Long expiresFromMs, Long expiresToMs, Long finalizedFromMs, Long finalizedToMs,
+            Set<ReservationInclude> include) throws Exception {
+        if (!tenant.equals(fields.get("tenant"))) return null;
+        if (status != null && !status.equals(fields.get("state"))) return null;
+        if (idempotencyKey != null && !idempotencyKey.equals(fields.get("idempotency_key"))) return null;
+        String scopePath = fields.getOrDefault("scope_path", "").toLowerCase();
+        if (workspaceSegment != null && !scopeHasSegment(scopePath, workspaceSegment)) return null;
+        if (appSegment != null && !scopeHasSegment(scopePath, appSegment)) return null;
+        if (workflowSegment != null && !scopeHasSegment(scopePath, workflowSegment)) return null;
+        if (agentSegment != null && !scopeHasSegment(scopePath, agentSegment)) return null;
+        if (toolsetSegment != null && !scopeHasSegment(scopePath, toolsetSegment)) return null;
+        if (!createdAtInWindow(fields, fromMs, toMs)) return null;
+        if (!expiresAtInWindow(fields, expiresFromMs, expiresToMs)) return null;
+        if (!finalizedAtInWindow(fields, finalizedFromMs, finalizedToMs)) return null;
+        return toSummary(buildReservationSummary(fields), include);
     }
 
     /**
@@ -1785,16 +2119,24 @@ public class RedisReservationRepository {
             Map<String, Object> evidenceBody = new LinkedHashMap<>();
             evidenceBody.put("request", request);
             evidenceBody.put("response", response);
-            EvidenceEmitter.EvidenceRef ref = evidenceEmitter.emit("decide",
-                System.currentTimeMillis(), traceId, evidenceBody);
-            if (ref != null) {
-                response.setCyclesEvidence(CyclesEvidenceRef.builder()
-                    .evidenceId(ref.evidenceId())
-                    .cyclesEvidenceUrl(ref.cyclesEvidenceUrl())
-                    .build());
+            if (idempotencyKey == null || idempotencyKey.isEmpty()) {
+                EvidenceEmitter.EvidenceRef ref = evidenceEmitter.emit("decide",
+                    System.currentTimeMillis(), traceId, evidenceBody);
+                if (ref != null) {
+                    response.setCyclesEvidence(toCyclesEvidenceRef(ref));
+                }
+                return response;
             }
-            if (!cacheIdempotentBody("decide", tenant, idempotencyKey, payloadHash, response)) {
+            EvidenceEmitter.PreparedEvidence prepared = evidenceEmitter.prepare("decide",
+                System.currentTimeMillis(), traceId, evidenceBody);
+            if (prepared != null) {
+                response.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
+            }
+            if (!cacheIdempotentBody("decide", tenant, idempotencyKey, payloadHash,
+                    response, prepared)) {
+                response.setCyclesEvidence(null);
                 clearIdempotencyClaim(claim.claimKey(), claim.claimMarker());
+                throw idempotencyResponsePersistenceFailed();
             }
             return response;
         } catch (CyclesProtocolException e) {
@@ -2202,46 +2544,6 @@ public class RedisReservationRepository {
             LOG.warn("Failed to compute payload hash, skipping mismatch detection", e);
             return "";
         }
-    }
-
-    /**
-     * Fetch current balances for a list of scopes and unit.
-     * Used to populate the optional balances field in mutation responses.
-     */
-    private List<Balance> fetchBalancesForScopes(Jedis jedis, List<String> scopes, Enums.UnitEnum unit) {
-        if (scopes == null || scopes.isEmpty()) return Collections.emptyList();
-
-        // Pipeline all HGETALL calls into a single round-trip
-        Pipeline pipeline = jedis.pipelined();
-        Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
-        for (String scope : scopes) {
-            String budgetKey = "budget:" + scope + ":" + unit.name();
-            responses.put(scope, pipeline.hgetAll(budgetKey));
-        }
-        pipeline.sync();
-
-        List<Balance> balances = new ArrayList<>();
-        for (Map.Entry<String, Response<Map<String, String>>> entry : responses.entrySet()) {
-            String scope = entry.getKey();
-            Map<String, String> budget = entry.getValue().get();
-            if (budget != null && !budget.isEmpty()) {
-                long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
-                long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
-                boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
-                balances.add(Balance.builder()
-                    .scope(leafScope(scope))
-                    .scopePath(scope)
-                    .remaining(new SignedAmount(unit, Long.parseLong(budget.getOrDefault("remaining", "0"))))
-                    .reserved(new Amount(unit, Long.parseLong(budget.getOrDefault("reserved", "0"))))
-                    .spent(new Amount(unit, Long.parseLong(budget.getOrDefault("spent", "0"))))
-                    .allocated(new Amount(unit, Long.parseLong(budget.getOrDefault("allocated", "0"))))
-                    .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
-                    .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
-                    .isOverLimit(isOverLimit ? true : null)
-                    .build());
-            }
-        }
-        return balances;
     }
 
     /**

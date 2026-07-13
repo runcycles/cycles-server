@@ -14,6 +14,55 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.49] — 2026-07-12
+
+### Added
+
+- **Event/delivery index retention sweep.** A configurable daily sweep removes
+  stale `events:*` and `deliveries:*` ZSET pointers after their backing rows
+  expire (`EVENT_RETENTION_SWEEP_CRON`, default `0 30 3 * * *`). Non-ZSET
+  correlation keys are skipped without aborting either sweep pass.
+
+### Fixed
+
+- **Expiry events are emitted exactly once.** The sweeper now parses the Lua
+  result and requires `status=EXPIRED`; a skipped already-expired row can no
+  longer match merely because its state text contains `EXPIRED`. Event payload
+  timestamps now read the actual Redis hash fields (`created_at`, `expires_at`).
+- **Admin release audit is atomic.** Admin audit JSON and both audit indexes are
+  written by `release.lua` in the same Redis execution as the release, removing
+  the successful-release/missing-audit failure window.
+- **Idempotency replay remains truthful and recoverable.** Reserve, commit, and
+  release store an immutable response snapshot inside the mutation script and
+  repair a missing fast body cache from that snapshot. A `PENDING` → `BASE` or
+  `EVIDENCE` compare-and-set makes evidence enqueueing, evidence-link storage,
+  and canonical response caching mutually exclusive with replay repair, so a
+  concurrent miss cannot cache an evidence-less variant of a stamped response.
+  Dry-run and decide likewise cache their response and enqueue evidence in one
+  Redis script, and failed prepared-evidence writes now increment the evidence
+  failure metric. Commit/release replays return a valid snapshot before
+  consulting current budget hashes. Pre-snapshot reservations can replay while
+  their canonical body cache survives; if it is missing, the server returns a
+  retriable 500 rather than synthesizing a potentially different response.
+  Reserve snapshots preserve the original decimal int64 amount instead of
+  passing it through Redis cjson's 14-digit number formatting, and repaired
+  reserve bodies inherit the remaining idempotency-key TTL rather than a fixed
+  24 hours.
+- **jqwik runtime overrides work again.** Configuration moved from the retired
+  `jqwik.properties` format to `junit-platform.properties`; nightly/manual try
+  counts use the supported `jqwik.tries.default` parameter.
+
+### Performance
+
+- API-key validation releases its Redis connection before BCrypt verification,
+  then uses a second short checkout only for a successful key's tenant-status
+  read. Slow password hashing no longer occupies the Redis pool.
+
+### Compatibility
+
+- No public request/response schema changes. Operators may override the new
+  retention sweep cron; existing retention TTL settings remain authoritative.
+
 ## [0.1.25.48] — 2026-07-11
 
 ### Added

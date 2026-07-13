@@ -45,12 +45,60 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void reservePreservesInt64AmountBeyondRedisCjsonPrecision() {
+            long amount = 100_000_000_000_001L;
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudget(jedis, TENANT_A, "TOKENS", amount + 10);
+            }
+            Map<String, Object> body = reservationBody(TENANT_A, amount);
+
+            ResponseEntity<Map> original = post("/v1/reservations", API_KEY_SECRET_A, body);
+            ResponseEntity<Map> replay = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) original.getBody().get("reserved")).get("amount"))
+                .isEqualTo(amount);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+        }
+
+        @Test
+        void pendingReserveSnapshotIsFinalizedAsOneCanonicalBaseResponse() {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            ResponseEntity<Map> original = post("/v1/reservations", API_KEY_SECRET_A, body);
+            String reservationId = original.getBody().get("reservation_id").toString();
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del("reserve:body:" + reservationId);
+                jedis.hdel("reservation:res_" + reservationId,
+                    "reserve_evidence_id", "reserve_evidence_url");
+                jedis.hset("reservation:res_" + reservationId,
+                    "reserve_response_state", "PENDING");
+            }
+
+            ResponseEntity<Map> replay = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody()).doesNotContainKey("cycles_evidence");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("reservation:res_" + reservationId,
+                    "reserve_response_state")).isEqualTo("BASE");
+                assertThat(jedis.get("reserve:body:" + reservationId)).isNotNull();
+            }
+        }
+
+        @Test
         void shouldReturnSameCommitOnReplay() {
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
             Map<String, Object> body = commitBody(800);
 
             ResponseEntity<Map> resp1 = post(
                     "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+            // Rolling-upgrade compatibility: a pre-snapshot row can still replay
+            // through its surviving canonical Java body cache.
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hdel("reservation:res_" + reservationId, "commit_response_json"))
+                        .isEqualTo(1L);
+            }
             ResponseEntity<Map> resp2 = post(
                     "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
 
@@ -58,6 +106,23 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp1.getBody().get("status")).isEqualTo("COMMITTED");
             assertThat(resp2.getBody().get("status")).isEqualTo("COMMITTED");
+        }
+
+        @Test
+        void commitReplayUsesSnapshotWithoutReadingCurrentBudget() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body = commitBody(800);
+
+            ResponseEntity<Map> original = post(
+                    "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            replaceTenantBudgetWithWrongType();
+
+            ResponseEntity<Map> replay = post(
+                    "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 
         @Test
@@ -85,6 +150,11 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             ResponseEntity<Map> resp1 = post(
                     "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
+            // A pre-snapshot row can still replay through its surviving canonical body cache.
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hdel("reservation:res_" + reservationId, "release_response_json"))
+                        .isEqualTo(1L);
+            }
             ResponseEntity<Map> resp2 = post(
                     "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
 
@@ -93,6 +163,23 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             // Spec: idempotent replay with same key must return original successful response
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp2.getBody().get("status")).isEqualTo("RELEASED");
+        }
+
+        @Test
+        void releaseReplayUsesSnapshotWithoutReadingCurrentBudget() {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body = releaseBody();
+
+            ResponseEntity<Map> original = post(
+                    "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
+            assertThat(original.getStatusCode().value()).isEqualTo(200);
+            replaceTenantBudgetWithWrongType();
+
+            ResponseEntity<Map> replay = post(
+                    "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 
         @Test
@@ -268,6 +355,14 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             var headers = headersForTenant(apiKey);
             headers.set("X-Idempotency-Key", idempotencyKey);
             return headers;
+        }
+
+        private void replaceTenantBudgetWithWrongType() {
+            try (Jedis jedis = jedisPool.getResource()) {
+                String budgetKey = "budget:tenant:" + TENANT_A + ":TOKENS";
+                jedis.del(budgetKey);
+                jedis.set(budgetKey, "wrong-type-sentinel");
+            }
         }
     }
 }

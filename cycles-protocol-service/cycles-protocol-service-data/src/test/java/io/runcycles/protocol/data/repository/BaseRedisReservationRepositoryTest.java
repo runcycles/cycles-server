@@ -33,7 +33,7 @@ abstract class BaseRedisReservationRepositoryTest {
     @Mock protected ScopeDerivationService scopeService;
     @Mock protected LuaScriptRegistry luaScripts;
     @Mock protected CyclesMetrics metrics;
-    // Unconfigured by default: emit() returns null → no cycles_evidence stamped, so
+    // Unconfigured by default: prepare() returns null → no cycles_evidence stamped, so
     // existing reservation tests are unaffected. Evidence-specific tests stub it.
     @Mock protected io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;
     @InjectMocks protected RedisReservationRepository repository;
@@ -67,6 +67,7 @@ abstract class BaseRedisReservationRepositoryTest {
         lenient().when(defaultGetResp.get()).thenReturn(null);
         lenient().when(pipeline.get(anyString())).thenReturn(defaultGetResp);
         lenient().when(jedis.set(anyString(), anyString(), any(SetParams.class))).thenReturn("OK");
+        lenient().when(jedis.eval(anyString(), anyList(), anyList())).thenReturn(1L);
     }
 
     /** Mock a budget key so it is visible via both jedis.hgetAll and pipeline.hgetAll */

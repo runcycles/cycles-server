@@ -5,6 +5,103 @@
 
 ---
 
+### 2026-07-12 — v0.1.25.49: runtime correctness and performance hardening
+
+Follow-up audit of the runtime server against the current
+`cycles-protocol-v0.yaml` identified a small set of correctness and scaling
+risks worth fixing without introducing new services or a multi-index migration.
+This release keeps the wire contract unchanged and concentrates the changes in
+the existing repositories and Lua atomic units.
+
+**Expiry correctness.** `ReservationExpiryService` previously decided whether
+to emit `reservation.expired` with `result.toString().contains("EXPIRED")`.
+That also matched Lua skip results such as
+`{"status":"SKIP","state":"EXPIRED"}`, duplicating events and metrics for a
+reservation already finalized. The service now parses JSON and requires the
+top-level `status` to equal `EXPIRED`. It also reads the actual reservation hash
+fields, `created_at` and `expires_at`, rather than nonexistent `_ms` field names,
+so emitted TTL metadata is populated correctly.
+
+**Redis pool pressure.** API-key validation held a Jedis connection while
+performing BCrypt, the slowest CPU operation in authentication. The lookup and
+key JSON are now read in one short checkout, BCrypt runs after that connection
+closes, and only a successfully verified key performs a second short checkout
+for the fresh tenant-status gate. This removes pool occupancy during hashing
+without caching authorization status or weakening revocation behavior between
+requests.
+
+**Truthful, recoverable idempotency.** The reserve replay fallback rebuilt a
+nominal success from the current reservation and ledger, while commit/release
+returned a partially reconstructed body when their cached original was absent.
+Those responses could differ from the normative original balances, caps, and
+evidence reference. Each mutation script now stores its immutable response
+snapshot on the reservation hash in the same atomic unit as the ledger change.
+The fast body cache is repaired from that snapshot on a miss. Each snapshot is
+created in `PENDING` state; atomic compare-and-set scripts finalize exactly one
+canonical response as `BASE` or `EVIDENCE`. Replay repair uses the same state
+transition, so it cannot observe missing evidence fields and overwrite a fresh
+stamped response. Evidence enqueue, reservation evidence-link fields, and the
+stamped body cache are written by one Redis script. Reserve snapshots encode
+the request's decimal int64 amount as a string to avoid Redis cjson's 14-digit
+numeric formatting, and repair uses the mapping's remaining `PTTL`. Dry-run and
+decide similarly combine their body/hash cache writes with evidence enqueueing,
+preventing duplicate envelopes after a cache failure; a dropped prepared record
+is included in the evidence-failure metric.
+Commit/release replay validates and returns the snapshot before any per-scope
+budget reads. Reservations finalized before snapshots existed can replay through
+their surviving canonical body cache; if that cache is missing, the server
+returns a retriable 500 for the remainder of the idempotency window rather than
+synthesizing a response that may differ from the original.
+Removing current-ledger reconstruction also made `fetchBalancesForScopes` dead
+code, so it was deleted.
+
+The obsolete fail-open `persistEvidenceRef` helper was also deleted. Its only
+remaining production path was no-key dry-run, which has no reservation id and
+therefore always returned at its guard; persisted reserve/commit/release refs
+now come exclusively from the atomic finalization script.
+
+**Atomic admin audit.** The controller previously released first and wrote the
+required admin-on-behalf-of audit row afterward through a fail-open repository;
+a Redis outage between those operations produced a successful mutation with no
+audit record. The controller now builds the sanitized `AuditLogEntry` before
+calling the repository. `release.lua` writes `audit:log:<id>`,
+`audit:logs:<tenant>`, and `audit:logs:_all` inside the same script execution as
+the fresh release. Idempotent replays return before these writes, preserving one
+audit row per mutation. Existing audit retention (default 400 days, zero for no
+TTL) is passed into the script.
+
+**Bounded index maintenance.** Event and delivery values already expired, but
+their ZSET members accumulated indefinitely. A non-fatal scheduled sweep now
+SCANs only `events:*` and `deliveries:*` index keys and prunes scores older than
+the configured value TTLs. It type-checks each candidate and tolerates a key
+changing type during the sweep, so shared `events:correlation:*` SETs cannot
+abort cleanup. The default maintenance window is 03:30 daily and is overridable
+with `EVENT_RETENTION_SWEEP_CRON`.
+
+**jqwik configuration.** jqwik 1.9 no longer reads `jqwik.properties` (removed
+since 1.6). Configuration now lives in `junit-platform.properties`; the
+supported override is `-Djqwik.tries.default=<N>`. The nightly workflow and
+runbook use the same parameter. A profile run confirmed all five properties
+executed exactly 20 tries.
+
+**Validation.** Current protocol checkout `b04f276`:
+
+- CI-style unit/contract `mvn verify` against the local protocol spec: zero
+  failures; JaCoCo line coverage
+  95.05% data and 95.56% API;
+- Docker integration profile: 1,098 tests (31 model + 518 data + 549 API),
+  zero failures;
+- jqwik property profile: 5 properties at 20 tries, zero failures;
+- benchmark profile: three runs of 15 benchmarks, zero failures and zero
+  concurrent errors. Median reserve p50 was 14.2 ms, commit p50 14.1 ms,
+  release p50 14.4 ms, and 601.6 ops/s at 32 threads. Versus the immediately
+  preceding same-host run (13.2/13.6/14.4 ms and 615.6 ops/s), the changes are
+  +7.6%/+3.7%/0% and -2.3% respectively, all below the project's 30% noise
+  threshold. These absolute values are environment-specific; the run is a
+  regression smoke test, not a replacement for a controlled baseline.
+
+Version/revision 0.1.25.48 → 0.1.25.49.
+
 ### 2026-07-11 — v0.1.25.48: TENANT_CLOSED guard on POST /v1/events
 
 Closes the open question flagged in the v0.1.25.47 entry: `/v1/events`
@@ -523,6 +620,11 @@ Aligns runtime producer behavior with the event-tier disabled mode. Previously `
 Implements cycles-protocol v0.1.25.9 (runcycles/cycles-protocol#117). The `cycles_evidence` ref previously rode only on the live reserve/commit/release response, so a reservation fetched later (e.g. by the admin dashboard) had no path back to its signed envelope — you had to have captured the `evidence_id` at the moment of the call. Now the server persists each computed ref onto the reservation and surfaces it via a new `evidence` projection.
 
 `EvidenceEmitter.emit` already computes the `evidence_id` synchronously (when the server identity is configured), but only after the reserve/commit/release Lua runs — so the id can't be passed into the script. Instead `persistEvidenceRef` does a fail-open follow-up `HSET` of `<artifact>_evidence_id` + `<artifact>_evidence_url` onto the `reservation:res_*` hash right after the ref is stamped on the response (HSET preserves the terminal 30-day TTL set by Lua; a write failure logs and never fails the op). Both id and url are stored so hydration needs no server-id reconstruction. `buildReservationSummary` hydrates them into a new `ReservationEvidence` map (keyed `reserve`/`commit`/`release`, each a `CyclesEvidenceRef`); `toSummary` gates it on a new `ReservationInclude.EVIDENCE` token (`?include=evidence`) for symmetry with the metadata projections — projection-only, NOT folded into `FilterHasher`, so it never invalidates a cursor. The single-row `getReservation` always carries it. A reservation has at most a `reserve` entry plus one terminal (`commit` XOR `release`); a half-written ref (id without url) is ignored. Degrades gracefully: `null` when evidence emission is disabled or for pre-feature reservations (`NON_NULL` strips it).
+
+As of v0.1.25.49, reserve/commit/release evidence refs are written by the
+atomic response-finalization script together with the body cache and queue
+record. The original fail-open `persistEvidenceRef` helper was retired; the
+projection and stored field names remain unchanged.
 
 New `ReservationEvidence` model + `ReservationInclude.EVIDENCE`. `ReservationEvidenceTest` (isEmpty + per-artifact refs), `ReservationIncludeTest` +2 (evidence token, all-three parse), `RedisReservationEvidenceLinkTest` +6 (hydrate reserve+commit, absent → null, half-written ignored, persist HSETs id+url, null-ref/null-id no-op, projection gated on include). Full `mvn verify` green across model/data/api, JaCoCo 95% gate met; contract + spec-coverage tests pass against cycles-protocol#117 (merged to main). Additive/non-breaking — clients that don't request `include=evidence` see byte-identical responses.
 
