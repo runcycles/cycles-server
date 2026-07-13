@@ -55,8 +55,9 @@ called out but are not breaking to API clients.
   now use explicit `HMGET` projections. Immutable response snapshots and other
   unrelated hash fields are no longer transferred and parsed on every read.
   Projection arrays are built once per operation rather than once per hydrated
-  reservation. Lua also omits snapshot JSON when invoked without an
-  idempotency key.
+  reservation, and all projection replies are zipped to field names by a shared
+  `HashProjections` helper (name-keyed reads, no positional indexing). Lua also
+  omits snapshot JSON when invoked without an idempotency key.
 
 ### Compatibility
 

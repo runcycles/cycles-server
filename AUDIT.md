@@ -52,7 +52,10 @@ every `HGETALL`. Mutation scripts also omit snapshot JSON when invoked without
 an idempotency key. The response-state marker remains available for the
 evidence finalization state machine, so this optimization does not weaken its
 race guarantees. Detail uses a static projection and both list paths construct
-their projection array once per request rather than once per Redis key.
+their projection array once per request rather than once per Redis key. All
+`HMGET` replies are zipped to field names by one shared `HashProjections`
+helper; the expiry event path now reads fields by name rather than positional
+index, so reordering a projection cannot silently shift columns.
 
 **Clear replay compatibility and metrics.** The Lua commit/release replay
 branches now do only payload-hash validation and return the immutable snapshot

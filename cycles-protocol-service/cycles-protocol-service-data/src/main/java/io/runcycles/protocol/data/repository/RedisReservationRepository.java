@@ -9,6 +9,7 @@ import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
+import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
@@ -1507,7 +1508,7 @@ public class RedisReservationRepository {
     public ReservationDetail getReservationById(String reservationId) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "reservation:res_" + reservationId;
-            Map<String, String> fields = mapHashFields(
+            Map<String, String> fields = HashProjections.mapHashFields(
                 RESERVATION_DETAIL_FIELDS, jedis.hmget(key, RESERVATION_DETAIL_FIELD_ARRAY));
             if (fields == null || fields.isEmpty()) {
                 throw CyclesProtocolException.notFound(reservationId);
@@ -1624,7 +1625,7 @@ public class RedisReservationRepository {
                     for (int i = startIndex; i < keys.size(); i++) {
                         String key = keys.get(i);
                         try {
-                            Map<String, String> fields = mapHashFields(projection, responses.get(key).get());
+                            Map<String, String> fields = HashProjections.mapHashFields(projection, responses.get(key).get());
                             if (fields.isEmpty()) continue;
                             if (!tenant.equals(fields.get("tenant"))) continue;
                             if (status != null && !status.equals(fields.get("state"))) continue;
@@ -1735,7 +1736,7 @@ public class RedisReservationRepository {
 
                     for (String key : keys) {
                         try {
-                            Map<String, String> fields = mapHashFields(projection, responses.get(key).get());
+                            Map<String, String> fields = HashProjections.mapHashFields(projection, responses.get(key).get());
                             if (fields.isEmpty()) continue;
                             ReservationSummary summary = matchingReservation(fields, tenant,
                                     idempotencyKey, status, workspaceSegment, appSegment,
@@ -2464,21 +2465,6 @@ public class RedisReservationRepository {
         }
         if (detail || include.contains(ReservationInclude.EVIDENCE)) {
             fields.addAll(RESERVATION_EVIDENCE_FIELDS);
-        }
-        return fields;
-    }
-
-    private static Map<String, String> mapHashFields(List<String> names,
-                                                     List<String> values) {
-        if (values == null) {
-            return Collections.emptyMap();
-        }
-        Map<String, String> fields = new HashMap<>();
-        for (int i = 0; i < names.size() && i < values.size(); i++) {
-            String value = values.get(i);
-            if (value != null) {
-                fields.put(names.get(i), value);
-            }
         }
         return fields;
     }

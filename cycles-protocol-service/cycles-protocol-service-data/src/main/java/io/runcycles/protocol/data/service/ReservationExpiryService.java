@@ -3,6 +3,7 @@ package io.runcycles.protocol.data.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
+import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.data.util.TraceContext;
 import io.runcycles.protocol.data.util.TraceIdGenerator;
@@ -18,6 +19,7 @@ import redis.clients.jedis.JedisPool;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Cycles Protocol v0.1.25 - Background job that marks expired reservations.
@@ -41,6 +43,11 @@ public class ReservationExpiryService {
 
     /** Max candidates per sweep to avoid OOM after prolonged outages. */
     private static final int SWEEP_BATCH_SIZE = 1000;
+
+    /** HMGET projection for the reservation.expired event payload. */
+    private static final List<String> EXPIRED_EVENT_FIELDS = List.of(
+        "tenant", "scope_path", "estimate_unit", "estimate_amount",
+        "created_at", "expires_at", "extension_count");
 
     @Scheduled(fixedDelayString = "${cycles.expiry.interval-ms:5000}",
                initialDelayString = "${cycles.expiry.initial-delay-ms:5000}")
@@ -110,24 +117,24 @@ public class ReservationExpiryService {
             // previously wrong (missing prefix) — dormant because HMGET on a non-existent key
             // returns null fields rather than throwing, so the method just silently no-op'd.
             // Surfaced by the new cycles.reservations.expired counter test in v0.1.25.10.
-            List<String> fields = jedis.hmget("reservation:res_" + reservationId,
-                "tenant", "scope_path", "estimate_unit", "estimate_amount",
-                "created_at", "expires_at", "extension_count");
-            if (fields == null || fields.isEmpty()) return;
+            Map<String, String> fields = HashProjections.mapHashFields(EXPIRED_EVENT_FIELDS,
+                jedis.hmget("reservation:res_" + reservationId,
+                    EXPIRED_EVENT_FIELDS.toArray(String[]::new)));
+            if (fields.isEmpty()) return;
 
-            tenantId = fields.get(0);
+            tenantId = fields.get("tenant");
             if (tenantId == null) return;
 
             // Counter is bumped once per actual EXPIRED transition (SKIP results from
             // still-in-grace or already-finalised reservations are filtered out above).
             metrics.recordExpired(tenantId);
 
-            scopePath = fields.get(1);
-            String unit = fields.get(2);
-            Long estimateAmount = parseLong(fields.get(3));
-            Long createdAtMs = parseLong(fields.get(4));
-            Long expiresAtMs = parseLong(fields.get(5));
-            Integer extensionCount = parseInt(fields.get(6));
+            scopePath = fields.get("scope_path");
+            String unit = fields.get("estimate_unit");
+            Long estimateAmount = parseLong(fields.get("estimate_amount"));
+            Long createdAtMs = parseLong(fields.get("created_at"));
+            Long expiresAtMs = parseLong(fields.get("expires_at"));
+            Integer extensionCount = parseInt(fields.get("extension_count"));
             Integer ttlMs = (createdAtMs != null && expiresAtMs != null)
                     ? (int) (expiresAtMs - createdAtMs) : null;
 
