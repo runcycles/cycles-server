@@ -39,11 +39,19 @@ delegation of all five scheduled methods. This release is marked
 `[benchmark-skip]`: all production changes are confined to background
 maintenance and metrics, with no HTTP or ledger hot-path change.
 
-Clean default and integration-profile reactor verification completed 1,194
-tests (31 model, 574 data, 589 API) with zero failures, errors, or skips. The
+Review follow-up replaced the scheduler contract's hardcoded owner list with
+a package-wide classpath scan, so a new `@Scheduled` owner fails the contract
+until it is deliberately routed through the runner. The renewal executor now
+documents its worst-case Redis-timeout queueing margin and warns at startup
+when the configured interval exceeds one-third of the lease TTL. Operations
+docs also identify the bounded maintenance metric as the replacement for
+alerts matching the former job-specific failure log strings.
+
+Clean default and integration-profile reactor verification completed 1,195
+tests (31 model, 575 data, 589 API) with zero failures, errors, or skips. The
 contract suite used the checked-out protocol YAML through the supported
 local-file override, reported 11/11 operation coverage, and JaCoCo line
-coverage was 95.13% data and 95.56% API.
+coverage was 95.14% data and 95.56% API.
 
 Version/revision 0.1.25.55 → 0.1.25.56.
 

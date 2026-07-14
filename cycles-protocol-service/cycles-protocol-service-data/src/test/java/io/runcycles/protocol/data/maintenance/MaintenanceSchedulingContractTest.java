@@ -5,10 +5,12 @@ import io.runcycles.protocol.data.repository.EventEmitterRepository;
 import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.scheduling.annotation.Scheduled;
 
 import java.lang.reflect.Field;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,16 +53,17 @@ class MaintenanceSchedulingContractTest {
 
     @Test
     void scheduledMethodAndMetricTagSetsStayFixedAndBounded() {
-        List<Class<?>> owners = List.of(
-            ReservationExpiryService.class,
-            AuditRepository.class,
-            EventEmitterRepository.class,
-            ReservationCreatedAtIndexService.class);
+        List<Class<?>> owners = findScheduledOwners();
         long scheduledMethods = owners.stream()
             .flatMap(owner -> Arrays.stream(owner.getDeclaredMethods()))
             .filter(method -> method.isAnnotationPresent(Scheduled.class))
             .count();
 
+        assertThat(owners).extracting(Class::getName).containsExactly(
+            "io.runcycles.protocol.data.repository.AuditRepository",
+            "io.runcycles.protocol.data.repository.EventEmitterRepository",
+            "io.runcycles.protocol.data.service.ReservationCreatedAtIndexService",
+            "io.runcycles.protocol.data.service.ReservationExpiryService");
         assertThat(scheduledMethods).isEqualTo(5);
         assertThat(Arrays.stream(MaintenanceJob.values()).map(MaintenanceJob::tag))
             .containsExactly(
@@ -70,6 +73,26 @@ class MaintenanceSchedulingContractTest {
             .containsExactly(
                 "success", "failed", "skipped_locked", "skipped_disabled",
                 "lease_error", "lease_lost");
+    }
+
+    private static List<Class<?>> findScheduledOwners() {
+        ClassPathScanningCandidateComponentProvider scanner =
+            new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter((metadataReader, metadataReaderFactory) ->
+            metadataReader.getAnnotationMetadata()
+                .hasAnnotatedMethods(Scheduled.class.getName()));
+        return scanner.findCandidateComponents("io.runcycles.protocol").stream()
+            .<Class<?>>map(definition -> loadClass(definition.getBeanClassName()))
+            .sorted(Comparator.comparing(Class::getName))
+            .toList();
+    }
+
+    private static Class<?> loadClass(String name) {
+        try {
+            return Class.forName(name);
+        } catch (ClassNotFoundException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private static void setField(Object target, String name, Object value) {

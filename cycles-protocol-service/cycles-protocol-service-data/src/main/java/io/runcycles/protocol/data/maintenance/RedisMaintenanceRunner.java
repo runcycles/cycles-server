@@ -52,6 +52,12 @@ public class RedisMaintenanceRunner implements AutoCloseable, DisposableBean {
     private final long leaseTtlMs;
     private final long renewIntervalMs;
     private final String instanceId = UUID.randomUUID().toString();
+    // One thread bounds maintenance-owned resources. With the default Redis
+    // settings, however, one stalled renewal may consume roughly pool wait +
+    // connect timeout + socket timeout (2s + 2s + 2s). Four stalled renewals
+    // queued ahead of a fifth can exceed the default 20s renewal margin. Jobs
+    // remain idempotent and lease loss is observable, but adding job identities
+    // or raising Redis timeouts requires re-evaluating the TTL/interval margin.
     private final ScheduledExecutorService renewer;
     private final Map<MaintenanceJob, AtomicBoolean> localRuns =
         new EnumMap<>(MaintenanceJob.class);
@@ -79,6 +85,11 @@ public class RedisMaintenanceRunner implements AutoCloseable, DisposableBean {
         if (renewIntervalMs <= 0 || renewIntervalMs >= leaseTtlMs) {
             throw new IllegalArgumentException(
                 "cycles.maintenance.renew-interval-ms must be positive and less than the lease TTL");
+        }
+        if (renewIntervalMs > leaseTtlMs / 3) {
+            LOG.warn("Scheduled Redis maintenance renewal interval leaves a narrow lease margin: "
+                    + "renew_interval_ms={} lease_ttl_ms={} recommended_max_ms={}",
+                renewIntervalMs, leaseTtlMs, leaseTtlMs / 3);
         }
         this.jedisPool = jedisPool;
         this.metrics = metrics;

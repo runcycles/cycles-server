@@ -230,6 +230,11 @@ class RedisMaintenanceRunnerIntegrationTest {
     }
 
     @Test
+    void narrowButValidRenewalMarginRemainsAllowedWithStartupWarning() {
+        assertThatCode(() -> runner(300, 150)).doesNotThrowAnyException();
+    }
+
+    @Test
     void metricsFailureCannotBreakMaintenanceOrLeakTheLease() {
         CyclesMetrics brokenMetrics = mock(CyclesMetrics.class);
         doThrow(new IllegalStateException("registry unavailable"))

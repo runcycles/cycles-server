@@ -27,6 +27,9 @@ called out but are not breaking to API clients.
 - `cycles_maintenance_runs_total{job,outcome}` and
   `cycles_maintenance_duration_seconds{job,outcome}` expose fixed-cardinality
   execution, contention, lease-loss, and failure signals.
+- Scheduled failures now use one runner-owned log message tagged by job.
+  Operators matching the former job-specific failure strings should migrate
+  to the documented `CyclesMaintenanceFailures` metric alert.
 
 ### Compatibility
 

@@ -61,6 +61,10 @@ replica normally performs a tick; another replica records `skipped_locked`.
 Lease loss does not cancel an already-running operation, so the underlying
 jobs remain idempotent. During a Redis outage, coordination is best-effort and
 the runner records `lease_error` without failing the scheduling thread.
+Scheduled-path failures now share the structured
+`Scheduled Redis maintenance failed: job=<job>` log message. Replace alerts
+matching the former job-specific failure strings with the
+`CyclesMaintenanceFailures` metric alert below.
 
 ### Reason codes
 
