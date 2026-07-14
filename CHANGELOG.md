@@ -14,6 +14,33 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.56] — 2026-07-14
+
+### Added
+
+- **Scheduled Redis maintenance is coordinated across replicas.** Reservation
+  expiry, audit retention, event retention, created-at index repair, and
+  created-at index sweeping now run through one shared per-job Redis lease.
+  Owner-token compare-and-renew/delete scripts prevent a stale instance from
+  extending or removing a successor's lease, and a bounded heartbeat keeps
+  long reconciliations exclusive beyond the initial 30-second TTL.
+- `cycles_maintenance_runs_total{job,outcome}` and
+  `cycles_maintenance_duration_seconds{job,outcome}` expose fixed-cardinality
+  execution, contention, lease-loss, and failure signals.
+- Scheduled failures now use one runner-owned log message tagged by job.
+  Operators matching the former job-specific failure strings should migrate
+  to the documented `CyclesMaintenanceFailures` metric alert.
+
+### Compatibility
+
+- No protocol schema, HTTP request/response, ledger Lua, authoritative Redis
+  row, or foreground request-path change. The new
+  `cycles:maintenance:lease:*` keys are short-lived operational coordination
+  state; every maintenance operation remains idempotent and retries on its next
+  scheduled tick after Redis or process failure.
+- Production and full-stack Compose defaults self-pin
+  `ghcr.io/runcycles/cycles-server:0.1.25.56`.
+
 ## [0.1.25.55] — 2026-07-14
 
 ### Changed

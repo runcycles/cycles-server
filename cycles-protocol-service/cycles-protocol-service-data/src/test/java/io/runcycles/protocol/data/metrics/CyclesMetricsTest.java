@@ -1,5 +1,7 @@
 package io.runcycles.protocol.data.metrics;
 
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
+import io.runcycles.protocol.data.maintenance.MaintenanceOutcome;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -124,6 +126,24 @@ class CyclesMetricsTest {
             assertThat(registry.find("cycles.reservations.created_at_index.reads")
                     .counters())
                     .allSatisfy(counter -> assertThat(counter.getId().getTag("tenant")).isNull());
+        }
+
+        @Test
+        void recordMaintenanceUsesEnumBoundedTagsAndDuration() {
+            metrics.recordMaintenance(MaintenanceJob.RESERVATION_EXPIRY,
+                MaintenanceOutcome.SUCCESS, 2_000_000L);
+
+            assertThat(countOf("cycles.maintenance.runs",
+                "job", "reservation_expiry", "outcome", "success"))
+                .isEqualTo(1.0);
+            var timer = registry.find("cycles.maintenance.duration")
+                .tag("job", "reservation_expiry")
+                .tag("outcome", "success")
+                .timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.count()).isEqualTo(1L);
+            assertThat(timer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS))
+                .isEqualTo(2.0);
         }
 
         @Test

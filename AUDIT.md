@@ -5,6 +5,58 @@
 
 ---
 
+### 2026-07-14 — v0.1.25.56: leased scheduled Redis maintenance
+
+Issue #245 closes the scheduler-coordination item from the implementation
+quality roadmap. The five Redis-backed scheduled jobs now enter through one
+`RedisMaintenanceRunner`: reservation expiry, audit pointer retention, event
+and delivery pointer retention, created-at index repair, and created-at index
+sweeping. Each job has a stable, fixed-cardinality identity and a separate
+`cycles:maintenance:lease:<job>` key, so unrelated maintenance remains
+concurrent while duplicate work across replicas is suppressed.
+
+Lease acquisition uses `SET NX PX`; renewal and release use owner-token Lua
+compare-and-expire/delete scripts. A single daemon heartbeat thread renews
+long jobs, local atomic guards suppress same-process overlap, and the owner
+cannot delete a successor after expiry or failover. Lease availability is not
+treated as a ledger correctness primitive: jobs remain idempotent, Redis
+errors are non-fatal, and the next scheduled tick retries. A lost lease is
+observable but cannot safely interrupt an arbitrary operation already in
+progress.
+
+All outcomes are bounded enums emitted through
+`cycles.maintenance.runs{job,outcome}` and
+`cycles.maintenance.duration{job,outcome}`. The runner isolates action,
+lease, heartbeat, release, and metrics failures from Spring's scheduler.
+Direct public maintenance methods remain available as non-leased test/manual
+seams; only `@Scheduled` entry points use distributed coordination.
+
+The real-Redis contract suite covers two-runner exclusion, renewal beyond the
+original TTL, stale-owner release protection, abandoned-lease recovery,
+wrong-type renewal/release failures, acquisition and action failures, metrics
+failure isolation, disabled jobs, configuration validation, and exact
+delegation of all five scheduled methods. This release is marked
+`[benchmark-skip]`: all production changes are confined to background
+maintenance and metrics, with no HTTP or ledger hot-path change.
+
+Review follow-up replaced the scheduler contract's hardcoded owner list with
+a package-wide classpath scan, so a new `@Scheduled` owner fails the contract
+until it is deliberately routed through the runner. The renewal executor now
+documents its worst-case Redis-timeout queueing margin and warns at startup
+when the configured interval exceeds one-third of the lease TTL. Operations
+docs also identify the bounded maintenance metric as the replacement for
+alerts matching the former job-specific failure log strings.
+
+Clean default and integration-profile reactor verification completed 1,195
+tests (31 model, 575 data, 589 API) with zero failures, errors, or skips. The
+contract suite used the checked-out protocol YAML through the supported
+local-file override, reported 11/11 operation coverage, and JaCoCo line
+coverage was 95.14% data and 95.56% API.
+
+Version/revision 0.1.25.55 → 0.1.25.56.
+
+---
+
 ### 2026-07-14 — v0.1.25.55: typed reservation-query boundary
 
 Issue #243 begins the implementation-quality roadmap with a behavior-preserving

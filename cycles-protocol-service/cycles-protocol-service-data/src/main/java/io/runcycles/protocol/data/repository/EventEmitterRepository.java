@@ -1,6 +1,8 @@
 package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
+import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import io.runcycles.protocol.data.service.CryptoService;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import io.runcycles.protocol.model.event.Event;
@@ -35,6 +37,7 @@ public class EventEmitterRepository {
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
     @Autowired private CryptoService cryptoService;
+    @Autowired private RedisMaintenanceRunner maintenanceRunner;
 
     @org.springframework.beans.factory.annotation.Value("${events.retention.event-ttl-days:90}")
     private int eventTtlDays;
@@ -47,7 +50,19 @@ public class EventEmitterRepository {
      * configured TTL. Redis expires the string values, not their index members.
      */
     @Scheduled(cron = "${events.retention.sweep-cron:0 30 3 * * *}")
+    public void scheduledSweepStaleIndexEntries() {
+        maintenanceRunner.run(MaintenanceJob.EVENT_RETENTION, this::sweepStaleIndexEntriesOnce);
+    }
+
     public void sweepStaleIndexEntries() {
+        try {
+            sweepStaleIndexEntriesOnce();
+        } catch (Exception e) {
+            LOG.error("Event index retention sweep failed (non-fatal; next run will retry)", e);
+        }
+    }
+
+    private void sweepStaleIndexEntriesOnce() {
         try (Jedis jedis = jedisPool.getResource()) {
             long now = Instant.now().toEpochMilli();
             long eventCutoff = now - Math.max(0L, (long) eventTtlDays) * 86_400_000L;
@@ -56,8 +71,6 @@ public class EventEmitterRepository {
             long removedDeliveries = pruneIndexes(jedis, "deliveries:*", deliveryCutoff);
             LOG.info("Event index retention sweep completed: removed_event_pointers={} removed_delivery_pointers={}",
                     removedEvents, removedDeliveries);
-        } catch (Exception e) {
-            LOG.error("Event index retention sweep failed (non-fatal; next run will retry)", e);
         }
     }
 

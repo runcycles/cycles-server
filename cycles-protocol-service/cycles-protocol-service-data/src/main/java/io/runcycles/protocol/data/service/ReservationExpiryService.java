@@ -2,6 +2,8 @@ package io.runcycles.protocol.data.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
+import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
@@ -40,6 +42,7 @@ public class ReservationExpiryService {
     @Autowired private EventEmitterService eventEmitter;
     @Autowired private CyclesMetrics metrics;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private RedisMaintenanceRunner maintenanceRunner;
 
     /** Max candidates per sweep to avoid OOM after prolonged outages. */
     private static final int SWEEP_BATCH_SIZE = 1000;
@@ -53,7 +56,19 @@ public class ReservationExpiryService {
 
     @Scheduled(fixedDelayString = "${cycles.expiry.interval-ms:5000}",
                initialDelayString = "${cycles.expiry.initial-delay-ms:5000}")
+    public void scheduledExpireReservations() {
+        maintenanceRunner.run(MaintenanceJob.RESERVATION_EXPIRY, this::expireReservationsOnce);
+    }
+
     public void expireReservations() {
+        try {
+            expireReservationsOnce();
+        } catch (Exception e) {
+            LOG.error("Expiry sweep failed", e);
+        }
+    }
+
+    private void expireReservationsOnce() {
         try (Jedis jedis = jedisPool.getResource()) {
             // Use Redis TIME (not System.currentTimeMillis) so the candidate query is
             // consistent with the Lua scripts, which all use Redis TIME internally.
@@ -103,8 +118,6 @@ public class ReservationExpiryService {
                     LOG.warn("Failed to expire reservation: {}", LogSanitizer.sanitize(reservationId), e);
                 }
             }
-        } catch (Exception e) {
-            LOG.error("Expiry sweep failed", e);
         }
     }
 

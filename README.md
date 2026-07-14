@@ -275,6 +275,8 @@ The property annotation deliberately does **not** set `tries` — the count come
 | `CYCLES_METRICS_TENANT_TAG_ENABLED` | `true` | Include tenant labels on custom domain metrics. Production Compose sets this to `false` to avoid tenant-id disclosure and high-cardinality series. |
 | `CYCLES_EVENTS_EMIT_THREADS` | `0` | Worker count for non-blocking runtime event emission. `0` uses a CPU-derived default. |
 | `CYCLES_EVENTS_EMIT_QUEUE_CAPACITY` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, only the event side effect is dropped and logged; API ledger mutations are unchanged. |
+| `CYCLES_MAINTENANCE_LEASE_TTL_MS` | `30000` | Redis lease TTL used to coordinate each scheduled maintenance job across server instances. |
+| `CYCLES_MAINTENANCE_RENEW_INTERVAL_MS` | `10000` | Lease heartbeat interval. Must be positive and lower than the maintenance lease TTL. |
 | `SPRINGDOC_API_DOCS_ENABLED` | `true` | Expose `/api-docs`. Production Compose sets this to `false`; when enabled, access requires `X-Admin-API-Key`. |
 | `SPRINGDOC_SWAGGER_UI_ENABLED` | `true` | Expose `/swagger-ui.html`. Production Compose sets this to `false`; when enabled, access requires `X-Admin-API-Key`. |
 | `redis.pool.max-total` | `128` | Max Redis connections |
@@ -333,9 +335,15 @@ protected with `X-Admin-API-Key`; configure Prometheus to send that header or
 inject it at trusted ingress. Production Compose also disables tenant labels on
 custom domain metrics by setting `CYCLES_METRICS_TENANT_TAG_ENABLED=false`.
 
-#### Domain counters (v0.1.25.11+)
+#### Domain and maintenance metrics (v0.1.25.11+)
 
-In addition to Spring Boot's auto-emitted `http_server_requests_seconds`, the service exposes seven domain-level counters under the `cycles_*` namespace (reserve / commit / release / extend / expired / events / overdraft). Operators can alert on denial rates, overdraft incidence, and per-tenant activity without reverse-engineering it from HTTP status codes.
+In addition to Spring Boot's auto-emitted `http_server_requests_seconds`, the
+service exposes domain-level counters under the `cycles_*` namespace for
+reservation lifecycle, quarantine, events, and overdraft. Since v0.1.25.56,
+`cycles_maintenance_runs_total` and `cycles_maintenance_duration_seconds`
+also expose the fixed job/outcome of every scheduled Redis-maintenance tick.
+Operators can alert on denials, overdraft incidence, quarantine, and
+maintenance failure without reverse-engineering them from HTTP status codes.
 
 Full metric inventory, tag semantics, ready-to-paste Prometheus alert rules, SLO definitions, and an incident playbook live in [`OPERATIONS.md`](OPERATIONS.md).
 
