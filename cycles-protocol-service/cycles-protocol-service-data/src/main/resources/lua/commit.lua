@@ -198,11 +198,15 @@ if compare_int(delta, "0") > 0 then
         -- Adjust charged_amount: estimate + whatever overage we could cover
         charged_amount = add_int(estimate_amount, capped_delta)
 
-        -- Mark over-limit if we couldn't cover the full delta — blocks future reservations
+        -- Mark only scopes that individually could not cover the full delta.
+        -- The minimum scope caps the operation, but healthier descendants must
+        -- remain eligible for reservations after their limiting ancestor recovers.
         if compare_int(capped_delta, delta) < 0 then
             for _, scope in ipairs(affected_scopes) do
-                local budget_key = "budget:" .. scope .. ":" .. actual_unit
-                redis.call('HSET', budget_key, 'is_over_limit', 'true')
+                if compare_int(pre_budget_state[scope].remaining, delta) < 0 then
+                    local budget_key = "budget:" .. scope .. ":" .. actual_unit
+                    redis.call('HSET', budget_key, 'is_over_limit', 'true')
+                end
             end
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
@@ -277,7 +281,8 @@ if compare_int(delta, "0") > 0 then
         -- Mark over-limit on zero-limit scopes if full delta couldn't be covered
         if compare_int(capped_delta, delta) < 0 then
             for _, scope in ipairs(affected_scopes) do
-                if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0 then
+                if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0
+                   and compare_int(scope_budget_cache[scope].remaining, delta) < 0 then
                     local budget_key = "budget:" .. scope .. ":" .. actual_unit
                     redis.call('HSET', budget_key, 'is_over_limit', 'true')
                 end

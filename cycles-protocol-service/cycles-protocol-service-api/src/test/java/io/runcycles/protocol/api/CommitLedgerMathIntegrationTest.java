@@ -6,6 +6,8 @@ import io.runcycles.protocol.model.auth.ApiKeyStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mindrot.jbcrypt.BCrypt;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
@@ -228,6 +230,63 @@ class CommitLedgerMathIntegrationTest extends BaseIntegrationTest {
             List<Map<String, Object>> balances = (List<Map<String, Object>>) eventResp.getBody().get("balances");
             assertThat(balances).isNotEmpty();
             assertThat(balances.get(0).get("is_over_limit")).isEqualTo(true);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"ALLOW_IF_AVAILABLE", "ALLOW_WITH_OVERDRAFT"})
+        void cappedCommitMarksOnlyScopesThatCannotCoverFullDelta(String policy) {
+            String parentScope = "tenant:" + TENANT_A;
+            String childScope = parentScope + "/workspace:roomy";
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedScopeBudget(jedis, parentScope, "TOKENS", 150, 0);
+                seedScopeBudget(jedis, childScope, "TOKENS", 1_000, 0);
+            }
+
+            Map<String, Object> reserve = reservationBodyWithSubject(
+                    Map.of("tenant", TENANT_A, "workspace", "roomy"), 100, "TOKENS");
+            reserve.put("overage_policy", policy);
+            ResponseEntity<Map> reserved = post("/v1/reservations", API_KEY_SECRET_A, reserve);
+            assertThat(reserved.getStatusCode().value()).isEqualTo(200);
+
+            ResponseEntity<Map> committed = post(
+                    "/v1/reservations/" + reserved.getBody().get("reservation_id") + "/commit",
+                    API_KEY_SECRET_A, commitBody(200));
+
+            assertThat(committed.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Map<?, ?>) committed.getBody().get("charged")).get("amount"))
+                    .isEqualTo(150);
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:" + parentScope + ":TOKENS", "is_over_limit"))
+                        .isEqualTo("true");
+                assertThat(jedis.hget("budget:" + childScope + ":TOKENS", "is_over_limit"))
+                        .isEqualTo("false");
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"ALLOW_IF_AVAILABLE", "ALLOW_WITH_OVERDRAFT"})
+        void cappedEventMarksOnlyScopesThatCannotCoverFullAmount(String policy) {
+            String parentScope = "tenant:" + TENANT_A;
+            String childScope = parentScope + "/workspace:roomy";
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedScopeBudget(jedis, parentScope, "TOKENS", 50, 0);
+                seedScopeBudget(jedis, childScope, "TOKENS", 950, 0);
+            }
+
+            Map<String, Object> event = eventBody(TENANT_A, 100);
+            event.put("subject", Map.of("tenant", TENANT_A, "workspace", "roomy"));
+            event.put("overage_policy", policy);
+            ResponseEntity<Map> applied = post("/v1/events", API_KEY_SECRET_A, event);
+
+            assertThat(applied.getStatusCode().value()).isEqualTo(201);
+            assertThat(((Map<?, ?>) applied.getBody().get("charged")).get("amount"))
+                    .isEqualTo(50);
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:" + parentScope + ":TOKENS", "is_over_limit"))
+                        .isEqualTo("true");
+                assertThat(jedis.hget("budget:" + childScope + ":TOKENS", "is_over_limit"))
+                        .isEqualTo("false");
+            }
         }
 
         @Test

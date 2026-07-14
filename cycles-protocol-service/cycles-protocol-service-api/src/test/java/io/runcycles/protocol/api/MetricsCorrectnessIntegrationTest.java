@@ -266,6 +266,36 @@ class MetricsCorrectnessIntegrationTest extends BaseIntegrationTest {
     }
 
     @Nested
+    @DisplayName("cycles.reservations.quarantined counter")
+    class QuarantinedCounter {
+
+        @Autowired
+        private io.runcycles.protocol.data.service.ReservationExpiryService expiryService;
+
+        @Test
+        @DisplayName("bumped with tenant and stable reason when corrupt expiry data is quarantined")
+        void quarantinedCounterCarriesReconciliationTags() {
+            String id = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
+            expireReservationInRedis(id, System.currentTimeMillis() - 60_000);
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.hdel("reservation:res_" + id, "estimate_amount");
+            }
+            double before = counterCount("cycles.reservations.quarantined",
+                    "tenant", TENANT_A, "reason", "INVALID_ESTIMATE");
+
+            expiryService.expireReservations();
+
+            assertThat(counterCount("cycles.reservations.quarantined",
+                    "tenant", TENANT_A, "reason", "INVALID_ESTIMATE") - before)
+                    .isEqualTo(1.0);
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("reservation:res_" + id, "quarantine_reason"))
+                        .isEqualTo("INVALID_ESTIMATE");
+            }
+        }
+    }
+
+    @Nested
     @DisplayName("cycles.events counter")
     class EventsCounter {
 

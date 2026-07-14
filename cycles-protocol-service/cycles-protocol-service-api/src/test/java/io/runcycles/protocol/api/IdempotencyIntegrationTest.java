@@ -1,6 +1,7 @@
 package io.runcycles.protocol.api;
 
 import io.runcycles.protocol.data.service.ReservationExpiryService;
+import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.model.auth.ApiKey;
 import io.runcycles.protocol.model.auth.ApiKeyStatus;
 import org.junit.jupiter.api.DisplayName;
@@ -15,6 +16,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import redis.clients.jedis.Jedis;
 
+import java.lang.reflect.Field;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
@@ -354,6 +356,83 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void eventReplayRepairsMissingFastCacheFromImmutableSnapshot() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            String idempotencyKey = body.get("idempotency_key").toString();
+
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
+            assertThat(original.getStatusCode().value()).isEqualTo(201);
+            String eventId = original.getBody().get("event_id").toString();
+            String idemKey = "idem:" + TENANT_A + ":event:" + idempotencyKey;
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                String snapshot = jedis.hget("event:evt_" + eventId, "event_response_json");
+                assertThat(snapshot).isNotBlank();
+                assertThat(jedis.del(idemKey + ":response")).isEqualTo(1);
+                // A synthesized replay would now expose this newer balance.
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "remaining", "123");
+            }
+
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(201);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.get(idemKey + ":response"))
+                        .isEqualTo(jedis.hget("event:evt_" + eventId, "event_response_json"));
+                long mappingTtl = jedis.pttl(idemKey);
+                long responseTtl = jedis.pttl(idemKey + ":response");
+                assertThat(responseTtl).isPositive();
+                assertThat(Math.abs(responseTtl - mappingTtl)).isLessThan(1_000);
+            }
+        }
+
+        @Test
+        void eventReplayBackfillsSnapshotWhileLegacyFastResponseStillExists() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            String idempotencyKey = body.get("idempotency_key").toString();
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
+            String eventId = original.getBody().get("event_id").toString();
+            String idemKey = "idem:" + TENANT_A + ":event:" + idempotencyKey;
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hdel("event:evt_" + eventId, "event_response_json"))
+                        .isEqualTo(1);
+                assertThat(jedis.get(idemKey + ":response")).isNotBlank();
+            }
+
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(201);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("event:evt_" + eventId, "event_response_json"))
+                        .isEqualTo(jedis.get(idemKey + ":response"));
+            }
+        }
+
+        @Test
+        void eventReplayFailsRetriablyWhenLegacyRowHasNoOriginalSnapshot() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            String idempotencyKey = body.get("idempotency_key").toString();
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
+            String eventId = original.getBody().get("event_id").toString();
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del("idem:" + TENANT_A + ":event:" + idempotencyKey + ":response");
+                jedis.hdel("event:evt_" + eventId, "event_response_json");
+            }
+
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(500);
+            assertThat(replay.getBody().get("error")).isEqualTo("INTERNAL_ERROR");
+            assertThat(replay.getBody().get("message").toString())
+                    .contains("do not retry automatically")
+                    .contains("do not", "reuse");
+        }
+
+        @Test
         void shouldHandleDryRunIdempotency() {
             Map<String, Object> body = reservationBody(TENANT_A, 1000);
             body.put("dry_run", true);
@@ -364,6 +443,172 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(resp1.getStatusCode().value()).isEqualTo(200);
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp1.getBody().get("decision")).isEqualTo(resp2.getBody().get("decision"));
+        }
+
+        @Test
+        void dryRunThenLiveReserveWithSameEndpointKeyIsMismatch() {
+            Map<String, Object> dryRun = reservationBody(TENANT_A, 1000);
+            dryRun.put("dry_run", true);
+
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+            Map<String, Object> live = new HashMap<>(dryRun);
+            live.put("dry_run", false);
+            ResponseEntity<Map> second = post("/v1/reservations", API_KEY_SECRET_A, live);
+
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            assertThat(second.getStatusCode().value()).isEqualTo(409);
+            assertThat(second.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:tenant:" + TENANT_A + ":TOKENS", "reserved"))
+                        .isEqualTo("0");
+            }
+        }
+
+        @Test
+        void liveReserveThenDryRunWithSameEndpointKeyIsMismatch() {
+            Map<String, Object> live = reservationBody(TENANT_A, 1000);
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, live);
+            Map<String, Object> dryRun = new HashMap<>(live);
+            dryRun.put("dry_run", true);
+
+            ResponseEntity<Map> second = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            assertThat(second.getStatusCode().value()).isEqualTo(409);
+            assertThat(second.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:tenant:" + TENANT_A + ":TOKENS", "reserved"))
+                        .isEqualTo("1000");
+            }
+        }
+
+        @Test
+        void dryRunRejectsLiveReservationShapeWhenHashCompanionIsMissing() {
+            Map<String, Object> live = reservationBody(TENANT_A, 1000);
+            String idempotencyKey = live.get("idempotency_key").toString();
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, live);
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.del("idem:" + TENANT_A + ":reserve:"
+                        + idempotencyKey + ":hash")).isEqualTo(1);
+            }
+            Map<String, Object> dryRun = new HashMap<>(live);
+            dryRun.put("dry_run", true);
+
+            ResponseEntity<Map> response = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+
+            assertThat(response.getStatusCode().value()).isEqualTo(409);
+            assertThat(response.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
+        @Test
+        void liveReserveRejectsDryRunShapeWhenHashCompanionIsMissing() {
+            Map<String, Object> dryRun = reservationBody(TENANT_A, 1000);
+            dryRun.put("dry_run", true);
+            String idempotencyKey = dryRun.get("idempotency_key").toString();
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.del("idem:" + TENANT_A + ":reserve:"
+                        + idempotencyKey + ":hash")).isEqualTo(1);
+            }
+            Map<String, Object> live = new HashMap<>(dryRun);
+            live.put("dry_run", false);
+
+            ResponseEntity<Map> response = post("/v1/reservations", API_KEY_SECRET_A, live);
+
+            assertThat(response.getStatusCode().value()).isEqualTo(409);
+            assertThat(response.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
+        @Test
+        void legacyDryRunNamespaceReplaysAndBlocksChangedEndpointPayloads() {
+            Map<String, Object> dryRun = reservationBody(TENANT_A, 1000);
+            dryRun.put("dry_run", true);
+            String idempotencyKey = dryRun.get("idempotency_key").toString();
+            ResponseEntity<Map> original = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+            String sharedKey = "idem:" + TENANT_A + ":reserve:" + idempotencyKey;
+            String legacyKey = "idem:" + TENANT_A + ":dry_run:" + idempotencyKey;
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.rename(sharedKey, legacyKey);
+                jedis.rename(sharedKey + ":hash", legacyKey + ":hash");
+            }
+
+            ResponseEntity<Map> replay = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+
+            Map<String, Object> changedDryRun = new HashMap<>(dryRun);
+            changedDryRun.put("estimate", Map.of("amount", 1001, "unit", "TOKENS"));
+            ResponseEntity<Map> changed = post(
+                    "/v1/reservations", API_KEY_SECRET_A, changedDryRun);
+            assertThat(changed.getStatusCode().value()).isEqualTo(409);
+
+            Map<String, Object> live = new HashMap<>(dryRun);
+            live.put("dry_run", false);
+            ResponseEntity<Map> liveResponse = post(
+                    "/v1/reservations", API_KEY_SECRET_A, live);
+            assertThat(liveResponse.getStatusCode().value()).isEqualTo(409);
+            assertThat(liveResponse.getBody().get("error"))
+                    .isEqualTo("IDEMPOTENCY_MISMATCH");
+        }
+
+        @Test
+        void liveReserveDoesNotTreatDryRunPendingMarkerAsReservationId() {
+            Map<String, Object> live = reservationBody(TENANT_A, 1000);
+            String idempotencyKey = live.get("idempotency_key").toString();
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.psetex("idem:" + TENANT_A + ":reserve:" + idempotencyKey,
+                        60_000, "__reserve_pending__:different-payload-hash:owner");
+            }
+
+            ResponseEntity<Map> response = post("/v1/reservations", API_KEY_SECRET_A, live);
+
+            assertThat(response.getStatusCode().value()).isEqualTo(409);
+            assertThat(response.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:tenant:" + TENANT_A + ":TOKENS", "reserved"))
+                        .isEqualTo("0");
+            }
+        }
+
+        @Test
+        void idempotentCacheScriptDistinguishesExpiredClaimContentionAndWrongType()
+                throws Exception {
+            Field scriptField = RedisReservationRepository.class
+                    .getDeclaredField("CACHE_IDEMPOTENT_WITH_EVIDENCE_SCRIPT");
+            scriptField.setAccessible(true);
+            String script = (String) scriptField.get(null);
+            String suffix = UUID.randomUUID().toString();
+            String idemKey = "idem:" + TENANT_A + ":reserve:cas-contract-" + suffix;
+            String hashKey = idemKey + ":hash";
+            String queueKey = "evidence:cas-contract:" + suffix;
+            String marker = "__reserve_pending__:payload-hash:owner";
+            List<String> keys = List.of(idemKey, hashKey, queueKey);
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del(idemKey, hashKey, queueKey);
+                Object expiredUncontended = jedis.eval(script, keys,
+                        List.of("payload-hash", "60000", "{\"decision\":\"ALLOW\"}",
+                                "", marker));
+                assertThat(((Number) expiredUncontended).longValue()).isEqualTo(1);
+                assertThat(jedis.get(idemKey)).isEqualTo("{\"decision\":\"ALLOW\"}");
+
+                jedis.psetex(idemKey, 60_000, "newer-owner");
+                Object contention = jedis.eval(script, keys,
+                        List.of("payload-hash", "60000", "{\"decision\":\"DENY\"}",
+                                "", marker));
+                assertThat(((Number) contention).longValue()).isZero();
+                assertThat(jedis.get(idemKey)).isEqualTo("newer-owner");
+
+                jedis.psetex(idemKey, 60_000, marker);
+                jedis.set(queueKey, "wrong-type");
+                Object wrongType = jedis.eval(script, keys,
+                        List.of("payload-hash", "60000", "{\"decision\":\"ALLOW\"}",
+                                "{}", marker));
+                assertThat(((Number) wrongType).longValue()).isEqualTo(-1);
+                assertThat(jedis.get(idemKey)).isEqualTo(marker);
+            }
         }
 
         @Test

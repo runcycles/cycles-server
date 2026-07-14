@@ -175,6 +175,16 @@ class RedisReservationCoreOpsTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldReturnRetriableErrorForPendingEndpointIdempotency() {
+            assertThatThrownBy(() -> invokeHandleScriptError(
+                    Map.of("error", "IDEMPOTENCY_PENDING")))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.INTERNAL_ERROR)
+                    .hasFieldOrPropertyWithValue("httpStatus", 500)
+                    .hasMessageContaining("still being prepared");
+        }
+
+        @Test
         void shouldThrowUnitMismatch() {
             // Legacy commit.lua path: no details in response → fall back to no-detail factory.
             assertThatThrownBy(() -> invokeHandleScriptError(

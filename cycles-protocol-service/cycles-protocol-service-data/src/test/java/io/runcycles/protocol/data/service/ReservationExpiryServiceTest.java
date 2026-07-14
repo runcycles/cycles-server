@@ -181,7 +181,9 @@ class ReservationExpiryServiceTest {
                 .thenReturn(List.of("bad-id", "next-id"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("bad-id")))
                 .thenReturn("{\"status\":\"ERROR\",\"error\":\"INTERNAL_ERROR\","
-                        + "\"message\":\"Reservation has invalid estimate data\"}");
+                        + "\"message\":\"Reservation has invalid estimate data\","
+                        + "\"quarantine_reason\":\"INVALID_ESTIMATE\","
+                        + "\"tenant\":\"tenant-a\"}");
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("next-id")))
                 .thenReturn("{\"status\":\"SKIP\",\"reason\":\"in_grace_period\"}");
 
@@ -190,7 +192,23 @@ class ReservationExpiryServiceTest {
         verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("next-id"));
         verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
         verify(metrics, never()).recordExpired(anyString());
+        verify(metrics).recordQuarantined("tenant-a", "INVALID_ESTIMATE");
         verify(jedis, never()).hmget(anyString(), any(String[].class));
+    }
+
+    @Test
+    void shouldTreatNonTextualQuarantineTenantAsUnknown() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(List.of("bad-id"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("bad-id")))
+                .thenReturn("{\"status\":\"ERROR\",\"error\":\"INTERNAL_ERROR\","
+                        + "\"message\":\"Reservation has invalid estimate data\","
+                        + "\"quarantine_reason\":\"INVALID_ESTIMATE\","
+                        + "\"tenant\":false}");
+
+        service.expireReservations();
+
+        verify(metrics).recordQuarantined(null, "INVALID_ESTIMATE");
     }
 
     @Test

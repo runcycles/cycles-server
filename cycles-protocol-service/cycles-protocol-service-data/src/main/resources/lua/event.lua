@@ -32,45 +32,30 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
+        local event_key = "event:evt_" .. existing_event_id
         local stored_response = redis.call('GET', idem_key .. ':response')
         if stored_response then
+            -- Opportunistically upgrade pre-snapshot rows while their canonical fast
+            -- response is still available. Never recreate a missing event hash or
+            -- overwrite an immutable snapshot that another replay already repaired.
+            if redis.call('TYPE', event_key).ok == 'hash' then
+                redis.call('HSETNX', event_key, 'event_response_json', stored_response)
+            end
             return stored_response
         end
         -- Spec MUST: replay returns original successful response payload.
-        -- Legacy fallback for idempotency records written before response-body caching.
-        local event_key = "event:evt_" .. existing_event_id
-        local evt = redis.call('HMGET', event_key,
-            'charged_amount', 'amount', 'unit', 'budgeted_scopes')
-        local replay = {
-            event_id = existing_event_id,
-            status = "APPLIED"
-        }
-        if evt[4] then
-            local bscopes = cjson.decode(evt[4])
-            local replay_balances = {}
-            for _, scope in ipairs(bscopes) do
-                local budget_key = "budget:" .. scope .. ":" .. evt[3]
-                local b = redis.call('HMGET', budget_key, 'remaining', 'reserved', 'spent', 'allocated', 'debt', 'overdraft_limit', 'is_over_limit')
-                table.insert(replay_balances, {
-                    scope = scope,
-                    remaining = normalize_int(b[1] or "0"),
-                    reserved = normalize_int(b[2] or "0"),
-                    spent = normalize_int(b[3] or "0"),
-                    allocated = normalize_int(b[4] or "0"),
-                    debt = normalize_int(b[5] or "0"),
-                    overdraft_limit = normalize_int(b[6] or "0"),
-                    is_over_limit = (b[7] == "true")
-                })
+        local snapshot = redis.call('HGET', event_key, 'event_response_json')
+        if snapshot then
+            local remaining_ttl = redis.call('PTTL', idem_key)
+            if remaining_ttl > 0 then
+                redis.call('PSETEX', idem_key .. ':response', remaining_ttl, snapshot)
             end
-            replay.balances = replay_balances
+            return snapshot
         end
-        -- charged present only when capping occurred
-        local ca = normalize_int(evt[1] or "0")
-        local oa = normalize_int(evt[2] or "0")
-        if compare_int(ca, oa) < 0 then
-            replay.charged = ca
-        end
-        return cjson.encode(replay)
+        -- Pre-snapshot rows cannot be reconstructed from current balances
+        -- without violating the byte-identical replay requirement.
+        return cjson.encode({error = "INTERNAL_ERROR",
+            message = "Original event idempotency response is unavailable; do not retry automatically or reuse this idempotency_key"})
     end
 end
 
@@ -244,11 +229,13 @@ if overage_policy == "ALLOW_IF_AVAILABLE" then
         capped = min_int(capped, max_int(cached.remaining, "0"))
     end
     effective_amount = capped
-    -- Mark over-limit if we couldn't cover the full amount
+    -- Mark only scopes that individually could not cover the full amount.
     if compare_int(effective_amount, amount) < 0 then
         for _, scope in ipairs(budgeted_scopes) do
-            local budget_key = "budget:" .. scope .. ":" .. unit
-            redis.call('HSET', budget_key, 'is_over_limit', 'true')
+            if compare_int(scope_budget_cache[scope].remaining, amount) < 0 then
+                local budget_key = "budget:" .. scope .. ":" .. unit
+                redis.call('HSET', budget_key, 'is_over_limit', 'true')
+            end
         end
     end
 elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
@@ -279,7 +266,8 @@ elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
     -- Mark over-limit on zero-limit scopes if full amount couldn't be covered
     if compare_int(effective_amount, amount) < 0 then
         for _, scope in ipairs(budgeted_scopes) do
-            if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0 then
+            if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0
+               and compare_int(scope_budget_cache[scope].remaining, amount) < 0 then
                 local budget_key = "budget:" .. scope .. ":" .. unit
                 redis.call('HSET', budget_key, 'is_over_limit', 'true')
             end
@@ -374,6 +362,9 @@ local result_json = cjson.encode(result)
 -- Store idempotency mapping and original response payload (expire after 7 days).
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
+    -- Durable source for exact replay when the fast response key is lost.
+    -- The event hash outlives the seven-day idempotency mapping (30 days).
+    redis.call('HSET', event_key, 'event_response_json', result_json)
     redis.call('PSETEX', idem_key, 604800000, event_id)
     redis.call('PSETEX', idem_key .. ':response', 604800000, result_json)
     -- Store payload hash for idempotency mismatch detection (spec MUST)

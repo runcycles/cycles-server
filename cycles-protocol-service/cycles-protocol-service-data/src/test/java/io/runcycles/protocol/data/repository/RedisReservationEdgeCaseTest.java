@@ -140,11 +140,11 @@ class RedisReservationEdgeCaseTest extends BaseRedisReservationRepositoryTest {
             // Mock pipeline.get() for idempotency check (pipelined in evaluateDryRun)
             Response<String> cachedResp = mock(Response.class);
             when(cachedResp.get()).thenReturn(objectMapper.writeValueAsString(cached));
-            when(pipeline.get("idem:acme:dry_run:dry-no-hash")).thenReturn(cachedResp);
+            when(pipeline.get("idem:acme:reserve:dry-no-hash")).thenReturn(cachedResp);
             // storedHash is null — no hash was stored
             Response<String> hashResp = mock(Response.class);
             when(hashResp.get()).thenReturn(null);
-            when(pipeline.get("idem:acme:dry_run:dry-no-hash:hash")).thenReturn(hashResp);
+            when(pipeline.get("idem:acme:reserve:dry-no-hash:hash")).thenReturn(hashResp);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-no-hash");

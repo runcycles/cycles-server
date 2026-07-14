@@ -194,9 +194,10 @@ On replay of a successful request with the same key, the server returns the orig
 
 | Operation | Idempotency TTL |
 |---|---|
-| Reserve | reservation TTL + grace period |
-| Commit | stored on reservation hash indefinitely |
-| Release | stored on reservation hash indefinitely |
+| Reserve (live) | reservation TTL + grace period, minimum 24 hours |
+| Reserve (`dry_run`) | 24 hours, in the same reserve endpoint namespace |
+| Commit | stored on the terminal reservation hash for 30 days |
+| Release | stored on the terminal reservation hash for 30 days |
 | Extend | remaining reservation lifetime after extension |
 | Decide | 24 hours |
 | Event | 7 days |
@@ -825,11 +826,14 @@ Immutable record of a direct debit event.
 | `subject_json` | JSON string | Full subject object |
 | `action_json` | JSON string | Action object |
 | `amount` | integer | Debit amount |
+| `charged_amount` | integer | Applied amount after available-budget capping |
 | `unit` | string | Unit enum value |
 | `scope_path` | string | Full canonical scope path |
 | `affected_scopes` | JSON string | Array of all ancestor scope paths |
+| `budgeted_scopes` | JSON string | Affected scopes that own a budget in the event unit |
 | `created_at` | integer | Creation timestamp (ms) |
 | `idempotency_key` | string | Client-provided idempotency key |
+| `event_response_json` | JSON string | Immutable original response for idempotent replay; omitted without a key |
 | `metrics_json` | JSON string | Optional metrics |
 | `client_time_ms` | string | Client-reported timestamp (advisory) |
 | `metadata_json` | JSON string | Optional client metadata |
@@ -838,13 +842,18 @@ Immutable record of a direct debit event.
 
 | Pattern | TTL |
 |---|---|
-| `idem:{tenant}:reserve:{key}` | reservation TTL + grace period (min 24h) |
+| `idem:{tenant}:reserve:{key}` | 24h for dry-run; live reservation TTL + grace period (min 24h) |
 | `idem:{tenant}:extend:{reservationId}:{key}` | remaining reservation lifetime after extension |
 | `idem:{tenant}:decide:{key}` | 24 hours |
-| `idem:{tenant}:dry_run:{key}` | 24 hours |
 | `idem:{tenant}:event:{key}` | 7 days |
 
-Commit and release idempotency is stored inline on the reservation hash (fields `committed_idempotency_key`/`committed_payload_hash` and `released_idempotency_key`/`released_payload_hash`) rather than as separate Redis keys. Each idempotency key also has a companion `…:hash` key storing the SHA-256 payload hash for mismatch detection.
+Dry-run and live reserve intentionally share the reserve pattern because they are
+representations of the same endpoint; changing `dry_run` while reusing a key is
+an idempotency mismatch. Commit and release idempotency is stored inline on the
+reservation hash (fields `committed_idempotency_key`/`committed_payload_hash`
+and `released_idempotency_key`/`released_payload_hash`) rather than as separate
+Redis keys. Each standalone idempotency key also has a companion `…:hash` key
+storing the SHA-256 payload hash for mismatch detection.
 
 ### API key and tenant storage
 

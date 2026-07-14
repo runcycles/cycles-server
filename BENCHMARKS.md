@@ -39,7 +39,66 @@ running them would only measure environmental noise. Skipped releases:
   Benchmarks deliberately skipped — they would only measure
   environmental noise. [benchmark-skip]
 
-Last benchmarked release: **v0.1.25.7**.
+Last benchmarked release: **v0.1.25.51**.
+
+---
+
+## v0.1.25.51 — Protocol-correct idempotency, replay, and expiry quarantine
+
+**Date:** 2026-07-14
+
+**Tag:** `v0.1.25.51` *(PR #238; tag after merge)*
+
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X
+64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Method:** Median of three complete `mvn test -Pbenchmark` trials; each trial
+completed all write, read, and concurrency benchmarks with zero errors.
+
+**Hot-path changes:** reserve and dry-run now share endpoint idempotency state;
+live reserve performs a compatibility lookup for pre-v0.1.25.51 dry-run keys,
+and keyed events retain/backfill an immutable replay snapshot. The follow-up
+review also hardened claim expiry and value-shape handling. Expiry quarantine
+metadata and metrics are off the request hot path.
+
+### Single-Threaded Write-Path Latency (three-run medians)
+
+| Operation | p50 | p95 | p99 | min | max | mean |
+|---|---:|---:|---:|---:|---:|---:|
+| Extend | 12.2ms | 14.2ms | 16.0ms | 9.9ms | 40.4ms | 12.3ms |
+| Reserve + Commit | 23.9ms | 26.7ms | 33.7ms | 18.2ms | 51.7ms | 23.8ms |
+| Reserve + Release | 21.2ms | 25.2ms | 27.3ms | 17.9ms | 52.3ms | 21.4ms |
+| Release | 8.7ms | 10.6ms | 11.7ms | 7.0ms | 16.8ms | 8.9ms |
+| Reserve | 8.5ms | 9.9ms | 12.2ms | 6.9ms | 37.7ms | 8.7ms |
+| Event | 8.0ms | 9.1ms | 10.0ms | 6.5ms | 35.6ms | 8.2ms |
+| Commit | 8.2ms | 9.4ms | 12.4ms | 6.4ms | 24.7ms | 8.2ms |
+| Decide | 9.3ms | 10.8ms | 12.4ms | 7.4ms | 35.6ms | 9.5ms |
+
+### Single-Threaded Read-Path Latency (three-run medians)
+
+| Operation | p50 | p95 | p99 | min | max | mean |
+|---|---:|---:|---:|---:|---:|---:|
+| GET reservation | 7.0ms | 8.2ms | 9.4ms | 5.2ms | 10.1ms | 7.0ms |
+| GET balances | 7.0ms | 8.1ms | 8.8ms | 5.3ms | 38.1ms | 7.2ms |
+| LIST reservations | 8.1ms | 9.6ms | 10.1ms | 6.6ms | 39.2ms | 8.2ms |
+| Decide (pipelined) | 9.9ms | 11.5ms | 12.5ms | 7.9ms | 43.8ms | 10.1ms |
+
+### Concurrent Throughput (Reserve + Commit lifecycle; three-run medians)
+
+| Threads | Total Ops | Ops/sec | p50 | p95 | p99 | min | max | Errors |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 2,001 | 400.2 | 19.6ms | 23.0ms | 29.7ms | 15.2ms | 74.3ms | 0 |
+| 16 | 4,172 | 834.4 | 18.8ms | 23.1ms | 32.6ms | 14.8ms | 61.6ms | 0 |
+| 32 | 6,554 | 1,310.8 | 23.1ms | 34.1ms | 52.3ms | 15.9ms | 86.5ms | 0 |
+
+**Regression assessment:** The previous same-host v0.1.25.50 medians recorded
+in `AUDIT.md` were reserve/commit/release p50 of 14.5/13.7/14.3ms and
+32-thread throughput of 698.2 ops/s. The current medians are
+-41.4%/-40.1%/-39.2% and +87.7%, respectively. The unusually favorable deltas
+are attributed to environment/container warmth, not to this correctness patch;
+the meaningful conclusion is that the additional compatibility lookup and
+snapshot handling caused no measurable regression. The shared-runner rolling
+median remains the release authority.
 
 ---
 
