@@ -101,3 +101,21 @@ end
 local function max_int(a, b)
     return compare_int(a, b) >= 0 and a or b
 end
+
+-- Mark only scopes whose pre-mutation balance could not cover the requested
+-- amount. zero_limit_only implements ALLOW_WITH_OVERDRAFT's specified
+-- fallback-to-ALLOW_IF_AVAILABLE behavior without marking funded overdraft
+-- scopes. Callers pass their already-hydrated budget state, so this adds no
+-- reads to the mutation path.
+local function mark_uncovered_scopes(scopes, budget_state, required_amount,
+                                     unit, zero_limit_only)
+    for _, scope in ipairs(scopes) do
+        local state = budget_state[scope]
+        local eligible = not zero_limit_only
+            or compare_int(state.overdraft_limit or "0", "0") == 0
+        if eligible and compare_int(state.remaining, required_amount) < 0 then
+            local budget_key = "budget:" .. scope .. ":" .. unit
+            redis.call('HSET', budget_key, 'is_over_limit', 'true')
+        end
+    end
+end

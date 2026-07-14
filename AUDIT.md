@@ -5,6 +5,56 @@
 
 ---
 
+### 2026-07-14 — v0.1.25.52: replay-storage and ledger-helper follow-up
+
+This non-behavioral follow-up closes the two intentionally deferred cleanup
+items from the v0.1.25.51 review while preserving its compatibility bridges and
+protocol semantics.
+
+**One event response body.** v0.1.25.51 made `event_response_json` on the
+30-day event hash the immutable source of truth, but continued writing the same
+JSON to a seven-day `idem:<tenant>:event:<key>:response` string. New keyed
+events now write only the hash snapshot plus the small id mapping and payload
+hash. Replay reads the snapshot first, so the normal path remains one Redis
+lookup and avoids a response-sized write, key, and memory copy. If the snapshot
+is absent, the script still consults the old response string, returns it
+byte-identically, and uses `HSETNX` to backfill an existing event hash. A
+protected `HGET` keeps that legacy response usable even when the event key has
+an incompatible Redis type; missing hashes are never recreated.
+
+**One uncovered-scope rule.** The normative per-scope marking predicate was
+copied across the available-only and zero-overdraft branches in both
+`commit.lua` and `event.lua`. All four call sites now use
+`mark_uncovered_scopes` from the shared exact-int prelude. Callers pass their
+already hydrated pre-mutation state, required amount, unit, and whether only
+zero-limit scopes are eligible, so the refactor adds no Redis reads and retains
+the exact signed-int64 comparisons introduced in v0.1.25.50.
+
+The pre-v0.1.25.51 dry-run namespace bridge remains intentionally supported:
+removing it on a calendar deadline would break a later direct upgrade from an
+older server. The sorted-reservation O(N) read path also remains a separately
+documented scaling design rather than being mixed into this low-risk cleanup.
+
+Version/revision 0.1.25.51 → 0.1.25.52. Both production compose variants pin
+the matching image. There is no public schema or successful-response change.
+
+**Validation.** `mvn clean verify -Pintegration-tests` completed 1,143 tests
+(31 model, 533 data, 579 API) with zero failures, errors, or skips. The local
+authoritative protocol checkout passed all 11 declared operations. JaCoCo line
+coverage is 95.12% data and 95.56% API. Focused real-Redis tests additionally
+pin snapshot-only event replay, legacy fast-key backfill, wrong-type legacy
+fallback, and both policies' hierarchical per-scope marking. Both production
+Compose files pass `docker compose config --quiet` with required secrets set.
+
+Three complete benchmark-profile trials passed all 15 cases with zero
+concurrency errors. Median reserve/commit/release/event p50 was
+9.6/8.5/9.2/8.8 ms and 32-thread throughput was 1,421.8 ops/s. Relative to the
+v0.1.25.51 same-host medians, the latency changes were
++12.9%/+3.7%/+5.7%/+10.0% and throughput improved 8.5%; all are below the 25%
+regression threshold and distributed across untouched paths. The measurable
+benefit is storage/write amplification: one fewer response-sized write and
+expiring Redis key per new keyed event.
+
 ### 2026-07-13 — v0.1.25.51: protocol correctness follow-up
 
 The post-release audit of v0.1.25.50 found four behavioral gaps that structural

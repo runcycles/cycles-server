@@ -127,6 +127,26 @@ class RedisConfigTest {
     }
 
     @Test
+    @DisplayName("should prepend one shared uncovered-scope marker to ledger scripts")
+    void shouldComposeLedgerScriptsWithSharedUncoveredScopeMarker() throws Exception {
+        List<String> scripts = List.of(
+            redisConfig.reserveLuaScript(), redisConfig.commitLuaScript(),
+            redisConfig.releaseLuaScript(), redisConfig.extendLuaScript(),
+            redisConfig.eventLuaScript(), redisConfig.expireLuaScript());
+
+        assertThat(scripts).allSatisfy(script -> {
+            String definition = "local function mark_uncovered_scopes(";
+            assertThat(script).contains(definition);
+            assertThat(script.indexOf(definition)).isEqualTo(script.lastIndexOf(definition));
+        });
+        assertThat(redisConfig.commitLuaScript())
+            .contains("mark_uncovered_scopes(affected_scopes, pre_budget_state")
+            .contains("mark_uncovered_scopes(affected_scopes, scope_budget_cache");
+        assertThat(redisConfig.eventLuaScript())
+            .contains("mark_uncovered_scopes(budgeted_scopes, scope_budget_cache");
+    }
+
+    @Test
     @DisplayName("reserve pending-marker prefix should match the Java claim writer")
     void reservePendingPrefixMatchesJavaClaimWriter() throws Exception {
         Method pendingPrefix = RedisReservationRepository.class

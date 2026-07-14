@@ -33,24 +33,23 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
             end
         end
         local event_key = "event:evt_" .. existing_event_id
-        local stored_response = redis.call('GET', idem_key .. ':response')
-        if stored_response then
-            -- Opportunistically upgrade pre-snapshot rows while their canonical fast
+        -- Spec MUST: replay returns original successful response payload.
+        -- New rows keep one canonical body on the event hash. redis.pcall preserves
+        -- the legacy fast-response fallback if an old/corrupt event key has the wrong
+        -- Redis type instead of turning an otherwise replayable request into WRONGTYPE.
+        local snapshot = redis.pcall('HGET', event_key, 'event_response_json')
+        if type(snapshot) == 'string' then
+            return snapshot
+        end
+        local legacy_response = redis.call('GET', idem_key .. ':response')
+        if legacy_response then
+            -- Opportunistically upgrade pre-snapshot rows while their canonical legacy
             -- response is still available. Never recreate a missing event hash or
             -- overwrite an immutable snapshot that another replay already repaired.
             if redis.call('TYPE', event_key).ok == 'hash' then
-                redis.call('HSETNX', event_key, 'event_response_json', stored_response)
+                redis.call('HSETNX', event_key, 'event_response_json', legacy_response)
             end
-            return stored_response
-        end
-        -- Spec MUST: replay returns original successful response payload.
-        local snapshot = redis.call('HGET', event_key, 'event_response_json')
-        if snapshot then
-            local remaining_ttl = redis.call('PTTL', idem_key)
-            if remaining_ttl > 0 then
-                redis.call('PSETEX', idem_key .. ':response', remaining_ttl, snapshot)
-            end
-            return snapshot
+            return legacy_response
         end
         -- Pre-snapshot rows cannot be reconstructed from current balances
         -- without violating the byte-identical replay requirement.
@@ -231,12 +230,8 @@ if overage_policy == "ALLOW_IF_AVAILABLE" then
     effective_amount = capped
     -- Mark only scopes that individually could not cover the full amount.
     if compare_int(effective_amount, amount) < 0 then
-        for _, scope in ipairs(budgeted_scopes) do
-            if compare_int(scope_budget_cache[scope].remaining, amount) < 0 then
-                local budget_key = "budget:" .. scope .. ":" .. unit
-                redis.call('HSET', budget_key, 'is_over_limit', 'true')
-            end
-        end
+        mark_uncovered_scopes(budgeted_scopes, scope_budget_cache, amount,
+            unit, false)
     end
 elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
     -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
@@ -265,13 +260,8 @@ elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
     end
     -- Mark over-limit on zero-limit scopes if full amount couldn't be covered
     if compare_int(effective_amount, amount) < 0 then
-        for _, scope in ipairs(budgeted_scopes) do
-            if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0
-               and compare_int(scope_budget_cache[scope].remaining, amount) < 0 then
-                local budget_key = "budget:" .. scope .. ":" .. unit
-                redis.call('HSET', budget_key, 'is_over_limit', 'true')
-            end
-        end
+        mark_uncovered_scopes(budgeted_scopes, scope_budget_cache, amount,
+            unit, true)
     end
 end
 
@@ -362,11 +352,12 @@ local result_json = cjson.encode(result)
 -- Store idempotency mapping and original response payload (expire after 7 days).
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
-    -- Durable source for exact replay when the fast response key is lost.
+    -- Single canonical source for exact replay. Pre-v0.1.25.52 rows may still
+    -- carry a legacy :response key, which the replay branch reads only when this
+    -- snapshot is absent and then backfills here.
     -- The event hash outlives the seven-day idempotency mapping (30 days).
     redis.call('HSET', event_key, 'event_response_json', result_json)
     redis.call('PSETEX', idem_key, 604800000, event_id)
-    redis.call('PSETEX', idem_key .. ':response', 604800000, result_json)
     -- Store payload hash for idempotency mismatch detection (spec MUST)
     if payload_hash ~= "" then
         redis.call('PSETEX', idem_key .. ':hash', 604800000, payload_hash)

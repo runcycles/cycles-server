@@ -356,7 +356,7 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void eventReplayRepairsMissingFastCacheFromImmutableSnapshot() {
+        void eventReplayUsesSingleImmutableSnapshotWithoutFastCache() {
             Map<String, Object> body = eventBody(TENANT_A, 500);
             String idempotencyKey = body.get("idempotency_key").toString();
 
@@ -368,7 +368,7 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             try (Jedis jedis = jedisPool.getResource()) {
                 String snapshot = jedis.hget("event:evt_" + eventId, "event_response_json");
                 assertThat(snapshot).isNotBlank();
-                assertThat(jedis.del(idemKey + ":response")).isEqualTo(1);
+                assertThat(jedis.exists(idemKey + ":response")).isFalse();
                 // A synthesized replay would now expose this newer balance.
                 jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "remaining", "123");
             }
@@ -378,12 +378,10 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(replay.getStatusCode().value()).isEqualTo(201);
             assertThat(replay.getBody()).isEqualTo(original.getBody());
             try (Jedis jedis = jedisPool.getResource()) {
-                assertThat(jedis.get(idemKey + ":response"))
-                        .isEqualTo(jedis.hget("event:evt_" + eventId, "event_response_json"));
-                long mappingTtl = jedis.pttl(idemKey);
-                long responseTtl = jedis.pttl(idemKey + ":response");
-                assertThat(responseTtl).isPositive();
-                assertThat(Math.abs(responseTtl - mappingTtl)).isLessThan(1_000);
+                assertThat(jedis.exists(idemKey + ":response")).isFalse();
+                assertThat(jedis.hget("event:evt_" + eventId, "event_response_json"))
+                        .isNotBlank();
+                assertThat(jedis.pttl(idemKey)).isPositive();
             }
         }
 
@@ -396,9 +394,12 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             String idemKey = "idem:" + TENANT_A + ":event:" + idempotencyKey;
 
             try (Jedis jedis = jedisPool.getResource()) {
+                String originalSnapshot = jedis.hget(
+                        "event:evt_" + eventId, "event_response_json");
+                assertThat(originalSnapshot).isNotBlank();
                 assertThat(jedis.hdel("event:evt_" + eventId, "event_response_json"))
                         .isEqualTo(1);
-                assertThat(jedis.get(idemKey + ":response")).isNotBlank();
+                jedis.psetex(idemKey + ":response", jedis.pttl(idemKey), originalSnapshot);
             }
 
             ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
@@ -409,6 +410,28 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
                 assertThat(jedis.hget("event:evt_" + eventId, "event_response_json"))
                         .isEqualTo(jedis.get(idemKey + ":response"));
             }
+        }
+
+        @Test
+        void eventReplayUsesLegacyFastResponseWhenEventHashHasWrongType() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            String idempotencyKey = body.get("idempotency_key").toString();
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
+            String eventId = original.getBody().get("event_id").toString();
+            String idemKey = "idem:" + TENANT_A + ":event:" + idempotencyKey;
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                String originalSnapshot = jedis.hget(
+                        "event:evt_" + eventId, "event_response_json");
+                jedis.del("event:evt_" + eventId);
+                jedis.set("event:evt_" + eventId, "wrong-type");
+                jedis.psetex(idemKey + ":response", jedis.pttl(idemKey), originalSnapshot);
+            }
+
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(201);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 
         @Test

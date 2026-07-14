@@ -853,7 +853,10 @@ an idempotency mismatch. Commit and release idempotency is stored inline on the
 reservation hash (fields `committed_idempotency_key`/`committed_payload_hash`
 and `released_idempotency_key`/`released_payload_hash`) rather than as separate
 Redis keys. Each standalone idempotency key also has a companion `…:hash` key
-storing the SHA-256 payload hash for mismatch detection.
+storing the SHA-256 payload hash for mismatch detection. Keyed events keep their
+canonical response in the event hash's `event_response_json` field. Readers
+retain a fallback for the pre-0.1.25.52 `…:response` string and backfill the
+event snapshot when that legacy body is still available.
 
 ### API key and tenant storage
 

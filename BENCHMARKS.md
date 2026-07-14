@@ -39,7 +39,67 @@ running them would only measure environmental noise. Skipped releases:
   Benchmarks deliberately skipped — they would only measure
   environmental noise. [benchmark-skip]
 
-Last benchmarked release: **v0.1.25.51**.
+Last benchmarked release: **v0.1.25.52**.
+
+---
+
+## v0.1.25.52 — Event replay storage and ledger-helper cleanup
+
+**Date:** 2026-07-14
+
+**Tag:** `v0.1.25.52` *(follow-up PR; tag after merge)*
+
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X
+64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Method:** Median of three complete `mvn test -Pbenchmark` trials; each trial
+completed all write, read, and concurrency benchmarks with zero errors.
+
+**Hot-path changes:** new keyed events write one immutable response snapshot on
+the event hash instead of also writing a response-sized fast key. Normal event
+replays read that snapshot in one Redis command; only pre-0.1.25.52 rows without
+a snapshot consult the legacy fast key. Commit/event capped-charge branches call
+one shared per-scope marker using their already hydrated state, adding no Redis
+reads.
+
+### Single-Threaded Write-Path Latency (three-run medians)
+
+| Operation | p50 | p95 | p99 | min | max | mean |
+|---|---:|---:|---:|---:|---:|---:|
+| Extend | 10.5ms | 13.0ms | 14.3ms | 8.1ms | 19.4ms | 10.7ms |
+| Reserve + Commit | 22.5ms | 26.7ms | 27.5ms | 19.8ms | 32.1ms | 22.9ms |
+| Reserve + Release | 19.5ms | 23.7ms | 26.2ms | 15.8ms | 31.1ms | 19.8ms |
+| Release | 9.2ms | 10.5ms | 11.5ms | 7.6ms | 15.0ms | 9.3ms |
+| Reserve | 9.6ms | 11.2ms | 13.0ms | 7.9ms | 14.9ms | 9.8ms |
+| Event | 8.8ms | 10.4ms | 11.1ms | 7.1ms | 16.4ms | 9.0ms |
+| Commit | 8.5ms | 10.5ms | 11.7ms | 6.9ms | 11.9ms | 8.8ms |
+| Decide | 10.4ms | 12.5ms | 14.0ms | 8.7ms | 14.5ms | 10.7ms |
+
+### Single-Threaded Read-Path Latency (three-run medians)
+
+| Operation | p50 | p95 | p99 | min | max | mean |
+|---|---:|---:|---:|---:|---:|---:|
+| GET reservation | 6.1ms | 7.5ms | 8.4ms | 5.0ms | 9.2ms | 6.2ms |
+| GET balances | 6.3ms | 7.7ms | 8.3ms | 5.2ms | 9.0ms | 6.4ms |
+| LIST reservations | 7.1ms | 8.5ms | 9.5ms | 5.8ms | 10.1ms | 7.2ms |
+| Decide (pipelined) | 8.5ms | 9.9ms | 11.5ms | 6.9ms | 12.3ms | 8.5ms |
+
+### Concurrent Throughput (Reserve + Commit lifecycle; three-run medians)
+
+| Threads | Total Ops | Ops/sec | p50 | p95 | p99 | min | max | Errors |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 2,102 | 420.4 | 18.9ms | 22.3ms | 25.9ms | 14.4ms | 33.1ms | 0 |
+| 16 | 4,262 | 852.4 | 18.6ms | 22.7ms | 24.7ms | 13.6ms | 29.7ms | 0 |
+| 32 | 7,109 | 1,421.8 | 21.8ms | 28.1ms | 35.1ms | 15.4ms | 58.0ms | 0 |
+
+**Regression assessment:** Against the immediately preceding v0.1.25.51
+same-host medians, reserve/commit/release/event p50 changed
++12.9%/+3.7%/+5.7%/+10.0%, while 32-thread throughput improved 8.5%. All
+changes are below the 25% regression threshold and are distributed across
+untouched operations, indicating ordinary host/container variance rather than
+a regression. The intended event optimization removes one response-sized write
+and expiring key; the request-latency benchmark is neutral within measurement
+noise. The release workflow's shared-runner rolling median remains authoritative.
 
 ---
 
