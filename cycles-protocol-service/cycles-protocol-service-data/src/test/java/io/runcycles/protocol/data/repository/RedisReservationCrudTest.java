@@ -952,6 +952,57 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
         }
 
         @Test
+        void shouldRejectLiveReservationIdShapeWhenHashCompanionIsMissing() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            Response<String> liveReservationId = mock(Response.class);
+            when(liveReservationId.get()).thenReturn("9c5f8ed4-dc3d-4dbc-b292-59c8d6a20f03");
+            when(pipeline.get("idem:acme:reserve:live-shape")).thenReturn(liveReservationId);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("live-shape");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.IDEMPOTENCY_MISMATCH);
+        }
+
+        @Test
+        void shouldReplayPreSharedNamespaceDryRunEntry() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+
+            ReservationCreateResponse cached = ReservationCreateResponse.builder()
+                    .decision(Enums.DecisionEnum.ALLOW)
+                    .affectedScopes(defaultScopes())
+                    .scopePath("tenant:acme/app:myapp")
+                    .build();
+            Response<String> legacyBody = mock(Response.class);
+            when(legacyBody.get()).thenReturn(objectMapper.writeValueAsString(cached));
+            when(pipeline.get("idem:acme:dry_run:legacy-dry")).thenReturn(legacyBody);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("legacy-dry");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            ReservationCreateResponse replay = repository.createReservation(request, "acme");
+
+            assertThat(replay.isIdempotentReplay()).isTrue();
+            assertThat(replay.getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            verify(jedis, never()).set(anyString(), anyString(), any(SetParams.class));
+        }
+
+        @Test
         void shouldWaitForPendingDryRunIdempotencyResultAndReplayWithoutReemitting() throws Exception {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
@@ -1129,6 +1180,33 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             verify(evidenceEmitter, times(1)).prepare(eq("reserve"), anyLong(), any(), any());
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(metrics).recordEvidenceEmitFailed("reserve");
+        }
+
+        @Test
+        void shouldReportLostClaimWithoutMisclassifyingEvidenceQueue() throws Exception {
+            when(jedisPool.getResource()).thenReturn(jedis);
+            doNothing().when(jedis).close();
+            when(scopeService.deriveScopes(any())).thenReturn(defaultScopes());
+            mockBudget("budget:tenant:acme:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            mockBudget("budget:tenant:acme/app:myapp:USD_MICROCENTS", budgetMap(10000, 8000, 0, 2000));
+            when(evidenceEmitter.prepare(eq("reserve"), anyLong(), any(), any()))
+                    .thenReturn(new io.runcycles.protocol.data.service.EvidenceEmitter.PreparedEvidence(
+                            new io.runcycles.protocol.data.service.EvidenceEmitter.EvidenceRef(
+                                    "a".repeat(64),
+                                    "https://cycles.example.com/v1/evidence/" + "a".repeat(64)), "{}"));
+            when(jedis.eval(contains("PSETEX"), anyList(), anyList())).thenReturn(0L);
+
+            ReservationCreateRequest request = new ReservationCreateRequest();
+            request.setIdempotencyKey("dry-lost-claim");
+            request.setSubject(defaultSubject());
+            request.setAction(defaultAction());
+            request.setEstimate(defaultEstimate());
+            request.setDryRun(true);
+
+            assertThatThrownBy(() -> repository.createReservation(request, "acme"))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .hasMessageContaining("persist idempotency response");
+            verify(metrics, never()).recordEvidenceEmitFailed("reserve");
         }
 
         @Test

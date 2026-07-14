@@ -24,7 +24,10 @@ called out but are not breaking to API clients.
   `409 IDEMPOTENCY_MISMATCH` instead of evaluating or mutating independently.
   Live reserve recognizes an in-flight dry-run marker, and non-persisting
   evaluators compare-and-set their completed body so an expired claim cannot
-  overwrite a newer winner.
+  overwrite a newer winner. An expired, uncontested claim can still publish a
+  successful response, value-shape checks preserve 409 behavior if the
+  companion payload hash is lost, and a legacy `dry_run` namespace bridge
+  preserves pre-upgrade results for their remaining 24-hour lifetime.
 - **Capped hierarchical charges mark only constrained scopes over-limit.**
   Commit and direct-event paths no longer copy the limiting ancestor's
   `is_over_limit=true` state onto healthy descendants. This applies to
@@ -33,18 +36,27 @@ called out but are not breaking to API clients.
 - **Event replays remain byte-identical after fast-cache loss.** Idempotent
   events store the original Lua response in the 30-day event hash and repair
   the seven-day fast response key from that immutable snapshot. Legacy rows
-  without either source return a retriable 500 rather than synthesizing a body
-  from current balances.
+  backfill the snapshot when their fast response is still available. Rows
+  without either source return a fail-closed 500 that warns clients not to
+  retry automatically or reuse the key, rather than synthesizing a body from
+  current balances.
 - **Corrupt expiry scope data is quarantined.** Missing, malformed, empty, or
   non-string scope lists cannot finalize a reservation without refunding its
   held budget. The script removes the poison candidate from the bounded TTL
-  sweep while preserving ACTIVE state and ledger values for reconciliation.
+  sweep while preserving ACTIVE state and ledger values for reconciliation,
+  stamps `quarantined_at` plus a bounded `quarantine_reason`, and increments
+  `cycles.reservations.quarantined` with tenant/reason tags.
 
 ### Compatibility
 
 - No request or successful-response schema changes. Production and full-stack
   compose defaults self-pin
   `ghcr.io/runcycles/cycles-server:0.1.25.51`.
+- During a mixed-version rolling deployment, an older pod can temporarily
+  interpret the new reserve pending marker as an unavailable replay and return
+  a retriable 500 for the marker's at-most-60-second lifetime. The documented
+  production topology is single-instance; upgraded pods interoperate with
+  pre-upgrade dry-run cache entries through the 24-hour legacy bridge.
 
 ## [0.1.25.50] — 2026-07-13
 

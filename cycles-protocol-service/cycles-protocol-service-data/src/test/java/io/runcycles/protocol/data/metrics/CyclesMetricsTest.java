@@ -100,6 +100,18 @@ class CyclesMetricsTest {
         }
 
         @Test
+        void recordQuarantinedTagsTenantAndBoundedReason() {
+            metrics.recordQuarantined("tenant-a", "INVALID_ESTIMATE");
+            metrics.recordQuarantined("tenant-a", "MISSING_SCOPES");
+            assertThat(countOf("cycles.reservations.quarantined",
+                    "tenant", "tenant-a", "reason", "INVALID_ESTIMATE"))
+                    .isEqualTo(1.0);
+            assertThat(countOf("cycles.reservations.quarantined",
+                    "tenant", "tenant-a", "reason", "MISSING_SCOPES"))
+                    .isEqualTo(1.0);
+        }
+
+        @Test
         void recordEventTagsAllFourDimensions() {
             metrics.recordEvent("tenant-a", "APPLIED", "OK", "ALLOW_IF_AVAILABLE");
             assertThat(countOf("cycles.events",

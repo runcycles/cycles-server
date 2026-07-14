@@ -35,6 +35,7 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 | `cycles_reservations_release_total` | `tenant`, `actor_type`, `decision`, `reason` | Every release. `actor_type=tenant` vs `admin_on_behalf_of` (v0.1.25.8+). |
 | `cycles_reservations_extend_total` | `tenant`, `decision`, `reason` | Every extend attempt. `reason=RESERVATION_EXPIRED` when past `expires_at` (no grace honoured for extend). |
 | `cycles_reservations_expired_total` | `tenant` | Once per ACTIVE→EXPIRED transition. Grace-period skips and already-finalised candidates do **not** increment. |
+| `cycles_reservations_quarantined_total` | `tenant`, `reason` | Corrupt ACTIVE reservations removed from the bounded expiry queue without changing ledger state. Reasons are bounded: `INVALID_EXPIRY`, `INVALID_ESTIMATE`, `MISSING_SCOPES`, or `MALFORMED_SCOPES`. Any increase requires reconciliation of the reservation hash and its held budget. |
 
 ### Events
 

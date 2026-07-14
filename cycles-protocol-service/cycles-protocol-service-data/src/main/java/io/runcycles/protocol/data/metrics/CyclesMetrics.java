@@ -111,6 +111,17 @@ public class CyclesMetrics {
                 .increment();
     }
 
+    /**
+     * Bumped when expiry removes a corrupt ACTIVE reservation from the bounded
+     * sweep index without changing its ledger. The bounded reason tag matches
+     * the durable {@code quarantine_reason} stored on the reservation hash.
+     */
+    public void recordQuarantined(String tenant, String reason) {
+        registry.counter("cycles.reservations.quarantined",
+                tags(tenant, "reason", reason))
+                .increment();
+    }
+
     // ---- Events ----
 
     /** Emitted on every {@code POST /v1/events} outcome. */

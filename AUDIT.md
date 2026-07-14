@@ -21,7 +21,14 @@ The live Lua script understands the temporary dry-run pending marker and
 validates its embedded payload hash, while the Java completion script
 compare-and-sets the claim owner before publishing the body/evidence. This
 also prevents an evaluator whose 60-second claim expired from overwriting a
-new live reservation or another evaluation winner.
+new live reservation or another evaluation winner. The completion CAS accepts
+an expired claim only while the key is still absent, so an uncontested slow
+evaluation does not become a false 500; any non-null replacement remains a
+winner. UUID-vs-JSON value-shape checks preserve the required 409 even when the
+independently stored payload hash is lost. Upgraded readers also consult the
+old `idem:<tenant>:dry_run:<key>` namespace in the existing Redis pipeline/Lua
+execution, preserving pre-upgrade dry-run responses for their remaining
+at-most-24-hour lifetime.
 
 **Per-scope over-limit fidelity.** Hierarchical `ALLOW_IF_AVAILABLE` charges are
 capped by the minimum remaining balance, but the old scripts marked every
@@ -36,9 +43,11 @@ separate seven-day keys. If only the response disappeared, the legacy fallback
 read current budget hashes and returned a body that could differ from the
 original success. Idempotent events now also store `event_response_json` on the
 30-day event hash. Replay repairs the fast key with the mapping's remaining TTL
-and returns that immutable snapshot. A pre-snapshot row whose fast response is
-also absent fails with the existing retriable INTERNAL_ERROR contract rather
-than presenting synthesized state as the original response.
+and returns that immutable snapshot. Replaying a pre-snapshot row while its
+fast response still exists backfills the durable field opportunistically. If
+both sources are absent, replay fails closed with INTERNAL_ERROR and explicit
+instructions not to retry automatically or reuse the key, rather than
+presenting synthesized state as the original response.
 
 **Expiry corruption quarantine.** The existing estimate guard quarantined
 invalid amounts, but a missing or undecodable scope list was treated as an
@@ -46,28 +55,40 @@ empty list and the reservation was marked EXPIRED without refunding budget.
 Expiry now requires a non-empty JSON array of non-empty string scopes before
 mutation. Invalid expiry timestamps and grace values use the same quarantine
 helper. Every corruption path removes the row from `reservation:ttl`, keeps it
-ACTIVE, leaves budgets untouched, and is surfaced by the service's WARN log.
+ACTIVE, leaves budgets untouched, stamps `quarantined_at` and a bounded
+`quarantine_reason`, increments `cycles.reservations.quarantined` with tenant
+and reason tags, and is surfaced by the service's WARN log.
+
+**Rolling deployment note.** Older pods do not understand the new shared
+reserve pending-marker format and can return a retriable 500 while such a
+marker exists (at most 60 seconds). The supported Compose topology is a single
+runtime instance. Upgraded pods safely read both the old dry-run namespace and
+the new shared namespace during the 24-hour cache transition.
 
 Version/revision 0.1.25.50 → 0.1.25.51. Both production compose variants pin
 the matching image.
 
-**Validation.** Final module verification completed 1,126 tests (31 model,
-526 data, 569 API) with zero failures, errors, or skips. The integration profile
+**Validation.** Final module verification completed 1,140 tests (31 model,
+531 data, 578 API) with zero failures, errors, or skips. The integration profile
 validated all 11 declared operations against the local v0.1.25.15 protocol
-checkout; JaCoCo line coverage was 95.09% data and 95.56% API. Targeted
+checkout; JaCoCo line coverage was 95.11% data and 95.56% API. Targeted
 real-Redis cases cover both dry/live idempotency directions, the pending-marker
-guard, immutable event-cache repair and its pre-snapshot failure mode,
-hierarchical capping under both available-only policies, and five malformed
-scope representations during expiry.
+guard including claim expiry and wrong-type separation, legacy namespace replay,
+hashless value-shape mismatch, immutable event-cache repair/backfill and its
+pre-snapshot failure mode, hierarchical capping under both available-only
+policies, durable quarantine metadata/metrics, and malformed expiry, estimate,
+and scope representations.
 
-Three benchmark-profile trials completed all benchmarks with zero concurrent
-errors. Median reserve/commit/release/event p50 was
-13.0/12.5/12.0/12.2 ms and 32-thread throughput was 784.2 ops/s. Against the
+Three post-review benchmark-profile trials completed all benchmarks with zero
+concurrent errors. Median reserve/commit/release/event p50 was
+8.5/8.2/8.7/8.0 ms and 32-thread throughput was 1,310.8 ops/s. Against the
 v0.1.25.50 same-host medians recorded below, reserve/commit/release changed
--10.3%/-8.8%/-16.1% and throughput improved 12.3%; all are favorable and well
-inside the 25% release threshold. The extra idempotent-event snapshot HSET did
-not produce a measurable regression; the formal shared-runner rolling-median
-gate remains authoritative at release time.
+-41.4%/-40.1%/-39.2% and throughput improved 87.7%. These large favorable
+deltas reflect host/container warmth rather than a claimed optimization, but
+they rule out a regression from the legacy compatibility reads and replay
+hardening. `BENCHMARKS.md` now carries the complete write/read/concurrency
+median tables; the formal shared-runner rolling-median gate remains
+authoritative at release time.
 
 ### 2026-07-13 — v0.1.25.50: replay storage and int64 follow-up (#236)
 
@@ -2013,7 +2034,9 @@ Two-pass audit covering:
 - Per-endpoint namespacing in all Lua scripts:
   - `idem:{tenant}:reserve:{key}` (reserve.lua)
   - `idem:{tenant}:decide:{key}` (repository Java code)
-  - `idem:{tenant}:dry_run:{key}` (repository Java code)
+  - Dry-run shares `idem:{tenant}:reserve:{key}` with live reserve; upgraded
+    readers retain a compatibility read for legacy `idem:{tenant}:dry_run:{key}`
+    entries until their 24-hour TTL elapses
   - `idem:{tenant}:event:{key}` (event.lua)
   - `idem:{tenant}:extend:{reservation_id}:{key}` (extend.lua)
   - Commit/release: stored on reservation hash itself (per-reservation)

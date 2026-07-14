@@ -2,6 +2,7 @@ package io.runcycles.protocol.data.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,7 @@ import org.springframework.boot.info.BuildProperties;
 import redis.clients.jedis.JedisPool;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Properties;
 
@@ -122,6 +124,18 @@ class RedisConfigTest {
             assertThat(script.indexOf("local function normalize_int(value)"))
                 .isEqualTo(script.lastIndexOf("local function normalize_int(value)"));
         });
+    }
+
+    @Test
+    @DisplayName("reserve pending-marker prefix should match the Java claim writer")
+    void reservePendingPrefixMatchesJavaClaimWriter() throws Exception {
+        Method pendingPrefix = RedisReservationRepository.class
+                .getDeclaredMethod("pendingPrefix", String.class);
+        pendingPrefix.setAccessible(true);
+        String javaPrefix = (String) pendingPrefix.invoke(null, "reserve");
+
+        assertThat(redisConfig.reserveLuaScript())
+                .contains("local pending_prefix = \"" + javaPrefix + "\"");
     }
 
     @Test

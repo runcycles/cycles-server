@@ -32,12 +32,18 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
+        local event_key = "event:evt_" .. existing_event_id
         local stored_response = redis.call('GET', idem_key .. ':response')
         if stored_response then
+            -- Opportunistically upgrade pre-snapshot rows while their canonical fast
+            -- response is still available. Never recreate a missing event hash or
+            -- overwrite an immutable snapshot that another replay already repaired.
+            if redis.call('TYPE', event_key).ok == 'hash' then
+                redis.call('HSETNX', event_key, 'event_response_json', stored_response)
+            end
             return stored_response
         end
         -- Spec MUST: replay returns original successful response payload.
-        local event_key = "event:evt_" .. existing_event_id
         local snapshot = redis.call('HGET', event_key, 'event_response_json')
         if snapshot then
             local remaining_ttl = redis.call('PTTL', idem_key)
@@ -49,7 +55,7 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
         -- Pre-snapshot rows cannot be reconstructed from current balances
         -- without violating the byte-identical replay requirement.
         return cjson.encode({error = "INTERNAL_ERROR",
-            message = "Original event idempotency response is unavailable; retry with the same idempotency_key"})
+            message = "Original event idempotency response is unavailable; do not retry automatically or reuse this idempotency_key"})
     end
 end
 

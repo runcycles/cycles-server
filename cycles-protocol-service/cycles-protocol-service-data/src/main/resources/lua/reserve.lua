@@ -41,6 +41,12 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
             end
             return cjson.encode({error = "IDEMPOTENCY_PENDING"})
         end
+        -- The shared endpoint key stores a UUID for live reserve and a JSON body
+        -- for dry-run. A JSON value therefore proves that this live request changed
+        -- dry_run, even when the independently-evicted :hash companion is absent.
+        if string.match(existing_res_id, "^%s*{") then
+            return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+        end
         -- Spec MUST: detect payload mismatch on idempotent replay
         if payload_hash ~= "" then
             local stored_hash = redis.call('GET', idem_key .. ':hash')
@@ -54,6 +60,15 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
             response_snapshot = redis.call('HGET', 'reservation:res_' .. existing_res_id, 'reserve_response_json'),
             response_cache_ttl_ms = redis.call('PTTL', idem_key)
         })
+    end
+
+    -- Rolling-upgrade bridge for dry-run results written before live and dry-run
+    -- began sharing the reserve endpoint namespace. Legacy entries expire within
+    -- 24 hours. Their presence proves this live request changed dry_run, including
+    -- the hashless legacy case, so it must be rejected rather than charged.
+    local legacy_dry_run_key = "idem:" .. tenant .. ":dry_run:" .. idempotency_key
+    if redis.call('GET', legacy_dry_run_key) then
+        return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
     end
 end
 -- Governance CASCADE SEMANTICS Rule 2 (cycles-governance-admin-v0.1.25):

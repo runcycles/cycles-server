@@ -92,9 +92,11 @@ public class RedisReservationRepository {
         "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
             "return redis.call('DEL', KEYS[1]) else return 0 end";
     private static final String CACHE_IDEMPOTENT_WITH_EVIDENCE_SCRIPT =
-        "if redis.call('GET', KEYS[1]) ~= ARGV[5] then return 0 end " +
+        "if ARGV[5] == '' then return 0 end " +
+        "local current = redis.call('GET', KEYS[1]) " +
+        "if current and current ~= ARGV[5] then return 0 end " +
         "if ARGV[4] ~= '' then local qt = redis.call('TYPE', KEYS[3]).ok " +
-        "if qt ~= 'none' and qt ~= 'list' then return 0 end end " +
+        "if qt ~= 'none' and qt ~= 'list' then return -1 end end " +
         "if ARGV[1] ~= '' then redis.call('PSETEX', KEYS[2], ARGV[2], ARGV[1]) end " +
         "redis.call('PSETEX', KEYS[1], ARGV[2], ARGV[3]) " +
         "if ARGV[4] ~= '' then redis.call('LPUSH', KEYS[3], ARGV[4]) end return 1";
@@ -353,6 +355,15 @@ public class RedisReservationRepository {
         Pipeline idemPipe = jedis.pipelined();
         Response<String> cachedResp = idemPipe.get(idemKey);
         Response<String> hashResp = idemPipe.get(idemKey + ":hash");
+        String legacyDryRunKey = "reserve".equals(kind)
+            ? idempotencyCacheKey("dry_run", tenant, idempotencyKey)
+            : null;
+        Response<String> legacyDryRunResp = legacyDryRunKey != null
+            ? idemPipe.get(legacyDryRunKey)
+            : null;
+        Response<String> legacyDryRunHashResp = legacyDryRunKey != null
+            ? idemPipe.get(legacyDryRunKey + ":hash")
+            : null;
         idemPipe.sync();
         String cached = cachedResp.get();
         if (cached != null) {
@@ -361,7 +372,24 @@ public class RedisReservationRepository {
                 return IdemClaim.waiting();
             }
             validateCachedHash(hashResp.get(), payloadHash);
+            // The shared reserve key has two durable value shapes: live requests store a
+            // reservation UUID while dry-runs store the canonical JSON response. Reaching the
+            // Java dry-run reader with a non-JSON value proves the same endpoint key was first
+            // used by a live request, even if the independently-expiring :hash companion was
+            // lost. Fail as a payload mismatch instead of repeatedly trying to parse the UUID.
+            if ("reserve".equals(kind) && !isJsonObject(cached)) {
+                throw CyclesProtocolException.idempotencyMismatch();
+            }
             return IdemClaim.replay(cached);
+        }
+        // Rolling-upgrade bridge for pre-v0.1.25.51 dry-run entries. Those rows live for at
+        // most 24 hours; reading them in the same pipeline preserves their original response
+        // and mismatch semantics without adding a Redis round trip. Live reserve performs the
+        // symmetric legacy check inside reserve.lua.
+        String legacyDryRunBody = legacyDryRunResp != null ? legacyDryRunResp.get() : null;
+        if (legacyDryRunBody != null) {
+            validateCachedHash(legacyDryRunHashResp.get(), payloadHash);
+            return IdemClaim.replay(legacyDryRunBody);
         }
         String marker = pendingMarker(kind, payloadHash);
         String claim = jedis.set(idemKey, marker,
@@ -374,6 +402,10 @@ public class RedisReservationRepository {
                 && storedHash != null && !storedHash.equals(payloadHash)) {
             throw CyclesProtocolException.idempotencyMismatch();
         }
+    }
+
+    private static boolean isJsonObject(String value) {
+        return value != null && value.stripLeading().startsWith("{");
     }
 
     private ReservationCreateResponse createDryRunReservation(ReservationCreateRequest request,
@@ -1024,7 +1056,16 @@ public class RedisReservationRepository {
                     objectMapper.writeValueAsString(response),
                     prepared == null ? "" : prepared.recordJson(),
                     claimMarker == null ? "" : claimMarker));
-            if (!(result instanceof Number number) || number.longValue() != 1L) {
+            if (!(result instanceof Number number)) {
+                throw new IllegalStateException("idempotency cache script returned a non-numeric result");
+            }
+            if (number.longValue() == 0L) {
+                LOG.warn("Idempotency claim ownership was lost before response publication: "
+                                + "kind={} tenant={} idempotency_key_present={}",
+                        kind, LogSanitizer.sanitize(tenant), true);
+                return false;
+            }
+            if (number.longValue() != 1L) {
                 throw new IllegalStateException("evidence queue has an incompatible Redis type");
             }
             return true;

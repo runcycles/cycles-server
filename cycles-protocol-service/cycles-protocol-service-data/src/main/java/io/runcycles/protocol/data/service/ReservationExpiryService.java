@@ -83,11 +83,16 @@ public class ReservationExpiryService {
                     JsonNode resultNode = objectMapper.readTree(
                             result != null ? result.toString() : "");
                     if ("ERROR".equals(resultNode.path("status").asText())) {
+                        String quarantineReason = resultNode.path("quarantine_reason")
+                                .asText("UNKNOWN");
                         LOG.warn("Expiry quarantined reservation after Lua error: "
-                                        + "reservation_id={} error={} message={}",
+                                        + "reservation_id={} reason={} error={} message={}",
                                 LogSanitizer.sanitize(reservationId),
+                                LogSanitizer.sanitize(quarantineReason),
                                 LogSanitizer.sanitize(resultNode.path("error").asText()),
                                 LogSanitizer.sanitize(resultNode.path("message").asText()));
+                        metrics.recordQuarantined(
+                                resultNode.path("tenant").asText(null), quarantineReason);
                         continue;
                     }
                     // Emit reservation.expired event if the Lua script actually expired this reservation
