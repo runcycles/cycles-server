@@ -354,6 +354,56 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
+        void eventReplayRepairsMissingFastCacheFromImmutableSnapshot() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            String idempotencyKey = body.get("idempotency_key").toString();
+
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
+            assertThat(original.getStatusCode().value()).isEqualTo(201);
+            String eventId = original.getBody().get("event_id").toString();
+            String idemKey = "idem:" + TENANT_A + ":event:" + idempotencyKey;
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                String snapshot = jedis.hget("event:evt_" + eventId, "event_response_json");
+                assertThat(snapshot).isNotBlank();
+                assertThat(jedis.del(idemKey + ":response")).isEqualTo(1);
+                // A synthesized replay would now expose this newer balance.
+                jedis.hset("budget:tenant:" + TENANT_A + ":TOKENS", "remaining", "123");
+            }
+
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(201);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.get(idemKey + ":response"))
+                        .isEqualTo(jedis.hget("event:evt_" + eventId, "event_response_json"));
+                long mappingTtl = jedis.pttl(idemKey);
+                long responseTtl = jedis.pttl(idemKey + ":response");
+                assertThat(responseTtl).isPositive();
+                assertThat(Math.abs(responseTtl - mappingTtl)).isLessThan(1_000);
+            }
+        }
+
+        @Test
+        void eventReplayFailsRetriablyWhenLegacyRowHasNoOriginalSnapshot() {
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            String idempotencyKey = body.get("idempotency_key").toString();
+            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
+            String eventId = original.getBody().get("event_id").toString();
+
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.del("idem:" + TENANT_A + ":event:" + idempotencyKey + ":response");
+                jedis.hdel("event:evt_" + eventId, "event_response_json");
+            }
+
+            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(500);
+            assertThat(replay.getBody().get("error")).isEqualTo("INTERNAL_ERROR");
+        }
+
+        @Test
         void shouldHandleDryRunIdempotency() {
             Map<String, Object> body = reservationBody(TENANT_A, 1000);
             body.put("dry_run", true);
@@ -364,6 +414,62 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             assertThat(resp1.getStatusCode().value()).isEqualTo(200);
             assertThat(resp2.getStatusCode().value()).isEqualTo(200);
             assertThat(resp1.getBody().get("decision")).isEqualTo(resp2.getBody().get("decision"));
+        }
+
+        @Test
+        void dryRunThenLiveReserveWithSameEndpointKeyIsMismatch() {
+            Map<String, Object> dryRun = reservationBody(TENANT_A, 1000);
+            dryRun.put("dry_run", true);
+
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+            Map<String, Object> live = new HashMap<>(dryRun);
+            live.put("dry_run", false);
+            ResponseEntity<Map> second = post("/v1/reservations", API_KEY_SECRET_A, live);
+
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            assertThat(second.getStatusCode().value()).isEqualTo(409);
+            assertThat(second.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:tenant:" + TENANT_A + ":TOKENS", "reserved"))
+                        .isEqualTo("0");
+            }
+        }
+
+        @Test
+        void liveReserveThenDryRunWithSameEndpointKeyIsMismatch() {
+            Map<String, Object> live = reservationBody(TENANT_A, 1000);
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, live);
+            Map<String, Object> dryRun = new HashMap<>(live);
+            dryRun.put("dry_run", true);
+
+            ResponseEntity<Map> second = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
+
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            assertThat(second.getStatusCode().value()).isEqualTo(409);
+            assertThat(second.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:tenant:" + TENANT_A + ":TOKENS", "reserved"))
+                        .isEqualTo("1000");
+            }
+        }
+
+        @Test
+        void liveReserveDoesNotTreatDryRunPendingMarkerAsReservationId() {
+            Map<String, Object> live = reservationBody(TENANT_A, 1000);
+            String idempotencyKey = live.get("idempotency_key").toString();
+            try (Jedis jedis = jedisPool.getResource()) {
+                jedis.psetex("idem:" + TENANT_A + ":reserve:" + idempotencyKey,
+                        60_000, "__reserve_pending__:different-payload-hash:owner");
+            }
+
+            ResponseEntity<Map> response = post("/v1/reservations", API_KEY_SECRET_A, live);
+
+            assertThat(response.getStatusCode().value()).isEqualTo(409);
+            assertThat(response.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
+            try (Jedis jedis = jedisPool.getResource()) {
+                assertThat(jedis.hget("budget:tenant:" + TENANT_A + ":TOKENS", "reserved"))
+                        .isEqualTo("0");
+            }
         }
 
         @Test

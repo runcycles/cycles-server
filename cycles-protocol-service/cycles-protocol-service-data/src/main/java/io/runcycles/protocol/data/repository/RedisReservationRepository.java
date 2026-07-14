@@ -82,7 +82,7 @@ public class RedisReservationRepository {
     // reservation hash that drives the Lua replay.
     private static final long TERMINAL_BODY_CACHE_TTL_MS = 2_592_000_000L;
     private static final int RESERVE_BODY_CACHE_WAIT_ATTEMPTS = 4;
-    // Shared by the non-persisting idempotent-evaluation path (dry_run + decide): a fresh
+    // Shared by the non-persisting idempotent-evaluation path (reserve dry_run + decide): a fresh
     // evaluator atomically claims `idem:<tenant>:<kind>:<key>` with a pending marker, others
     // wait for the cached result. Marker prefix is per-kind (`__<kind>_pending__:`).
     private static final int IDEMPOTENT_EVAL_WAIT_ATTEMPTS = 4;
@@ -92,6 +92,7 @@ public class RedisReservationRepository {
         "if redis.call('GET', KEYS[1]) == ARGV[1] then " +
             "return redis.call('DEL', KEYS[1]) else return 0 end";
     private static final String CACHE_IDEMPOTENT_WITH_EVIDENCE_SCRIPT =
+        "if redis.call('GET', KEYS[1]) ~= ARGV[5] then return 0 end " +
         "if ARGV[4] ~= '' then local qt = redis.call('TYPE', KEYS[3]).ok " +
         "if qt ~= 'none' and qt ~= 'list' then return 0 end end " +
         "if ARGV[1] ~= '' then redis.call('PSETEX', KEYS[2], ARGV[2], ARGV[1]) end " +
@@ -143,7 +144,8 @@ public class RedisReservationRepository {
             // dry_run: evaluate budget without persisting a reservation. Its ALLOW/DENY
             // outcome IS captured as `reserve` evidence (cycles-evidence-v0.1) — a dry_run
             // DENY is the canonical signed "would this be allowed?" attestation. On a fresh
-            // evaluation, stamp evidence + cache the full body (keyed by the dry_run idem key)
+            // evaluation, stamp evidence + cache the full body in the reserve endpoint's shared
+            // idempotency namespace, so changing dry_run with the same key is a mismatch.
             // so a replay returns the ORIGINAL stamped payload; a replay is returned verbatim.
             if (Boolean.TRUE.equals(request.getDryRun())) {
                 List<String> affectedScopes = scopeService.deriveScopes(request.getSubject());
@@ -385,7 +387,7 @@ public class RedisReservationRepository {
         }
 
         if (dryRun.pending()) {
-            String body = waitForIdempotentReplayBody("dry_run", dryRun.claimKey(), dryRun.payloadHash());
+            String body = waitForIdempotentReplayBody("reserve", dryRun.claimKey(), dryRun.payloadHash());
             if (body != null) {
                 ReservationCreateResponse replay = objectMapper.readValue(body, ReservationCreateResponse.class);
                 replay.setIdempotentReplay(true);
@@ -405,8 +407,8 @@ public class RedisReservationRepository {
             if (prepared != null) {
                 dryRunResponse.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
             }
-            boolean cached = cacheIdempotentBody("dry_run", tenant, request.getIdempotencyKey(),
-                computePayloadHash(request), dryRunResponse, prepared);
+            boolean cached = cacheIdempotentBody("reserve", tenant, request.getIdempotencyKey(),
+                computePayloadHash(request), dryRunResponse, prepared, dryRun.claimMarker());
             if (!cached) {
                 dryRunResponse.setCyclesEvidence(null);
                 clearIdempotencyClaim(dryRun.claimKey(), dryRun.claimMarker());
@@ -838,7 +840,9 @@ public class RedisReservationRepository {
         String dryRunClaimKey = null;
         String dryRunClaimMarker = null;
         try {
-            IdemClaim claim = acquireIdempotencyClaim(jedis, "dry_run", tenant, idempotencyKey, payloadHash);
+            // dry_run is a representation of POST /v1/reservations, not a separate endpoint.
+            // Share the live reserve namespace so changing dry_run with the same key is rejected.
+            IdemClaim claim = acquireIdempotencyClaim(jedis, "reserve", tenant, idempotencyKey, payloadHash);
             if (claim.cachedBody() != null) {
                 ReservationCreateResponse replay =
                     objectMapper.readValue(claim.cachedBody(), ReservationCreateResponse.class);
@@ -847,7 +851,7 @@ public class RedisReservationRepository {
             }
             if (claim.pending()) {
                 return DryRunResult.pending(
-                    idempotencyCacheKey("dry_run", tenant, idempotencyKey), payloadHash);
+                    idempotencyCacheKey("reserve", tenant, idempotencyKey), payloadHash);
             }
             dryRunClaimKey = claim.claimKey();
             dryRunClaimMarker = claim.claimMarker();
@@ -1006,7 +1010,8 @@ public class RedisReservationRepository {
      *  the caller can clear the pending claim. No-op (true) without an idempotency_key. */
     private boolean cacheIdempotentBody(String kind, String tenant, String idempotencyKey,
                                         String payloadHash, Object response,
-                                        EvidenceEmitter.PreparedEvidence prepared) {
+                                        EvidenceEmitter.PreparedEvidence prepared,
+                                        String claimMarker) {
         if (idempotencyKey == null || idempotencyKey.isEmpty()) {
             return true;
         }
@@ -1017,7 +1022,8 @@ public class RedisReservationRepository {
                 List.of(payloadHash == null ? "" : payloadHash,
                     String.valueOf(IDEMPOTENCY_CACHE_TTL_MS),
                     objectMapper.writeValueAsString(response),
-                    prepared == null ? "" : prepared.recordJson()));
+                    prepared == null ? "" : prepared.recordJson(),
+                    claimMarker == null ? "" : claimMarker));
             if (!(result instanceof Number number) || number.longValue() != 1L) {
                 throw new IllegalStateException("evidence queue has an incompatible Redis type");
             }
@@ -1026,7 +1032,7 @@ public class RedisReservationRepository {
             LOG.warn("Failed to cache idempotent response: kind={} tenant={} idempotency_key_present={} ttl_ms={} error={}",
                     kind, LogSanitizer.sanitize(tenant), true, IDEMPOTENCY_CACHE_TTL_MS, LogSanitizer.sanitize(e.toString()), e);
             if (prepared != null) {
-                metrics.recordEvidenceEmitFailed("dry_run".equals(kind) ? "reserve" : kind);
+                metrics.recordEvidenceEmitFailed(kind);
             }
             return false;
         }
@@ -2138,7 +2144,7 @@ public class RedisReservationRepository {
                 response.setCyclesEvidence(toCyclesEvidenceRef(prepared.ref()));
             }
             if (!cacheIdempotentBody("decide", tenant, idempotencyKey, payloadHash,
-                    response, prepared)) {
+                    response, prepared, claim.claimMarker())) {
                 response.setCyclesEvidence(null);
                 clearIdempotencyClaim(claim.claimKey(), claim.claimMarker());
                 throw idempotencyResponsePersistenceFailed();
@@ -2813,6 +2819,8 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.tenantClosed(closedTenant);
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
+            case "IDEMPOTENCY_PENDING":
+                throw idempotencyStillPending();
             case "UNIT_MISMATCH": {
                 // reserve.lua and event.lua populate scope/requested_unit/expected_units so the
                 // client can self-correct. commit.lua does not (legacy), so fall back to the

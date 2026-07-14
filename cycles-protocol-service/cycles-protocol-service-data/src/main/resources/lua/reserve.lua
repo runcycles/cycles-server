@@ -28,6 +28,19 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
     local existing_res_id = redis.call('GET', idem_key)
 
     if existing_res_id then
+        -- dry_run and live reserve share the endpoint idempotency namespace. A
+        -- dry_run evaluator temporarily owns the key with a marker that embeds
+        -- its payload hash. Never mistake that marker for a reservation id.
+        local pending_prefix = "__reserve_pending__:"
+        if string.sub(existing_res_id, 1, string.len(pending_prefix)) == pending_prefix then
+            local marker_body = string.sub(existing_res_id, string.len(pending_prefix) + 1)
+            local separator = string.find(marker_body, ":", 1, true)
+            local pending_hash = separator and string.sub(marker_body, 1, separator - 1) or marker_body
+            if payload_hash ~= "" and pending_hash ~= "" and pending_hash ~= payload_hash then
+                return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
+            end
+            return cjson.encode({error = "IDEMPOTENCY_PENDING"})
+        end
         -- Spec MUST: detect payload mismatch on idempotent replay
         if payload_hash ~= "" then
             local stored_hash = redis.call('GET', idem_key .. ':hash')

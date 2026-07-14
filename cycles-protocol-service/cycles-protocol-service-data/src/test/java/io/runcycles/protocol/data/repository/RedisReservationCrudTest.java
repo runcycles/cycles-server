@@ -909,7 +909,7 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             // Mock pipeline.get() for idempotency check (pipelined in evaluateDryRun)
             Response<String> cachedResp = mock(Response.class);
             when(cachedResp.get()).thenReturn(objectMapper.writeValueAsString(cached));
-            when(pipeline.get("idem:acme:dry_run:dry-cached")).thenReturn(cachedResp);
+            when(pipeline.get("idem:acme:reserve:dry-cached")).thenReturn(cachedResp);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-cached");
@@ -934,10 +934,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             // Mock pipeline.get() for idempotency check (pipelined in evaluateDryRun)
             Response<String> cachedResp = mock(Response.class);
             when(cachedResp.get()).thenReturn("{\"decision\":\"ALLOW\"}");
-            when(pipeline.get("idem:acme:dry_run:dry-mismatch")).thenReturn(cachedResp);
+            when(pipeline.get("idem:acme:reserve:dry-mismatch")).thenReturn(cachedResp);
             Response<String> hashResp = mock(Response.class);
             when(hashResp.get()).thenReturn("stale-hash-value");
-            when(pipeline.get("idem:acme:dry_run:dry-mismatch:hash")).thenReturn(hashResp);
+            when(pipeline.get("idem:acme:reserve:dry-mismatch:hash")).thenReturn(hashResp);
 
             ReservationCreateRequest request = new ReservationCreateRequest();
             request.setIdempotencyKey("dry-mismatch");
@@ -976,11 +976,11 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                     .build();
 
             Response<String> pendingResp = mock(Response.class);
-            when(pendingResp.get()).thenReturn("__dry_run_pending__:" + payloadHash);
-            when(pipeline.get("idem:acme:dry_run:dry-pending")).thenReturn(pendingResp);
-            when(jedis.get("idem:acme:dry_run:dry-pending"))
+            when(pendingResp.get()).thenReturn("__reserve_pending__:" + payloadHash);
+            when(pipeline.get("idem:acme:reserve:dry-pending")).thenReturn(pendingResp);
+            when(jedis.get("idem:acme:reserve:dry-pending"))
                     .thenReturn(objectMapper.writeValueAsString(cached));
-            when(jedis.get("idem:acme:dry_run:dry-pending:hash")).thenReturn(payloadHash);
+            when(jedis.get("idem:acme:reserve:dry-pending:hash")).thenReturn(payloadHash);
 
             ReservationCreateResponse response = repository.createReservation(request, "acme");
 
@@ -988,10 +988,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             assertThat(response.getCyclesEvidence().getEvidenceId()).isEqualTo("e".repeat(64));
             org.mockito.InOrder order = inOrder(jedis);
             order.verify(jedis).close();
-            order.verify(jedis).get("idem:acme:dry_run:dry-pending");
+            order.verify(jedis).get("idem:acme:reserve:dry-pending");
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
             verify(pipeline, never()).hgetAll(startsWith("budget:"));
-            verify(pipeline, never()).psetex(eq("idem:acme:dry_run:dry-pending"), eq(86400000L), anyString());
+            verify(pipeline, never()).psetex(eq("idem:acme:reserve:dry-pending"), eq(86400000L), anyString());
         }
 
         @Test
@@ -1009,10 +1009,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
             String payloadHash = invokeComputePayloadHash(request);
 
             Response<String> pendingResp = mock(Response.class);
-            when(pendingResp.get()).thenReturn("__dry_run_pending__:" + payloadHash);
-            when(pipeline.get("idem:acme:dry_run:dry-still-pending")).thenReturn(pendingResp);
-            when(jedis.get("idem:acme:dry_run:dry-still-pending"))
-                    .thenReturn("__dry_run_pending__:" + payloadHash);
+            when(pendingResp.get()).thenReturn("__reserve_pending__:" + payloadHash);
+            when(pipeline.get("idem:acme:reserve:dry-still-pending")).thenReturn(pendingResp);
+            when(jedis.get("idem:acme:reserve:dry-still-pending"))
+                    .thenReturn("__reserve_pending__:" + payloadHash);
 
             assertThatThrownBy(() -> repository.createReservation(request, "acme"))
                     .isInstanceOf(CyclesProtocolException.class)
@@ -1061,10 +1061,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
 
             repository.createReservation(request, "acme");
 
-            verify(jedis).set(eq("idem:acme:dry_run:dry-store"), startsWith("__dry_run_pending__:"),
+            verify(jedis).set(eq("idem:acme:reserve:dry-store"), startsWith("__reserve_pending__:"),
                     any(SetParams.class));
             verify(jedis).eval(contains("PSETEX"),
-                    eq(List.of("idem:acme:dry_run:dry-store", "idem:acme:dry_run:dry-store:hash", "evidence:pending")),
+                    eq(List.of("idem:acme:reserve:dry-store", "idem:acme:reserve:dry-store:hash", "evidence:pending")),
                     anyList());
         }
 
@@ -1121,10 +1121,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                     .hasMessageContaining("persist idempotency response");
 
             org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
-            verify(jedis).set(eq("idem:acme:dry_run:dry-cache-fail"), markerCaptor.capture(),
+            verify(jedis).set(eq("idem:acme:reserve:dry-cache-fail"), markerCaptor.capture(),
                     any(SetParams.class));
             verify(jedis).eval(contains("redis.call('GET'"),
-                    eq(List.of("idem:acme:dry_run:dry-cache-fail")),
+                    eq(List.of("idem:acme:reserve:dry-cache-fail")),
                     eq(List.of(markerCaptor.getValue())));
             verify(evidenceEmitter, times(1)).prepare(eq("reserve"), anyLong(), any(), any());
             verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
@@ -1152,10 +1152,10 @@ class RedisReservationCrudTest extends BaseRedisReservationRepositoryTest {
                     .hasRootCauseInstanceOf(NumberFormatException.class);
 
             org.mockito.ArgumentCaptor<String> markerCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
-            verify(jedis).set(eq("idem:acme:dry_run:dry-eval-fail"), markerCaptor.capture(),
+            verify(jedis).set(eq("idem:acme:reserve:dry-eval-fail"), markerCaptor.capture(),
                     any(SetParams.class));
             verify(jedis).eval(contains("redis.call('GET'"),
-                    eq(List.of("idem:acme:dry_run:dry-eval-fail")),
+                    eq(List.of("idem:acme:reserve:dry-eval-fail")),
                     eq(List.of(markerCaptor.getValue())));
             // Pool-nesting guard: the eval-failure clear runs on the already-held evaluation
             // connection, so a failing dry-run checks out exactly ONE pooled connection. If the

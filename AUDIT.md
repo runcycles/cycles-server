@@ -5,6 +5,70 @@
 
 ---
 
+### 2026-07-13 — v0.1.25.51: protocol correctness follow-up
+
+The post-release audit of v0.1.25.50 found four behavioral gaps that structural
+OpenAPI diffing cannot detect. This patch keeps the wire schema unchanged and
+fixes them inside the existing Java/Lua atomic units.
+
+**One reserve endpoint, one idempotency namespace.** The protocol keys
+idempotency by effective tenant and endpoint. `dry_run` is a request field on
+`POST /v1/reservations`, but the server previously used separate `reserve` and
+`dry_run` Redis namespaces. A client could therefore evaluate a dry-run and
+then reuse the same key for a live mutation instead of receiving the required
+payload-mismatch conflict. Both forms now use `idem:<tenant>:reserve:<key>`.
+The live Lua script understands the temporary dry-run pending marker and
+validates its embedded payload hash, while the Java completion script
+compare-and-sets the claim owner before publishing the body/evidence. This
+also prevents an evaluator whose 60-second claim expired from overwriting a
+new live reservation or another evaluation winner.
+
+**Per-scope over-limit fidelity.** Hierarchical `ALLOW_IF_AVAILABLE` charges are
+capped by the minimum remaining balance, but the old scripts marked every
+budgeted scope over-limit whenever any scope caused a cap. Commit now compares
+each scope's pre-operation remaining balance with the full delta, and direct
+events compare it with the full event amount. Only scopes that individually
+could not cover that value are marked. The same rule covers zero-limit scopes
+when `ALLOW_WITH_OVERDRAFT` falls back to available-only behavior.
+
+**Durable event replay.** The event idempotency mapping and fast response were
+separate seven-day keys. If only the response disappeared, the legacy fallback
+read current budget hashes and returned a body that could differ from the
+original success. Idempotent events now also store `event_response_json` on the
+30-day event hash. Replay repairs the fast key with the mapping's remaining TTL
+and returns that immutable snapshot. A pre-snapshot row whose fast response is
+also absent fails with the existing retriable INTERNAL_ERROR contract rather
+than presenting synthesized state as the original response.
+
+**Expiry corruption quarantine.** The existing estimate guard quarantined
+invalid amounts, but a missing or undecodable scope list was treated as an
+empty list and the reservation was marked EXPIRED without refunding budget.
+Expiry now requires a non-empty JSON array of non-empty string scopes before
+mutation. Invalid expiry timestamps and grace values use the same quarantine
+helper. Every corruption path removes the row from `reservation:ttl`, keeps it
+ACTIVE, leaves budgets untouched, and is surfaced by the service's WARN log.
+
+Version/revision 0.1.25.50 → 0.1.25.51. Both production compose variants pin
+the matching image.
+
+**Validation.** Final module verification completed 1,126 tests (31 model,
+526 data, 569 API) with zero failures, errors, or skips. The integration profile
+validated all 11 declared operations against the local v0.1.25.15 protocol
+checkout; JaCoCo line coverage was 95.09% data and 95.56% API. Targeted
+real-Redis cases cover both dry/live idempotency directions, the pending-marker
+guard, immutable event-cache repair and its pre-snapshot failure mode,
+hierarchical capping under both available-only policies, and five malformed
+scope representations during expiry.
+
+Three benchmark-profile trials completed all benchmarks with zero concurrent
+errors. Median reserve/commit/release/event p50 was
+13.0/12.5/12.0/12.2 ms and 32-thread throughput was 784.2 ops/s. Against the
+v0.1.25.50 same-host medians recorded below, reserve/commit/release changed
+-10.3%/-8.8%/-16.1% and throughput improved 12.3%; all are favorable and well
+inside the 25% release threshold. The extra idempotent-event snapshot HSET did
+not produce a measurable regression; the formal shared-runner rolling-median
+gate remains authoritative at release time.
+
 ### 2026-07-13 — v0.1.25.50: replay storage and int64 follow-up (#236)
 
 This follow-up closes the non-blocking items left after the v0.1.25.49 runtime

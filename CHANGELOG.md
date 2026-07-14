@@ -14,6 +14,38 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.51] — 2026-07-13
+
+### Fixed
+
+- **Reserve idempotency is endpoint-scoped.** Live and `dry_run` requests to
+  `POST /v1/reservations` now share one `(tenant, endpoint, idempotency_key)`
+  namespace. Reusing a key while changing `dry_run` returns
+  `409 IDEMPOTENCY_MISMATCH` instead of evaluating or mutating independently.
+  Live reserve recognizes an in-flight dry-run marker, and non-persisting
+  evaluators compare-and-set their completed body so an expired claim cannot
+  overwrite a newer winner.
+- **Capped hierarchical charges mark only constrained scopes over-limit.**
+  Commit and direct-event paths no longer copy the limiting ancestor's
+  `is_over_limit=true` state onto healthy descendants. This applies to
+  `ALLOW_IF_AVAILABLE` and the zero-overdraft fallback of
+  `ALLOW_WITH_OVERDRAFT`.
+- **Event replays remain byte-identical after fast-cache loss.** Idempotent
+  events store the original Lua response in the 30-day event hash and repair
+  the seven-day fast response key from that immutable snapshot. Legacy rows
+  without either source return a retriable 500 rather than synthesizing a body
+  from current balances.
+- **Corrupt expiry scope data is quarantined.** Missing, malformed, empty, or
+  non-string scope lists cannot finalize a reservation without refunding its
+  held budget. The script removes the poison candidate from the bounded TTL
+  sweep while preserving ACTIVE state and ledger values for reconciliation.
+
+### Compatibility
+
+- No request or successful-response schema changes. Production and full-stack
+  compose defaults self-pin
+  `ghcr.io/runcycles/cycles-server:0.1.25.51`.
+
 ## [0.1.25.50] — 2026-07-13
 
 ### Fixed

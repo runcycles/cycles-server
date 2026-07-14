@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   C5. Honors grace_ms — within (expires_at, expires_at + grace_ms], returns SKIP
  *       in_grace_period.
  *   C6. NOT_FOUND for missing reservations, and still cleans up the TTL index.
- *   C7. Missing or malformed estimate data returns ERROR and leaves state/budgets
+ *   C7. Missing or malformed estimate/scope data returns ERROR and leaves state/budgets
  *       untouched, but removes the poison entry from the bounded TTL sweep index.
  *   C8. Uses Redis TIME (no Java clock), so behavior depends only on Redis server time.
  */
@@ -290,8 +290,8 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
     }
 
     @Nested
-    @DisplayName("C7 — corrupt estimates are quarantined")
-    class CorruptEstimates {
+    @DisplayName("C7 — corrupt reservation data is quarantined")
+    class CorruptReservationData {
 
         @ParameterizedTest
         @ValueSource(strings = {"__missing__", "not-an-integer", "-1"})
@@ -319,6 +319,37 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
                         .isNull();
                 assertThat(jedis.hget("reservation:res_" + resId, "state"))
                         .isEqualTo("ACTIVE");
+                assertThat(jedis.hgetAll("budget:" + scope + ":TOKENS"))
+                        .containsEntry("reserved", "500")
+                        .containsEntry("remaining", "999500");
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"__missing__", "not-json", "{}", "[]", "[123]"})
+        void malformedScopesCannotFinalizeWithoutRefund(String corruptScopes)
+                throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String scope = "tenant:" + TENANT_A;
+                String resId = seedActiveReservation(
+                        jedis, 500, pastExpires, 0, scope, 500);
+                String reservationKey = "reservation:res_" + resId;
+                if ("__missing__".equals(corruptScopes)) {
+                    jedis.hdel(reservationKey, "budgeted_scopes", "affected_scopes");
+                } else {
+                    jedis.hset(reservationKey, "budgeted_scopes", corruptScopes);
+                }
+
+                Map<String, Object> result = evalExpire(jedis, resId);
+
+                assertThat(result)
+                        .containsEntry("status", "ERROR")
+                        .containsEntry("error", "INTERNAL_ERROR");
+                assertThat(jedis.zscore("reservation:ttl", resId))
+                        .as("corrupt rows must not poison the bounded sweep batch")
+                        .isNull();
+                assertThat(jedis.hget(reservationKey, "state")).isEqualTo("ACTIVE");
                 assertThat(jedis.hgetAll("budget:" + scope + ":TOKENS"))
                         .containsEntry("reserved", "500")
                         .containsEntry("remaining", "999500");
