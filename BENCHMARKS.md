@@ -38,6 +38,9 @@ running them would only measure environmental noise. Skipped releases:
   Lua / reserve / commit / release / extend hot paths untouched.
   Benchmarks deliberately skipped — they would only measure
   environmental noise. [benchmark-skip]
+- **v0.1.25.56** — distributed leases and bounded metrics for scheduled Redis
+  maintenance only. No HTTP controller, request repository, ledger Lua, or
+  reservation-list path changed. [benchmark-skip]
 
 Last benchmarked release: **v0.1.25.55**.
 

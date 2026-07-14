@@ -49,6 +49,19 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 |---|---|---|
 | `cycles_overdraft_incurred_total` | `tenant` | Every commit or event that **actually** accrued non-zero `debt`. Unit-free — the amount is in Redis; this counter is "how often". |
 
+### Scheduled Redis maintenance
+
+| Metric | Tags | What it tells you |
+|---|---|---|
+| `cycles_maintenance_runs_total` | `job`, `outcome` | One result per scheduled tick. Jobs are `reservation_expiry`, `audit_retention`, `event_retention`, `created_at_repair`, and `created_at_sweep`; outcomes are a fixed enum. `skipped_locked` is expected when multiple replicas share Redis. |
+| `cycles_maintenance_duration_seconds` | `job`, `outcome` | End-to-end time including lease acquisition/release. Use the `success` series for normal runtime and failure outcomes for incident timing. |
+
+Each job uses an owner-token Redis lease with a heartbeat. Exactly one healthy
+replica normally performs a tick; another replica records `skipped_locked`.
+Lease loss does not cancel an already-running operation, so the underlying
+jobs remain idempotent. During a Redis outage, coordination is best-effort and
+the runner records `lease_error` without failing the scheduling thread.
+
 ### Reason codes
 
 Tag values for `reason` come from `Enums.ErrorCode` (the same enum the
@@ -113,6 +126,16 @@ is behaving unlike itself", not "alert on every error."
     > 0.05
   for: 5m
   labels: {severity: page}
+
+- alert: CyclesMaintenanceFailures
+  expr: |
+    sum by (job, outcome) (
+      increase(cycles_maintenance_runs_total{outcome=~"failed|lease_error|lease_lost"}[15m])
+    ) > 0
+  for: 5m
+  labels: {severity: warning}
+  annotations:
+    summary: scheduled Redis maintenance is failing or losing its lease
 ```
 
 ### Budget denial anomalies
@@ -432,6 +455,8 @@ don't fit.
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
 | `spring.task.scheduling.pool.size` | `4` | Bounded workers for expiry plus audit, event, and index maintenance. Keep at least `2`; production can override with `CYCLES_SCHEDULER_POOL_SIZE`. |
+| `cycles.maintenance.lease-ttl-ms` | `30000` | Per-job Redis coordination lease. Raise only when Redis/client pauses can approach 30 seconds; override with `CYCLES_MAINTENANCE_LEASE_TTL_MS`. |
+| `cycles.maintenance.renew-interval-ms` | `10000` | Heartbeat for active maintenance leases. Must stay below the TTL; a value near one-third of the TTL leaves room for transient delay. Override with `CYCLES_MAINTENANCE_RENEW_INTERVAL_MS`. |
 | `cycles.reservation-index.created-at.enabled` | `false` | Enables backfill and indexed reads for `created_at_ms` sorting. Both production Compose files default it off. In every topology, enable only after every writer runs v0.1.25.54+. |
 | `cycles.reservation-index.created-at.repair-interval-ms` | `300000` | Minimum delay between demand-triggered reconciliation attempts. Lower only when a large initial backfill completes comfortably and faster repair is operationally necessary. |
 | `cycles.reservation-index.created-at.initial-delay-ms` | `5000` | Delay before the first enabled reconciliation after startup. Leave unless startup Redis load needs staggering. |

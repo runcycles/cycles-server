@@ -1,5 +1,7 @@
 package io.runcycles.protocol.data.service;
 
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
+import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import org.slf4j.Logger;
@@ -56,6 +58,7 @@ public class ReservationCreatedAtIndexService {
     @Autowired private LuaScriptRegistry luaScripts;
     @Autowired @Qualifier("reservationCreatedAtIndexLuaScript")
     private String indexScript;
+    @Autowired private RedisMaintenanceRunner maintenanceRunner;
 
     @Value("${cycles.reservation-index.created-at.enabled:false}")
     private boolean enabled;
@@ -176,7 +179,20 @@ public class ReservationCreatedAtIndexService {
     @Scheduled(
         fixedDelayString = "${cycles.reservation-index.created-at.repair-interval-ms:300000}",
         initialDelayString = "${cycles.reservation-index.created-at.initial-delay-ms:5000}")
+    public void scheduledRepairIfRequested() {
+        maintenanceRunner.runIf(MaintenanceJob.CREATED_AT_REPAIR,
+            enabled, this::repairIfRequestedOnce);
+    }
+
     public void repairIfRequested() {
+        try {
+            repairIfRequestedOnce();
+        } catch (Exception e) {
+            LOG.error("Reservation created-at index repair failed; indexed reads remain disabled", e);
+        }
+    }
+
+    private void repairIfRequestedOnce() {
         if (!enabled || !repairRequested.get()) return;
         long now = Instant.now().toEpochMilli();
         if (now < nextRepairAtMs.get()
@@ -193,7 +209,8 @@ public class ReservationCreatedAtIndexService {
         } catch (Exception e) {
             nextRepairAtMs.set(0L);
             repairRequested.set(true);
-            LOG.error("Reservation created-at index repair failed; indexed reads remain disabled", e);
+            if (e instanceof RuntimeException runtime) throw runtime;
+            throw new IllegalStateException(e);
         }
     }
 
@@ -323,7 +340,20 @@ public class ReservationCreatedAtIndexService {
     }
 
     @Scheduled(cron = "${cycles.reservation-index.created-at.sweep-cron:0 45 3 * * *}")
-    public synchronized void sweepStaleMembers() {
+    public void scheduledSweepStaleMembers() {
+        maintenanceRunner.runIf(MaintenanceJob.CREATED_AT_SWEEP,
+            enabled, this::sweepStaleMembersOnce);
+    }
+
+    public void sweepStaleMembers() {
+        try {
+            sweepStaleMembersOnce();
+        } catch (Exception e) {
+            LOG.error("Reservation created-at index sweep failed; next run will retry", e);
+        }
+    }
+
+    private synchronized void sweepStaleMembersOnce() {
         if (!enabled) return;
         int removed = 0;
         int corrected = 0;
@@ -357,7 +387,8 @@ public class ReservationCreatedAtIndexService {
                 removed, corrected);
         } catch (Exception e) {
             requestRepair();
-            LOG.error("Reservation created-at index sweep failed; next run will retry", e);
+            if (e instanceof RuntimeException runtime) throw runtime;
+            throw new IllegalStateException(e);
         }
     }
 

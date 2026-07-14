@@ -1,5 +1,7 @@
 package io.runcycles.protocol.data.metrics;
 
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
+import io.runcycles.protocol.data.maintenance.MaintenanceOutcome;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
@@ -8,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Centralised Micrometer instrumentation for cycles-server runtime operations.
@@ -30,8 +33,8 @@ import java.util.List;
  *     <li>HTTP-layer latency histograms — Spring Boot auto-emits
  *         {@code http.server.requests} with uri/method/status labels already.</li>
  *     <li>Lua-script execution time — EVALSHA timings would mostly duplicate
- *         the HTTP timer for request-synchronous scripts. The expiry-sweep
- *         counter is the exception: it's the only non-request-driven path.</li>
+ *         the HTTP timer for request-synchronous scripts. Scheduled maintenance
+ *         is timed separately because it has no request timer.</li>
  *   </ul>
  */
 @Component
@@ -131,6 +134,23 @@ public class CyclesMetrics {
         registry.counter("cycles.reservations.created_at_index.reads",
                 "outcome", normalise(outcome))
                 .increment();
+    }
+
+    /**
+     * Records one shared scheduled-maintenance invocation. Enum parameters make
+     * both tag dimensions structurally bounded; no tenant or exception text is
+     * attached to these meters.
+     */
+    public void recordMaintenance(MaintenanceJob job, MaintenanceOutcome outcome,
+                                  long durationNanos) {
+        String jobTag = job.tag();
+        String outcomeTag = outcome.tag();
+        registry.counter("cycles.maintenance.runs",
+                "job", jobTag, "outcome", outcomeTag)
+            .increment();
+        registry.timer("cycles.maintenance.duration",
+                "job", jobTag, "outcome", outcomeTag)
+            .record(Math.max(0L, durationNanos), TimeUnit.NANOSECONDS);
     }
 
     // ---- Events ----

@@ -1,6 +1,8 @@
 package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
+import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +74,7 @@ public class AuditRepository {
 
     @Autowired private JedisPool jedisPool;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private RedisMaintenanceRunner maintenanceRunner;
 
     /**
      * Applies the single canonical log-id, timestamp, JSON, score, and retention
@@ -122,11 +125,24 @@ public class AuditRepository {
      * @since 0.1.25.15
      */
     @Scheduled(cron = "${audit.sweep.cron:0 0 3 * * *}")
+    public void scheduledSweepStaleIndexEntries() {
+        maintenanceRunner.runIf(MaintenanceJob.AUDIT_RETENTION,
+            retentionDays > 0, this::sweepStaleIndexEntriesOnce);
+    }
+
     public void sweepStaleIndexEntries() {
         if (retentionDays <= 0) {
             LOG.debug("Audit index sweep skipped — retention is indefinite");
             return;
         }
+        try {
+            sweepStaleIndexEntriesOnce();
+        } catch (Exception e) {
+            LOG.error("Audit index sweep failed (non-fatal — next tick will retry)", e);
+        }
+    }
+
+    private void sweepStaleIndexEntriesOnce() {
         try (Jedis jedis = jedisPool.getResource()) {
             long cutoffMillis = Instant.now().toEpochMilli()
                     - ((long) retentionDays * 86400L * 1000L);
@@ -149,8 +165,6 @@ public class AuditRepository {
             LOG.info("Audit index sweep completed — removed {} global + {} per-tenant stale pointers "
                             + "older than {} ms",
                     removedGlobal, removedTenants, cutoffMillis);
-        } catch (Exception e) {
-            LOG.error("Audit index sweep failed (non-fatal — next tick will retry)", e);
         }
     }
 }
