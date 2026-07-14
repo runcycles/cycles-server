@@ -114,6 +114,17 @@ class RedisConfigTest {
     }
 
     @Test
+    @DisplayName("should load reservation created-at index Lua script from classpath")
+    void shouldLoadReservationCreatedAtIndexLuaScript() throws Exception {
+        String script = redisConfig.reservationCreatedAtIndexLuaScript();
+
+        assertThat(script)
+            .contains("operation == 'validate'")
+            .contains("operation == 'finalize'")
+            .contains("operation == 'remove'");
+    }
+
+    @Test
     @DisplayName("should prepend one shared int64 helper library to every ledger script")
     void shouldComposeLedgerScriptsWithSharedInt64Helpers() throws Exception {
         List<String> scripts = List.of(

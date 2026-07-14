@@ -491,6 +491,13 @@ callers paginating with `from` / `to` but no `sort_by` must keep
 their window stable across pages (same convention as `status` /
 `workspace` / other filters on the legacy path).
 
+In v0.1.25.54+, `created_at_ms` sorting uses a completeness-gated per-tenant
+index when `RESERVATION_CREATED_AT_INDEX_ENABLED=true`; missing or inconsistent
+index state automatically falls back to the authoritative scan. Other sort
+keys are unchanged. Multi-pod deployments must roll out the new writer to the
+whole fleet before enabling indexed reads; see the reservation-list rollout
+procedure in [`OPERATIONS.md`](../OPERATIONS.md#reservation-list-sorting-v012512).
+
 **Response** `200 OK`
 ```json
 {
