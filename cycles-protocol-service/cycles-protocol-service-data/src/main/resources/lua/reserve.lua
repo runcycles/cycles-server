@@ -221,6 +221,29 @@ redis.call('HMSET', reservation_key,
 -- Add to reservation index
 redis.call('ZADD', 'reservation:ttl', expires_at, reservation_id)
 
+-- Dual-write the optional per-tenant created_at index on every new writer,
+-- including while reads remain feature-disabled during a rolling upgrade.
+-- The index is an optimization, so corruption must not turn an otherwise
+-- successful reservation into a partial mutation. A failed ZADD or malformed
+-- readiness counter deletes metadata, forcing readers onto the authoritative
+-- full-SCAN path until the restartable backfill repairs it.
+local created_index_key = 'reservation:idx:' .. tenant .. ':created_at_ms'
+local created_meta_key = 'reservation:idxmeta:' .. tenant .. ':created_at_ms'
+local index_result = redis.pcall('ZADD', created_index_key, now, reservation_id)
+if type(index_result) == 'table' and index_result.err then
+    redis.call('DEL', created_meta_key)
+else
+    local meta_type = redis.call('TYPE', created_meta_key).ok
+    if meta_type == 'hash' and redis.call('HGET', created_meta_key, 'state') == 'READY' then
+        local count_result = redis.pcall('HINCRBY', created_meta_key, 'expected_count', index_result)
+        if type(count_result) == 'table' and count_result.err then
+            redis.call('DEL', created_meta_key)
+        end
+    elseif meta_type ~= 'none' and meta_type ~= 'hash' then
+        redis.call('DEL', created_meta_key)
+    end
+end
+
 -- After successful reservation, store idempotency mapping
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":reserve:" .. idempotency_key

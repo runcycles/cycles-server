@@ -39,7 +39,56 @@ running them would only measure environmental noise. Skipped releases:
   Benchmarks deliberately skipped — they would only measure
   environmental noise. [benchmark-skip]
 
-Last benchmarked release: **v0.1.25.53**.
+Last benchmarked release: **v0.1.25.54**.
+
+---
+
+## v0.1.25.54 — Completeness-gated created-at index
+
+**Date:** 2026-07-14
+
+**Tag:** `v0.1.25.54` *(PR follow-up for #240; tag after merge)*
+
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X
+64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Method:** Median of three complete `mvn test -Pbenchmark` trials; every trial
+completed all 17 write, read, and concurrency cases with zero errors. Sorted
+fixtures and request shape are byte-identical to the v0.1.25.53 baseline: half
+target-tenant rows, half unrelated rows, `limit=20`, `created_at_ms desc`, 50
+warmups, then 200 measured requests.
+
+**Hot-path changes:** reserve performs one additional per-tenant `ZADD` and, if
+readiness is already published, one metadata `HINCRBY` within its existing Lua
+script. The default sorted list reads 21 index candidates in one server-side
+batch and pipelines their projections; selective filters use bounded batches
+of 128. All other sort keys retain the full-SCAN implementation.
+
+### Default sorted-list latency (three-run medians)
+
+| Total rows | Target rows | v0.1.25.53 p50 | v0.1.25.54 p50 | Delta | p95 | p99 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 500 | 22.5ms | 10.7ms | -52.4% | 12.8ms | 14.1ms |
+| 10,000 | 5,000 | 164.9ms | 11.1ms | -93.3% | 13.5ms | 14.3ms |
+
+The 1k/10k p50 ratio fell from 7.3x to 1.04x. The remaining 0.4ms gap is
+consistent with the larger ZSET and fixture rather than global reservation
+hydration; request heap is bounded by the candidate batch.
+
+### Write and concurrency guardrails
+
+| Metric | v0.1.25.52/53 reference | v0.1.25.54 median | Delta |
+|---|---:|---:|---:|
+| Reserve p50 | 9.6ms | 8.4ms | -12.5% |
+| Reserve p99 | 13.0ms | 10.2ms | -21.5% |
+| 32-thread lifecycle throughput | 1,421.8 ops/s | 1,376.0 ops/s | -3.2% |
+
+v0.1.25.53 did not change the runtime path, so the v0.1.25.52 full-suite
+medians remain the same-host write/concurrency reference. The intended extra
+reserve write is below measurement noise; throughput and every parsed release
+metric remain comfortably inside the 25% regression threshold. The release
+workflow will independently compare its median against the benchmark-data
+runner history when the tag is cut.
 
 ---
 

@@ -431,6 +431,12 @@ don't fit.
 | `cycles.events.emit.queue-capacity` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, the API drops only the event side effect and logs a structured warning instead of growing heap without limit. |
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
+| `spring.task.scheduling.pool.size` | `4` | Bounded workers for expiry plus audit, event, and index maintenance. Keep at least `2`; production can override with `CYCLES_SCHEDULER_POOL_SIZE`. |
+| `cycles.reservation-index.created-at.enabled` | `false` | Enables backfill and indexed reads for `created_at_ms` sorting. Both production Compose files default it off. In every topology, enable only after every writer runs v0.1.25.54+. |
+| `cycles.reservation-index.created-at.repair-interval-ms` | `300000` | Minimum delay between demand-triggered reconciliation attempts. Lower only when a large initial backfill completes comfortably and faster repair is operationally necessary. |
+| `cycles.reservation-index.created-at.initial-delay-ms` | `5000` | Delay before the first enabled reconciliation after startup. Leave unless startup Redis load needs staggering. |
+| `cycles.reservation-index.created-at.failure-backoff-ms` | `3600000` | Backoff after a reconciliation completes with malformed tenant rows. This prevents permanent corruption from driving a full-keyspace scan every five minutes; override with `RESERVATION_CREATED_AT_INDEX_FAILURE_BACKOFF_MS`. |
+| `cycles.reservation-index.created-at.sweep-cron` | `0 45 3 * * *` | Nightly stale-member and score-drift cleanup. Override with `RESERVATION_CREATED_AT_INDEX_SWEEP_CRON` to move the Redis maintenance window. |
 | `cycles.tenant-config.cache-ttl-ms` | `60000` | Lower if admin tenant config changes need to take effect faster than 60s. |
 | `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+) and operational endpoint access. Production Compose requires it. |
 | `audit.retention.days` | `400` | Retention for runtime-written audit rows (v0.1.25.15+). Default matches admin's `audit.retention.authenticated.days` — SOC2 Type II 12-month lookback + 1-month auditor-lag buffer. Set `0` for indefinite retention (legal hold, archive-store deployments). |
@@ -451,18 +457,31 @@ do not publish its internal worker port `7980` on ingress.
 `tenant`, `scope_path`, `status`, `reserved`, `created_at_ms`,
 `expires_at_ms`) and `sort_dir` (`asc` or `desc`, default `desc`).
 
-Implementation: full-SCAN + in-memory sort per sorted page. This is
-**O(N)** in reservations matching the filter — fine at the current
-runtime-plane target of ≤ 10³ reservations per tenant. Watch the
-Spring Boot `http_server_requests_seconds{uri="/v1/reservations"}`
-p99: if it climbs above 500 ms under real load, a tenant has grown
-past the in-memory threshold and per-tenant ZSET indexing becomes
-worthwhile. Track the top `tenant` tag on that metric to spot who.
+Since v0.1.25.54, the default `created_at_ms` sort can use a per-tenant
+ZSET and bounded candidate hydration. Reservation hashes remain authoritative:
+the reader atomically checks READY metadata and `expected_count == ZCARD`
+before and after indexed work, and falls back to the complete global SCAN on
+any uncertainty. The other six sort keys still use full-SCAN + in-memory sort
+per page.
 
-The deferred ZSET-indexed design is fully written up in
-[`docs/deferred-optimizations/sorted-list-zset-indices.md`](docs/deferred-optimizations/sorted-list-zset-indices.md)
-— cost/benefit, trigger conditions, benchmark impact, rollback.
-Pull it out when any of the triggers listed there fires.
+For a multi-pod rollout, keep
+`RESERVATION_CREATED_AT_INDEX_ENABLED=false` while deploying v0.1.25.54 to
+every writer. After the old writers are gone, set it to `true` and restart or
+redeploy the readers. Enabling it starts a restartable backfill; until that
+finishes, requests remain on the scan path. Do not enable during a mixed-version
+writer rollout: an older writer cannot increment the completeness counter.
+
+Monitor `cycles_reservations_created_at_index_reads_total{outcome=...}`.
+`INDEX` is the fast path; a short-lived `SCAN_NOT_READY` during initial
+backfill is expected. Persistent `SCAN_NOT_READY`, `SCAN_DRIFT`, or
+`SCAN_ERROR` warrants checking reconciliation logs and Redis key types. The
+metric intentionally has no tenant tag. Disable the flag to roll back
+immediately; after all indexed readers are disabled, the
+`reservation:idx:*:created_at_ms` and `reservation:idxmeta:*:created_at_ms`
+keys may be deleted without affecting reservation data.
+
+The implemented design, safety proof, and measured baseline are recorded in
+[`docs/deferred-optimizations/sorted-list-zset-indices.md`](docs/deferred-optimizations/sorted-list-zset-indices.md).
 
 Legacy clients (no sort params) stay on the existing Redis-SCAN
 cursor path and are unaffected by this concern.

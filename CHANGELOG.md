@@ -14,6 +14,56 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.54] — 2026-07-14
+
+### Performance
+
+- **The default sorted reservation query is population-independent.**
+  `created_at_ms` sorted lists now read a completeness-gated per-tenant Redis
+  ZSET in bounded batches instead of scanning, hydrating, and sorting every
+  reservation globally on every page. The other six sort keys retain the
+  authoritative full-SCAN path.
+- The tie-safe batch iterator preserves the existing total order (timestamp in
+  the requested direction, then `reservation_id` ascending in both directions)
+  inside one server-side Redis call per candidate batch. Same-host three-trial
+  p50 medians fell from 22.5ms to 10.7ms at 1,000 rows and from 164.9ms to
+  11.1ms at 10,000 rows; full results are recorded in `BENCHMARKS.md`.
+
+### Reliability
+
+- Reservation creation always dual-writes the optional timestamp index.
+  Indexed reads are enabled only after a restartable backfill publishes READY
+  metadata and an atomic validation confirms its expected count still equals
+  `ZCARD`. Missing metadata, type/count drift, malformed historical rows, or
+  any read error falls back to the complete reservation-hash scan.
+- A nightly sweep removes stale pointers and corrects score drift; indexed
+  reads also clean missing hashes lazily. Malformed existing rows invalidate
+  readiness instead of deleting their pointer, and wrong-type index keys are
+  removed before a restartable rebuild.
+- Reconciliation runs on a bounded four-thread scheduling pool so it cannot
+  block the five-second expiry sweep. Deterministic malformed-row failures back
+  off for one hour rather than rescanning the global keyspace every five minutes.
+- Sorted cursors are structurally and numerically validated before Redis work,
+  producing the same `400 INVALID_REQUEST` on indexed and fallback paths.
+- After one authoritative scan proves a tenant has no reservations, READY/0
+  metadata represents the otherwise non-persistent empty ZSET. Repeated empty
+  reads stay cheap, and the tenant's first reserve atomically advances the
+  expected count to one.
+- `cycles.reservations.created_at_index.reads{outcome=...}` exposes bounded
+  `INDEX`, `SCAN_DISABLED`, `SCAN_NOT_READY`, `SCAN_DRIFT`, and `SCAN_ERROR`
+  outcomes without a tenant tag.
+
+### Deployment
+
+- The read/backfill switch defaults off. Multi-pod operators must deploy this
+  writer version everywhere with
+  `RESERVATION_CREATED_AT_INDEX_ENABLED=false`, then enable it only after no
+  older writer remains. Both production Compose files require explicit opt-in
+  and self-pin `0.1.25.54`.
+- No protocol schema, response body, ordering, filtering, or cursor-format
+  change. Disabling the flag immediately restores the previous full-SCAN path;
+  reservation hashes remain authoritative.
+
 ## [0.1.25.53] — 2026-07-14
 
 ### Performance measurement

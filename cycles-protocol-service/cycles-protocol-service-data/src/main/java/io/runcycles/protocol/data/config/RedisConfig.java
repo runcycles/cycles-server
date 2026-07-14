@@ -84,6 +84,11 @@ public class RedisConfig {
         return loadLedgerLuaScript("lua/expire.lua");
     }
 
+    @Bean(name = "reservationCreatedAtIndexLuaScript")
+    public String reservationCreatedAtIndexLuaScript() throws IOException {
+        return loadLuaScript("lua/reservation-created-at-index.lua");
+    }
+
     private String loadLedgerLuaScript(String path) throws IOException {
         return loadLuaScript(INT64_HELPERS) + "\n"
             + loadLuaScript(LEDGER_HELPERS) + "\n"

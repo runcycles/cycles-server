@@ -3,6 +3,7 @@ package io.runcycles.protocol.data.repository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
+import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,6 +36,7 @@ abstract class BaseRedisReservationRepositoryTest {
     @Mock protected LuaScriptRegistry luaScripts;
     @Mock protected CyclesMetrics metrics;
     @Mock protected AuditRepository auditRepository;
+    @Mock protected ReservationCreatedAtIndexService reservationCreatedAtIndex;
     // Unconfigured by default: prepare() returns null → no cycles_evidence stamped, so
     // existing reservation tests are unaffected. Evidence-specific tests stub it.
     @Mock protected io.runcycles.protocol.data.service.EvidenceEmitter evidenceEmitter;

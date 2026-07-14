@@ -1,7 +1,104 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
-**Server:** Spring Boot 3.5.15 / Java 21 / Jedis 7.5.2 / Redis (Lua scripts) · commons-lang3 3.18.0 and Tomcat 10.1.55 pins
+**Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 / Redis (Lua scripts) · commons-lang3 3.18.0 and Tomcat 10.1.55 pins
+
+---
+
+### 2026-07-14 — v0.1.25.54: completeness-gated created-at index
+
+This release implements Phase B of #240 without changing the protocol schema,
+successful response body, filter rules, total ordering, or cursor wire shape.
+Only sorted requests whose effective key is `created_at_ms` may use the index;
+the other six sort keys and the legacy unsorted cursor path are unchanged.
+
+**Storage and completeness.** Every successful non-dry-run reserve now ZADDs
+its `reservation_id` to `reservation:idx:<tenant>:created_at_ms`, scored by the
+same `created_at` value written to the authoritative reservation hash. This
+dual-write is unconditional even while indexed reads are disabled. It is
+fail-open for the optimization only: a wrong-type or failed optional index
+write deletes readiness metadata but cannot turn a successful ledger mutation
+into a partial API failure.
+
+`ReservationCreatedAtIndexService` performs a restartable global backfill in
+500-key SCAN/HMGET/ZADD batches. Any identifiable tenant row with an invalid ID,
+timestamp, Redis type, or failed write prevents that tenant from becoming
+READY. Finalization and request-time validation run through one Lua script.
+READY records the current ZCARD as `expected_count`; every post-readiness
+reserve increments it only when ZADD adds a member. Readers require the index
+to be a ZSET, metadata to be a READY hash, and `expected_count == ZCARD` both
+before and after candidate hydration. Missing completeness state, eviction,
+deletion, type or count drift, Redis errors, and member identity/score
+divergence encountered in the traversed candidate range select the existing
+complete full-SCAN implementation. Count-neutral external score corruption
+outside a requested time range remains detectable by the nightly authoritative
+sweep rather than that bounded request. Reservation hashes remain the sole
+authority. The only missing-ZSET ready state is an explicitly proven empty
+tenant with expected_count=0.
+
+**Bounded stable iteration.** The index page operation executes inside Redis
+and returns at most 128 `(reservation_id, score)` pairs per call. It walks
+scores in the requested direction but always reads an exact equal-score group
+with ascending ZRANGEBYSCORE, preserving the existing total-order tiebreak of
+`reservation_id ASC` for both ASC and DESC. Normal unfiltered `limit=20`
+requests ask for only 21 candidates; selective filters continue in 128-row
+batches until `limit+1` matches are found. Resume within a tie group uses
+ZRANK/ZCOUNT. A forged cursor naming a missing member uses a logarithmic binary
+search over direct ZSET ranks for its lexicographic insertion point, avoiding a
+linear `LIMIT offset` walk in Redis's single-threaded Lua runtime.
+
+The first correct implementation crossed the client/Redis boundary two to
+three times per distinct score and measured 59.2ms p50 at 1k—worse than the
+22.5ms baseline. Self-review rejected that implementation before publication.
+The final server-side batch iterator produced same-host three-run p50 medians
+of 10.7ms at 1k and 11.1ms at 10k, improvements of 52.4% and 93.3%. Reserve
+p50 was 8.4ms versus the unchanged v0.1.25.52/53 9.6ms reference, and 32-thread
+throughput moved -3.2%, both within measurement noise.
+
+**Cleanup, repair, and observability.** Indexed reads lazily remove missing
+hashes. A malformed existing hash invalidates readiness instead of deleting its
+pointer, so repairing the authoritative row cannot leave a complete-looking
+omission. A 03:45 nightly sweep removes stale members, corrects score drift,
+and atomically repairs the expected count; one invalid index cannot abort the
+rest of the sweep. Wrong-type index keys are deleted and rebuilt. A four-thread
+scheduled-maintenance pool prevents reconciliation from blocking the five-second
+expiry sweep. Demand-triggered reconciliation runs at most every five minutes,
+and a deterministic malformed-row failure then backs off for one hour before
+another global attempt. The
+empty-tenant case is explicit: after one authoritative fallback scan finds no
+tenant rows, READY/expected_count=0 represents Redis's otherwise non-persistent
+empty ZSET. Subsequent empty reads use the index path, and the first reserve
+atomically creates the ZSET and increments the count. This avoids empty-tenant
+traffic repeatedly requesting global reconciliation. The bounded,
+tenant-free counter
+`cycles.reservations.created_at_index.reads{outcome}` distinguishes INDEX,
+SCAN_DISABLED, SCAN_NOT_READY, SCAN_DRIFT, and SCAN_ERROR.
+
+**Rollout safety.** The application default is disabled because an old writer
+cannot update the new index or counter. Multi-pod operators deploy v0.1.25.54
+everywhere with `RESERVATION_CREATED_AT_INDEX_ENABLED=false`, then enable and
+restart only after the mixed-writer window has closed. Both production Compose
+files also default it off, making activation an explicit act even when a
+single-writer file is later reused or scaled. Requests use full SCAN during the
+initial five-second/backfill window. Rollback is the flag alone, after which
+index/meta keys may be deleted. Both Compose images self-pin 0.1.25.54.
+
+**Validation.** The real-Redis data suite traverses 10,000 rows across 100
+pages with no duplicates, exercises a 300-member equal-timestamp group in both
+directions, validates forged/missing tie cursors and uniform malformed-cursor
+400s with and without readiness, selective filters, every
+scope predicate, time bounds, mid-read readiness loss, malformed rows, unsafe
+scores, self-healed wrong Redis types, post-readiness identity/tenant corruption,
+repair backoff, restartable repair, score correction, and stale cleanup. API integration covers
+pre/post and concurrent readiness-boundary
+writers, fallback without omission, tie pagination, selective filters,
+malformed history, wrong-type fail-open reserve, and sweep count repair. The
+three complete benchmark trials ran all 17 cases with zero errors. Final reactor
+verification completed 1,181 tests (31 model, 561 data, 589 API) with zero
+failures, errors, or skips; the protocol coverage report remained 11/11.
+JaCoCo line coverage is 95.10% data and 95.56% API.
+
+Version/revision 0.1.25.53 → 0.1.25.54.
 
 ---
 

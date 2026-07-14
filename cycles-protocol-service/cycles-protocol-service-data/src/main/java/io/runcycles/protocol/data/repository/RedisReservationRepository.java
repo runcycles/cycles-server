@@ -8,6 +8,7 @@ import io.runcycles.protocol.data.repository.support.ScanPageCursor;
 import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
+import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
@@ -41,6 +42,7 @@ public class RedisReservationRepository {
     @Autowired private LuaScriptRegistry luaScripts;
     @Autowired private CyclesMetrics metrics;
     @Autowired private AuditRepository auditRepository;
+    @Autowired private ReservationCreatedAtIndexService reservationCreatedAtIndex;
     // CyclesEvidence (cycles-evidence-v0.1): computing + emitting + stamping +
     // caching the `reserve` evidence lives HERE, inside the reservation-creation
     // flow, so it is part of the same idempotent unit — replay returns the cached
@@ -62,6 +64,7 @@ public class RedisReservationRepository {
 
     /** Warn when the naive sorted list path hydrates a large result set. */
     static final int SORTED_HYDRATE_WARN_THRESHOLD = 2000;
+    static final int SORTED_INDEX_BATCH_SIZE = 128;
     private static final List<String> RESERVATION_SUMMARY_FIELDS = List.of(
         "reservation_id", "tenant", "state", "subject_json", "action_json",
         "estimate_amount", "estimate_unit", "scope_path", "affected_scopes",
@@ -1629,6 +1632,12 @@ public class RedisReservationRepository {
             : EnumSet.copyOf(include);
         boolean sortRequested = sortBy != null || sortDir != null;
         Optional<SortedListCursor> parsedCursor = SortedListCursor.decode(startCursor);
+        if ((parsedCursor.isPresent() && !parsedCursor.get().hasValidBoundary())
+                || (sortRequested && startCursor != null && !startCursor.isBlank()
+                    && parsedCursor.isEmpty())) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "cursor contains an invalid sorted-list boundary", 400);
+        }
 
         // Route to sorted path when sort params are provided OR when the incoming cursor
         // is a sorted-path cursor (client may omit sort params on the follow-up request,
@@ -1758,8 +1767,43 @@ public class RedisReservationRepository {
         }
 
         try (Jedis jedis = jedisPool.getResource()) {
+            if ("created_at_ms".equals(effectiveSortBy) && reservationCreatedAtIndex != null) {
+                if (!reservationCreatedAtIndex.isEnabled()) {
+                    metrics.recordReservationIndexRead("SCAN_DISABLED");
+                } else if (!reservationCreatedAtIndex.isReady(jedis, tenant)) {
+                    metrics.recordReservationIndexRead("SCAN_NOT_READY");
+                } else {
+                    try {
+                        ReservationListResponse indexed = listReservationsSortedByCreatedAtIndex(
+                            jedis, tenant, idempotencyKey, status, workspace, app, workflow,
+                            agent, toolset, limit, resumeCursor, effectiveSortDir, filterHash,
+                            fromMs, toMs, expiresFromMs, expiresToMs,
+                            finalizedFromMs, finalizedToMs, include);
+                        if (indexed != null) {
+                            metrics.recordReservationIndexRead("INDEX");
+                            return indexed;
+                        }
+                        metrics.recordReservationIndexRead("SCAN_DRIFT");
+                        LOG.warn("Reservation created-at index changed during read; using full scan: tenant={}",
+                            LogSanitizer.sanitize(tenant));
+                    } catch (CyclesProtocolException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        metrics.recordReservationIndexRead("SCAN_ERROR");
+                        LOG.warn("Reservation created-at index read failed; using full scan: tenant={}",
+                            LogSanitizer.sanitize(tenant), e);
+                        try {
+                            reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        } catch (Exception invalidationError) {
+                            e.addSuppressed(invalidationError);
+                        }
+                    }
+                }
+            }
+
             ScanParams params = new ScanParams().match("reservation:res_*").count(500);
             List<ReservationSummary> matching = new ArrayList<>();
+            int tenantRowsSeen = 0;
             List<String> projection = reservationProjection(include, false);
             String[] projectionFields = projection.toArray(String[]::new);
 
@@ -1785,6 +1829,7 @@ public class RedisReservationRepository {
                         try {
                             Map<String, String> fields = HashProjections.mapHashFields(projection, responses.get(key).get());
                             if (fields.isEmpty()) continue;
+                            if (tenant.equals(fields.get("tenant"))) tenantRowsSeen++;
                             ReservationSummary summary = matchingReservation(fields, tenant,
                                     idempotencyKey, status, workspaceSegment, appSegment,
                                     workflowSegment, agentSegment, toolsetSegment, fromMs, toMs,
@@ -1832,12 +1877,228 @@ public class RedisReservationRepository {
                 nextCursor = next.encode();
             }
 
+            // Redis has no persistent empty-ZSET representation. After a complete
+            // authoritative scan proves this tenant has no rows, publish READY/0
+            // metadata so repeated empty reads do not request global repair. A
+            // concurrent reserve is serialized by finalize and contributes its
+            // live ZCARD before readiness becomes visible.
+            if ("created_at_ms".equals(effectiveSortBy)
+                    && reservationCreatedAtIndex != null
+                    && reservationCreatedAtIndex.isEnabled()) {
+                if (tenantRowsSeen == 0) {
+                    try {
+                        reservationCreatedAtIndex.publishEmptyReadiness(jedis, tenant);
+                    } catch (Exception e) {
+                        LOG.warn("Unable to publish empty reservation index readiness: tenant={}",
+                            LogSanitizer.sanitize(tenant), e);
+                    }
+                } else {
+                    reservationCreatedAtIndex.requestRepair();
+                }
+            }
+
             return ReservationListResponse.builder()
                 .reservations(page)
                 .hasMore(nextCursor != null)
                 .nextCursor(nextCursor)
                 .build();
         }
+    }
+
+    /**
+     * Bounded candidate hydration for the default created-at sort. Returns
+     * {@code null} when index trust is lost so the caller can rerun the request
+     * through the authoritative full-SCAN path.
+     *
+     * <p>Rows are fetched one score group at a time. Redis reverses member order
+     * for equal scores under ZREVRANGE, while the protocol implementation's
+     * stable tiebreak is reservation_id ASC for both directions; fetching each
+     * exact-score group with ZRANGE preserves that contract without hydrating the
+     * rest of the tenant index.
+     */
+    private ReservationListResponse listReservationsSortedByCreatedAtIndex(
+            Jedis jedis, String tenant, String idempotencyKey, String status,
+            String workspace, String app, String workflow, String agent, String toolset,
+            int limit, SortedListCursor resumeCursor, String sortDir, String filterHash,
+            Long fromMs, Long toMs, Long expiresFromMs, Long expiresToMs,
+            Long finalizedFromMs, Long finalizedToMs, Set<ReservationInclude> include) {
+
+        boolean descending = "desc".equalsIgnoreCase(sortDir);
+        String lowerBound = fromMs != null ? String.valueOf(fromMs) : "-inf";
+        String upperBound = toMs != null ? String.valueOf(toMs) : "+inf";
+        Long resumeScore = null;
+        String resumeId = null;
+        if (resumeCursor != null) {
+            try {
+                resumeScore = Long.parseLong(resumeCursor.getLastSortValue());
+            } catch (Exception e) {
+                throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                    "cursor contains an invalid created_at_ms boundary", 400);
+            }
+            resumeId = resumeCursor.getLastReservationId();
+            if (descending) {
+                if (fromMs != null && resumeScore < fromMs) {
+                    return emptyReservationPage();
+                }
+                if (toMs == null || resumeScore < toMs) {
+                    upperBound = String.valueOf(resumeScore);
+                }
+            } else {
+                if (toMs != null && resumeScore > toMs) {
+                    return emptyReservationPage();
+                }
+                if (fromMs == null || resumeScore > fromMs) {
+                    lowerBound = String.valueOf(resumeScore);
+                }
+            }
+        }
+
+        String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
+        String appSegment = app != null ? "app:" + app.toLowerCase() : null;
+        String workflowSegment = workflow != null ? "workflow:" + workflow.toLowerCase() : null;
+        String agentSegment = agent != null ? "agent:" + agent.toLowerCase() : null;
+        String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
+        List<String> projection = reservationProjection(include, false);
+        String[] projectionFields = projection.toArray(String[]::new);
+        List<ReservationSummary> matching = new ArrayList<>(limit + 1);
+        int candidatesHydrated = 0;
+        boolean hasPostIndexFilters = idempotencyKey != null || status != null
+            || workspace != null || app != null || workflow != null || agent != null || toolset != null
+            || expiresFromMs != null || expiresToMs != null
+            || finalizedFromMs != null || finalizedToMs != null;
+        int candidateBatchSize = hasPostIndexFilters
+            ? SORTED_INDEX_BATCH_SIZE
+            : Math.max(1, (int) Math.min(SORTED_INDEX_BATCH_SIZE, (long) limit + 1L));
+
+        Long iterationScore = resumeScore;
+        String iterationId = resumeId;
+        while (matching.size() <= limit) {
+            List<ReservationCreatedAtIndexService.IndexCandidate> candidates =
+                reservationCreatedAtIndex.readPage(jedis, tenant,
+                    descending ? "desc" : "asc", lowerBound, upperBound,
+                    iterationScore, iterationId, candidateBatchSize);
+            if (candidates.isEmpty()) break;
+
+            Map<String, Response<List<String>>> responses = new LinkedHashMap<>();
+            try (Pipeline pipeline = jedis.pipelined()) {
+                for (ReservationCreatedAtIndexService.IndexCandidate candidate : candidates) {
+                    responses.put(candidate.reservationId(), pipeline.hmget(
+                        "reservation:res_" + candidate.reservationId(), projectionFields));
+                }
+                pipeline.sync();
+            }
+
+            List<String> stale = new ArrayList<>();
+            for (ReservationCreatedAtIndexService.IndexCandidate candidate : candidates) {
+                String reservationId = candidate.reservationId();
+                double rawScore = candidate.score();
+                long score = (long) rawScore;
+                if ((double) score != rawScore
+                        || !ReservationCreatedAtIndexService.isExactRedisScore(score)) {
+                    reservationCreatedAtIndex.invalidate(jedis, tenant);
+                    return null;
+                }
+                candidatesHydrated++;
+                try {
+                    Map<String, String> fields = HashProjections.mapHashFields(
+                        projection, responses.get(reservationId).get());
+                    if (fields.isEmpty()) {
+                        if (jedis.exists("reservation:res_" + reservationId)) {
+                            reservationCreatedAtIndex.invalidate(jedis, tenant);
+                            return null;
+                        } else {
+                            stale.add(reservationId);
+                            continue;
+                        }
+                    }
+                    String rowTenant = fields.get("tenant");
+                    if (rowTenant == null) {
+                        reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        return null;
+                    }
+                    if (!tenant.equals(rowTenant)) {
+                        stale.add(reservationId);
+                        continue;
+                    }
+                    if (!reservationId.equals(fields.get("reservation_id"))) {
+                        reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        return null;
+                    }
+                    long rowScore;
+                    try {
+                        rowScore = Long.parseLong(fields.get("created_at"));
+                    } catch (NumberFormatException e) {
+                        reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        return null;
+                    }
+                    if (rowScore != score) {
+                        reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        return null;
+                    }
+                    ReservationSummary summary = matchingReservation(fields, tenant,
+                        idempotencyKey, status, workspaceSegment, appSegment,
+                        workflowSegment, agentSegment, toolsetSegment, fromMs, toMs,
+                        expiresFromMs, expiresToMs, finalizedFromMs, finalizedToMs, include);
+                    if (summary != null) {
+                        matching.add(summary);
+                        if (matching.size() > limit) break;
+                    }
+                } catch (Exception e) {
+                    LOG.warn("Failed to parse indexed reservation: reservation_id={}",
+                        LogSanitizer.sanitize(reservationId), e);
+                }
+            }
+            if (!stale.isEmpty()) {
+                reservationCreatedAtIndex.removeStaleMembers(jedis, tenant, stale);
+            }
+            if (matching.size() > limit) break;
+
+            ReservationCreatedAtIndexService.IndexCandidate last =
+                candidates.get(candidates.size() - 1);
+            iterationScore = (long) last.score();
+            iterationId = last.reservationId();
+            if (descending) {
+                upperBound = String.valueOf(iterationScore);
+            } else {
+                lowerBound = String.valueOf(iterationScore);
+            }
+            if (candidates.size() < candidateBatchSize) break;
+        }
+
+        // Detect eviction, deletion, count drift, or cleanup failure that occurred
+        // after the initial readiness check. Discard partial indexed work on any
+        // change and let the caller produce the complete SCAN result.
+        if (!reservationCreatedAtIndex.isReady(jedis, tenant)) {
+            return null;
+        }
+
+        boolean hasMore = matching.size() > limit;
+        List<ReservationSummary> page = hasMore
+            ? new ArrayList<>(matching.subList(0, limit))
+            : new ArrayList<>(matching);
+        String nextCursor = null;
+        if (hasMore && !page.isEmpty()) {
+            ReservationSummary last = page.get(page.size() - 1);
+            nextCursor = new SortedListCursor(
+                1, "created_at_ms", sortDir, filterHash,
+                ReservationComparators.extractSortValue(last, "created_at_ms"),
+                last.getReservationId()).encode();
+        }
+        LOG.debug("listReservationsSorted indexed: tenant={} candidates={} matches={} sort_dir={}",
+            tenant, candidatesHydrated, matching.size(), sortDir);
+        return ReservationListResponse.builder()
+            .reservations(page)
+            .hasMore(hasMore)
+            .nextCursor(nextCursor)
+            .build();
+    }
+
+    private static ReservationListResponse emptyReservationPage() {
+        return ReservationListResponse.builder()
+            .reservations(Collections.emptyList())
+            .hasMore(false)
+            .nextCursor(null)
+            .build();
     }
 
     private ReservationSummary matchingReservation(

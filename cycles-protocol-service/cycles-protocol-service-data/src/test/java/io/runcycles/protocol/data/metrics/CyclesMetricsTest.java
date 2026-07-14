@@ -112,6 +112,21 @@ class CyclesMetricsTest {
         }
 
         @Test
+        void recordReservationIndexReadUsesBoundedOutcomeWithoutTenant() {
+            metrics.recordReservationIndexRead("INDEX");
+            metrics.recordReservationIndexRead(null);
+            assertThat(countOf("cycles.reservations.created_at_index.reads",
+                    "outcome", "INDEX"))
+                    .isEqualTo(1.0);
+            assertThat(countOf("cycles.reservations.created_at_index.reads",
+                    "outcome", "UNKNOWN"))
+                    .isEqualTo(1.0);
+            assertThat(registry.find("cycles.reservations.created_at_index.reads")
+                    .counters())
+                    .allSatisfy(counter -> assertThat(counter.getId().getTag("tenant")).isNull());
+        }
+
+        @Test
         void recordEventTagsAllFourDimensions() {
             metrics.recordEvent("tenant-a", "APPLIED", "OK", "ALLOW_IF_AVAILABLE");
             assertThat(countOf("cycles.events",

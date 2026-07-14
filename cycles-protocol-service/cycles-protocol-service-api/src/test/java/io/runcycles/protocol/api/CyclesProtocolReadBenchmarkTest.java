@@ -1,6 +1,8 @@
 package io.runcycles.protocol.api;
 
+import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import redis.clients.jedis.Jedis;
@@ -28,6 +30,8 @@ class CyclesProtocolReadBenchmarkTest extends BaseIntegrationTest {
     private static final int MEASURE_ITERATIONS = 200;
 
     private static final List<BenchmarkResult> ALL_RESULTS = new ArrayList<>();
+
+    @Autowired private ReservationCreatedAtIndexService reservationCreatedAtIndex;
 
     record BenchmarkResult(String name, long p50, long p95, long p99, long min, long max, long mean) {}
 
@@ -175,6 +179,9 @@ class CyclesProtocolReadBenchmarkTest extends BaseIntegrationTest {
      */
     private void benchmarkSortedReservations(int totalRows, String benchmarkName) {
         seedReservationPopulation(totalRows);
+        ReservationCreatedAtIndexService.ReconcileResult reconciliation =
+            reservationCreatedAtIndex.reconcileNow();
+        assertThat(reconciliation.tenantsFailed()).isZero();
 
         long[] timings = runBenchmark(benchmarkName, () -> {
             ResponseEntity<Map> resp = get(

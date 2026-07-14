@@ -1,6 +1,6 @@
 # Tracked: completeness-safe index for sorted list-reservations
 
-**Status:** scheduled in phases under [cycles-server#240](https://github.com/runcycles/cycles-server/issues/240).
+**Status:** Phase A released in v0.1.25.53; Phase B implemented in v0.1.25.54 under [cycles-server#240](https://github.com/runcycles/cycles-server/issues/240).
 **Context:** first analysed 2026-04-16 for v0.1.25.12; revised 2026-07-14 after the failed candidate-index experiment in #235.
 **Owner:** runtime maintainers.
 
@@ -86,8 +86,9 @@ then `reservation_id` ascending in **both** directions. Redis reverses equal-sco
 members under `ZREVRANGE`, so descending pagination must explicitly handle a
 complete equal-score group; a simple `ZREVRANGE` slice is not equivalent.
 
-The opaque sorted cursor evolves to carry `(score, reservation_id)`. Cursor sort
-and filter binding remains unchanged.
+The existing opaque sorted cursor already carries the last sort value and
+reservation ID, so its wire shape does not change. Cursor sort and filter
+binding remains unchanged.
 
 ## Completeness protocol
 
@@ -120,7 +121,7 @@ updates the expected count atomically. Indexed reads also skip missing hashes an
 may enqueue lazy cleanup, but correctness must not depend on a tenant eventually
 reading every stale member.
 
-## Tests required before enabling Phase B
+## Phase B validation
 
 - Complete pagination above 2,000 and at 10,000 rows.
 - Equal timestamps in ASC and DESC with the existing ID-ascending tiebreak.
@@ -134,6 +135,12 @@ reading every stale member.
   eventually removed.
 - Cursor/filter/sort mismatch behavior remains protocol-compatible.
 - All non-default sort keys retain the existing results and cursor semantics.
+
+The v0.1.25.54 suite covers these conditions with real Redis, including a full
+10,000-row / 100-page traversal, a 300-member equal-timestamp group in both
+directions, a forged cursor naming a missing tie-group member, selective
+filters across candidate batches, concurrent readiness-boundary writers,
+wrong Redis types, partial backfill failures, drift fallback, and stale cleanup.
 
 ## Expected cost and benefit
 
@@ -172,3 +179,8 @@ keys after no readers use them. Reservation hashes remain authoritative.
 - **2026-07-14 (#240):** measured the 10k path, rejected the old seven-index
   readiness model, and chose a benchmark-first, one-index rollout with a strict
   correctness fallback.
+- **2026-07-14 (v0.1.25.54):** implemented the one-index design. An initial
+  correct score-at-a-time iterator measured 59.2ms p50 at 1k because client
+  round trips dominated; the final bounded Lua iterator preserves equal-score
+  ID ordering in one server-side call per candidate batch and produced
+  10.7ms/11.1ms p50 three-trial medians at 1k/10k.

@@ -24,7 +24,7 @@ services:
 
   cycles-server:
     logging: *default-logging
-    image: ghcr.io/runcycles/cycles-server:0.1.25.53
+    image: ghcr.io/runcycles/cycles-server:0.1.25.54
     restart: unless-stopped
     ports:
       - "7878:7878"
@@ -36,6 +36,8 @@ services:
       JAVA_OPTS: "-XX:MaxRAMPercentage=75 -XX:+UseG1GC -XX:+UseStringDeduplication"
       LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
       CYCLES_METRICS_TENANT_TAG_ENABLED: "false"
+      # Enable only after every writer runs the index-aware release.
+      RESERVATION_CREATED_AT_INDEX_ENABLED: ${RESERVATION_CREATED_AT_INDEX_ENABLED:-false}
       SPRINGDOC_API_DOCS_ENABLED: "false"
       SPRINGDOC_SWAGGER_UI_ENABLED: "false"
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:?WEBHOOK_SECRET_ENCRYPTION_KEY must be set}

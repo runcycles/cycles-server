@@ -28,6 +28,8 @@ public class LuaScriptRegistry implements InitializingBean {
     @Autowired @Qualifier("extendLuaScript") private String extendScript;
     @Autowired @Qualifier("eventLuaScript") private String eventScript;
     @Autowired @Qualifier("expireLuaScript") private String expireScript;
+    @Autowired @Qualifier("reservationCreatedAtIndexLuaScript")
+    private String reservationCreatedAtIndexScript;
 
     private final ConcurrentHashMap<String, String> scriptShaCache = new ConcurrentHashMap<>();
 
@@ -44,6 +46,7 @@ public class LuaScriptRegistry implements InitializingBean {
             loadScript(jedis, "extend", extendScript);
             loadScript(jedis, "event", eventScript);
             loadScript(jedis, "expire", expireScript);
+            loadScript(jedis, "reservationCreatedAtIndex", reservationCreatedAtIndexScript);
             LOG.info("Loaded {} Lua scripts via SCRIPT LOAD", scriptShaCache.size());
         } catch (Exception e) {
             LOG.warn("Failed to pre-load Lua scripts; will fall back to EVAL", e);

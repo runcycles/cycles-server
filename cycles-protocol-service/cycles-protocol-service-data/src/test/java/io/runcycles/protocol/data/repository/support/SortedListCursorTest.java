@@ -75,4 +75,21 @@ class SortedListCursorTest {
         assertThat(encoded).doesNotContain("+");
         assertThat(encoded).doesNotContain("/");
     }
+
+    @Test
+    @DisplayName("boundary validation rejects malformed numeric and enum fields")
+    void validatesBoundaryShape() {
+        assertThat(new SortedListCursor(1, "created_at_ms", "desc",
+            "hash", "1700000000000", "res_1").hasValidBoundary()).isTrue();
+        assertThat(new SortedListCursor(1, "status", "asc",
+            "hash", "", "res_1").hasValidBoundary()).isTrue();
+        assertThat(new SortedListCursor(1, "created_at_ms", "desc",
+            "hash", "not-a-number", "res_1").hasValidBoundary()).isFalse();
+        assertThat(new SortedListCursor(1, "created_at_ms", "desc",
+            "hash", null, "res_1").hasValidBoundary()).isFalse();
+        assertThat(new SortedListCursor(1, "unknown", "desc",
+            "hash", "1", "res_1").hasValidBoundary()).isFalse();
+        assertThat(new SortedListCursor(1, "status", "sideways",
+            "hash", "ACTIVE", "res_1").hasValidBoundary()).isFalse();
+    }
 }

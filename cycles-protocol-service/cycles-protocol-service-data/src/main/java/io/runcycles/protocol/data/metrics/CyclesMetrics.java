@@ -122,6 +122,17 @@ public class CyclesMetrics {
                 .increment();
     }
 
+    /**
+     * Records which implementation served a sorted {@code created_at_ms} list.
+     * The outcome set is bounded (INDEX, SCAN_DISABLED, SCAN_NOT_READY,
+     * SCAN_DRIFT, SCAN_ERROR) and deliberately carries no tenant tag.
+     */
+    public void recordReservationIndexRead(String outcome) {
+        registry.counter("cycles.reservations.created_at_index.reads",
+                "outcome", normalise(outcome))
+                .increment();
+    }
+
     // ---- Events ----
 
     /** Emitted on every {@code POST /v1/events} outcome. */

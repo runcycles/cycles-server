@@ -3,9 +3,11 @@ package io.runcycles.protocol.data.repository.support;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.runcycles.protocol.model.Enums;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -61,6 +63,31 @@ public class SortedListCursor {
     public void setFilterHash(String s) { this.filterHash = s; }
     public void setLastSortValue(String s) { this.lastSortValue = s; }
     public void setLastReservationId(String s) { this.lastReservationId = s; }
+
+    /**
+     * Validates the client-controlled continuation boundary before either the
+     * indexed or full-SCAN sorted implementation performs Redis work.
+     */
+    public boolean hasValidBoundary() {
+        if (lastSortValue == null || sortBy == null || sortDir == null) return false;
+        final Enums.ReservationSortBy parsedSortBy;
+        try {
+            parsedSortBy = Enums.ReservationSortBy.valueOf(sortBy.toUpperCase(Locale.ROOT));
+            Enums.SortDirection.valueOf(sortDir.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        if (parsedSortBy == Enums.ReservationSortBy.RESERVED
+                || parsedSortBy == Enums.ReservationSortBy.CREATED_AT_MS
+                || parsedSortBy == Enums.ReservationSortBy.EXPIRES_AT_MS) {
+            try {
+                Long.parseLong(lastSortValue);
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     public String encode() {
         try {

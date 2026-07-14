@@ -35,6 +35,7 @@ class LuaScriptRegistryTest {
         setField("extendScript", "-- extend");
         setField("eventScript", "-- event");
         setField("expireScript", "-- expire");
+        setField("reservationCreatedAtIndexScript", "-- reservation created-at index");
     }
 
     private void setField(String name, Object value) throws Exception {
@@ -50,7 +51,7 @@ class LuaScriptRegistryTest {
 
         registry.afterPropertiesSet();
 
-        verify(jedis, times(6)).scriptLoad(anyString());
+        verify(jedis, times(7)).scriptLoad(anyString());
     }
 
     @Test
