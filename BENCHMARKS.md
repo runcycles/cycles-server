@@ -44,6 +44,9 @@ running them would only measure environmental noise. Skipped releases:
 - **v0.1.25.57** — integration-only lost-response and rolling-upgrade Redis
   matrices. Production Java, Lua, Redis commands, and HTTP paths are unchanged.
   [benchmark-skip]
+- **v0.1.25.58** — successful direct-event replays add one in-memory Micrometer
+  counter increment. Fresh event, Redis, Lua, controller, and wire paths are
+  unchanged. [benchmark-skip]
 
 Last benchmarked release: **v0.1.25.55**.
 

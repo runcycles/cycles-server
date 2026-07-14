@@ -5,6 +5,38 @@
 
 ---
 
+### 2026-07-14 — v0.1.25.58: direct-event replay metric parity
+
+Successful idempotent reserve, commit, and release requests already increment
+their domain request counters with `reason=IDEMPOTENT_REPLAY`, but direct-event
+replays returned before recording `cycles.events`. This made successful replay
+traffic invisible and contradicted the counter's every-outcome contract.
+
+`createEvent` now records every successful response once, choosing `OK` for a
+fresh application and `IDEMPOTENT_REPLAY` when Lua returns the stored event id.
+The existing `!idempotentReplay` guard around
+`recordOverdraftIncurred` remains unchanged, so replay request traffic becomes
+visible without re-counting the original ledger side effect.
+
+The repository unit test pins the replay tag and the overdraft suppression. A
+real-Redis HTTP integration test applies an overdrafting keyed event, replays
+the exact request, asserts identical response bodies, one `OK` sample, one
+`IDEMPOTENT_REPLAY` sample, and exactly one overdraft-incurred sample.
+
+The replay path adds one in-memory Micrometer counter increment. Fresh event,
+Redis, Lua, controller, wire, and ledger paths are unchanged, so benchmarks are
+intentionally skipped under the documented metrics-only precedent.
+`[benchmark-skip]`
+
+Full integration-profile reactor verification discovered 1,207 tests (31
+model, 575 data, 601 API) with zero failures or errors. JaCoCo line coverage
+remains 95.14% data and 95.56% API. PR CI independently enables the current
+protocol-response validator and the 11/11 operation-coverage gate.
+
+Version/revision 0.1.25.57 → 0.1.25.58.
+
+---
+
 ### 2026-07-14 — v0.1.25.57: Redis failure and rolling-upgrade matrices
 
 Issue #247 closes the failure-injection and mixed-version CI item from the
