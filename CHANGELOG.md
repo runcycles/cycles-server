@@ -14,6 +14,25 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.53] — 2026-07-14
+
+### Performance measurement
+
+- **Sorted reservation listing has population baselines.** The benchmark suite
+  now measures the default `created_at_ms desc` sorted-list query at 1,000 and
+  10,000 total reservation hashes, split evenly between the authenticated and
+  an unrelated tenant. Both p50 values are tracked by nightly and release
+  regression checks, establishing the pre-index comparison point for #240.
+- Benchmark fixture writes are pipelined and complete before timing begins.
+  Expected large-hydration warnings are suppressed only in the benchmark
+  profile so console I/O does not distort the measurement.
+
+### Compatibility
+
+- No production request-path, Redis-data, or wire-format behavior changes.
+  Production and full-stack compose defaults self-pin
+  `ghcr.io/runcycles/cycles-server:0.1.25.53`.
+
 ## [0.1.25.52] — 2026-07-14
 
 ### Performance

@@ -44,7 +44,7 @@ https://raw.githubusercontent.com/runcycles/cycles-server/benchmark-data/benchma
 
 ## Headline metrics tracked
 
-Seven numbers chosen for signal density, not exhaustiveness. More metrics
+Nine numbers chosen for signal density, not exhaustiveness. More metrics
 means more noise and a higher false-positive rate on the gate.
 
 | Metric | Source test | Why |
@@ -53,6 +53,8 @@ means more noise and a higher false-positive rate on the gate.
 | `commit_p50_ms`, `commit_p99_ms` | `CyclesProtocolBenchmarkTest` | Second write path |
 | `release_p50_ms` | `CyclesProtocolBenchmarkTest` | Cleanup path |
 | `event_p50_ms` | `CyclesProtocolBenchmarkTest` | Direct-debit path |
+| `list_sorted_1k_p50_ms` | `CyclesProtocolReadBenchmarkTest` | Sorted-list scaling at moderate population |
+| `list_sorted_10k_p50_ms` | `CyclesProtocolReadBenchmarkTest` | Sorted-list scaling trigger / indexed-path payoff |
 | `concurrent_throughput_32t` | `CyclesProtocolConcurrentBenchmarkTest` | Scaling signal |
 
 ## Entry format (`history.jsonl`)
@@ -60,7 +62,7 @@ means more noise and a higher false-positive rate on the gate.
 Each line is a standalone JSON object:
 
 ```json
-{"timestamp":"2026-04-15T07:00:00Z","commit":"abc1234","tag":null,"reserve_p50_ms":5.3,"reserve_p99_ms":18.2,"commit_p50_ms":4.6,"commit_p99_ms":15.1,"release_p50_ms":4.8,"event_p50_ms":4.3,"concurrent_throughput_32t":2632}
+{"timestamp":"2026-07-15T07:00:00Z","commit":"abc1234","tag":null,"reserve_p50_ms":5.3,"reserve_p99_ms":18.2,"commit_p50_ms":4.6,"commit_p99_ms":15.1,"release_p50_ms":4.8,"event_p50_ms":4.3,"list_sorted_1k_p50_ms":22.5,"list_sorted_10k_p50_ms":164.9,"concurrent_throughput_32t":2632}
 ```
 
 - `timestamp` — UTC, ISO 8601

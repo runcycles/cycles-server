@@ -31,6 +31,8 @@ NUMERIC_FIELDS = [
     "commit_p99_ms",
     "release_p50_ms",
     "event_p50_ms",
+    "list_sorted_1k_p50_ms",
+    "list_sorted_10k_p50_ms",
     "concurrent_throughput_32t",
 ]
 

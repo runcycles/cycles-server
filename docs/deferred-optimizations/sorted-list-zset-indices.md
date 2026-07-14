@@ -1,185 +1,174 @@
-# Deferred: per-tenant ZSET indices for sorted list-reservations
+# Tracked: completeness-safe index for sorted list-reservations
 
-**Status:** deferred — not currently scheduled. Triggers below.
-**Context:** analysed 2026-04-16 during v0.1.25.12 release (introduced `sort_by` + `sort_dir` on `GET /v1/reservations` per cycles-protocol spec revision 2026-04-16).
-**Owner:** unassigned until a triggering condition lands.
+**Status:** scheduled in phases under [cycles-server#240](https://github.com/runcycles/cycles-server/issues/240).
+**Context:** first analysed 2026-04-16 for v0.1.25.12; revised 2026-07-14 after the failed candidate-index experiment in #235.
+**Owner:** runtime maintainers.
 
-## The problem this would solve
+## Problem
 
-v0.1.25.12 ships a **sorted list path** on `GET /v1/reservations`. The current implementation does a full Redis `SCAN` of `reservation:res_*`, filters in-stream, sorts in memory, and slices by cursor. This is **O(N) in total reservations** (not per-tenant) because `SCAN` walks the whole keyspace. Every sorted-list request repeats this work.
+Supplying `sort_by` or `sort_dir` to `GET /v1/reservations` selects a path that:
 
-At runtime-plane scale (~10³ reservations per tenant, ~10⁴ total across tenants), full-SCAN is fine — ~4ms on the benchmark, well inside any practical SLO. Above that, latency degrades roughly linearly with total keyspace size.
+1. scans every `reservation:res_*` key across all tenants;
+2. pipelines the reservation projection for every key;
+3. retains every matching tenant row in application heap;
+4. sorts all matches; and
+5. slices the requested page.
+
+Every page repeats that work. The path is therefore O(global reservations) in
+Redis reads and O(matching tenant reservations) in heap, even for the default
+`created_at_ms desc&limit=20` query.
+
+The v0.1.25.52 pre-index benchmark fixture contains an even 50/50 split between
+the authenticated tenant and an unrelated tenant. Three-run local medians were:
+
+| Population | Target-tenant rows | p50 | p95 | p99 |
+|---:|---:|---:|---:|---:|
+| 1,000 | 500 | 22.5 ms | 40.9 ms | 48.3 ms |
+| 10,000 | 5,000 | 164.9 ms | 210.2 ms | 232.0 ms |
+
+These numbers are environment-dependent, but they establish the linear scaling
+shape and a frozen comparison point for #240.
+
+## Why the previous index shape was removed
+
+PR #235 briefly added a per-tenant candidate ZSET and a permanent `:ready`
+marker. It was removed before merge because completeness could silently fail:
+
+- an evicted/deleted ZSET could survive behind its marker;
+- an old pod in a rolling deployment could create an unindexed reservation
+  after a new pod published readiness;
+- a partial backfill could swallow a row error and still publish readiness;
+- stale members had no bounded cleanup when tenants did not issue sorted reads;
+- indexed reads still hydrated the entire ZSET before slicing.
+
+An empty-index fallback cannot detect a partially missing index. The replacement
+must prove completeness or use the existing full-SCAN path.
+
+## Phased rollout
+
+### Phase A — ship the measurement first
+
+- Add `LIST sorted @1k` and `LIST sorted @10k` to
+  `CyclesProtocolReadBenchmarkTest`.
+- Seed hashes directly through a Redis pipeline so fixture creation is outside
+  the measured request.
+- Track both p50 metrics in nightly/release benchmark data.
+- Release this benchmark-only change before the runtime index so the next
+  release has a real pre-change baseline.
+
+### Phase B — optimize only the default timestamp sort
+
+Create one ZSET per tenant:
 
 ```
-  sorted-list p50 vs. total reservations
-  --------------------------------------
-       100   —    ~4ms       (baseline)
-     1,000   —   ~10ms
-    10,000   —  ~80–100ms
-   100,000   —  ~800ms+      (Redis GC pressure dominates)
+reservation:idx:<tenant>:created_at_ms
 ```
 
-The ZSET-indexed approach replaces the full SCAN with `ZRANGEBYSCORE` (or `ZRANGEBYLEX` for string keys), which is **O(log N + page_size)** regardless of total keyspace size.
+The member is `reservation_id`; the score is `created_at_ms`. Timestamps at the
+current epoch are exactly representable by Redis's IEEE-754 score. The other six
+protocol sort keys remain on the current full-SCAN path until measurements
+justify their write and memory cost.
 
-## Trigger — when to schedule this
+`reserve.lua` adds the member atomically with the reservation hash. No lifecycle
+script changes the score. Terminal rows remain indexed while their retained hash
+is listable; cleanup removes members only after the hash disappears.
 
-Don't do this speculatively. Schedule it when **any** of the following is true:
+The read path:
 
-1. A real tenant crosses ~10 k active reservations. Track via `http_server_requests_seconds{uri="/v1/reservations"}` p99 broken down by `tenant` tag.
-2. Sorted-list p99 on a production deployment crosses ~50 ms sustained over any 1-hour window.
-3. A new customer ships with an advertised SLO on list-endpoint latency tighter than 100 ms p99.
+- checks index-completeness metadata before using the ZSET;
+- reads candidates in bounded batches;
+- pipelines only those candidates' HMGET projections;
+- applies the existing tenant/status/idempotency/scope/time filters; and
+- continues until it fills the page or exhausts the index.
 
-None of these conditions hold as of v0.1.25.12. The `OPERATIONS.md` "Reservation list sorting" section already names the metric to watch.
+It must preserve the current total order: timestamp in the requested direction,
+then `reservation_id` ascending in **both** directions. Redis reverses equal-score
+members under `ZREVRANGE`, so descending pagination must explicitly handle a
+complete equal-score group; a simple `ZREVRANGE` slice is not equivalent.
 
-## Design
+The opaque sorted cursor evolves to carry `(score, reservation_id)`. Cursor sort
+and filter binding remains unchanged.
 
-### New Redis key shape — 7 sorted sets per tenant
+## Completeness protocol
 
-One ZSET per (`tenant`, sort key) combination:
+Indexed reads are an optimization, never the authority. A tenant uses the index
+only when all of these hold:
 
-```
-reservation:idx:<tenant>:reservation_id   (ZSET, lex, score=0)
-reservation:idx:<tenant>:tenant           (ZSET, lex, score=0)
-reservation:idx:<tenant>:scope_path       (ZSET, lex, score=0)
-reservation:idx:<tenant>:status           (ZSET, score=status_ordinal, lex tiebreak)
-reservation:idx:<tenant>:reserved         (ZSET, numeric score = amount)
-reservation:idx:<tenant>:created_at_ms    (ZSET, numeric score = epoch ms)
-reservation:idx:<tenant>:expires_at_ms    (ZSET, numeric score = epoch ms)
-```
+1. new writers have been deployed across the fleet;
+2. a fully successful, restartable backfill has completed;
+3. metadata says the index is ready and records its expected member count; and
+4. `ZCARD` equals that expected count.
 
-- **Member** is always `reservation_id` (canonical cursor anchor).
-- **Score** is numeric for numeric keys, ordinal for `status` (so `status=ACTIVE` all sort together), and `0` for pure lex keys (`ZRANGEBYLEX` handles ordering without touching the score).
-- Per-tenant partitioning keeps each index small — even a tenant with 10 k reservations yields a 10 k-entry ZSET, which Redis handles in microseconds.
+The metadata and readiness publication must follow these rules:
 
-### Lua script changes (5 of 6 scripts touched)
+- Missing metadata, wrong Redis type, count mismatch, interrupted backfill, or
+  any unrepresentable historical row selects the full-SCAN fallback.
+- Any per-row scan/HMGET/parse/ZADD failure prevents readiness.
+- Readiness and the final expected count are published atomically.
+- A concurrent new reservation is serialized with readiness publication: before
+  readiness its ZADD is included in final `ZCARD`; after readiness its atomic
+  create increments the expected count only when `ZADD` adds a new member.
+- Operators enable readiness only after mixed-version writers are gone. An old
+  writer cannot participate in the completeness counter, so automatic cutover
+  during a rolling deployment is forbidden.
+- Index/meta eviction or deletion must be detectable. No permanent marker may
+  vouch for state stored in an independently losable key without count
+  validation.
 
-All index updates go **inside** the existing Lua `EVAL` so the hash and index can't drift under partial failure.
+A scheduled sweep removes members whose reservation hashes no longer exist and
+updates the expected count atomically. Indexed reads also skip missing hashes and
+may enqueue lazy cleanup, but correctness must not depend on a tenant eventually
+reading every stale member.
 
-| Script | Change | Why |
-|---|---|---|
-| `reserve.lua` | `ZADD` into all 7 indices on successful creation | New reservation becomes visible to sorted list |
-| `commit.lua` | `ZADD` into status index with new ordinal | ACTIVE → COMMITTED |
-| `release.lua` | Same as commit | ACTIVE → RELEASED |
-| `extend.lua` | `ZADD` into `expires_at_ms` index (overwrite) | Score changes with extension |
-| `expire.lua` | `ZADD` into status index (ACTIVE → EXPIRED) | Background sweep must update |
-| `event.lua` | no change | Events don't mutate reservations |
+## Tests required before enabling Phase B
 
-`ZADD` inside Lua is atomic with the existing `HSET` — if the Lua aborts, neither lands.
+- Complete pagination above 2,000 and at 10,000 rows.
+- Equal timestamps in ASC and DESC with the existing ID-ascending tiebreak.
+- Selective filters spanning multiple candidate batches.
+- Interrupted/partially failed backfill never publishes readiness.
+- Missing index, metadata, or individual members causes fallback without
+  omissions.
+- Concurrent reserve at the backfill/readiness boundary is present exactly once.
+- Mixed-version writers cannot enable indexed reads prematurely.
+- Terminal rows remain visible throughout hash retention; stale members are
+  eventually removed.
+- Cursor/filter/sort mismatch behavior remains protocol-compatible.
+- All non-default sort keys retain the existing results and cursor semantics.
 
-### Repository changes — `RedisReservationRepository.listReservationsSorted`
+## Expected cost and benefit
 
-- Replace full `SCAN` with `ZRANGEBYSCORE` (numeric) or `ZRANGEBYLEX` (string).
-- `ZREVRANGEBYSCORE` for `sort_dir=desc`.
-- **Filtered + sorted** is the hard bit — three options, pick one:
-  1. **Per-filter ZSETs** — `reservation:idx:<tenant>:<sort_key>:<filter_key>=<filter_value>`. Combinatorial explosion; rejected.
-  2. **Hybrid batch-and-filter** (recommended): `ZRANGEBYSCORE` a wide batch (~2× `limit`), `HGETALL`-pipeline the members, post-filter, continue if the page is short. Adapts the existing cursor logic; simplest to ship.
-  3. **`ZINTERSTORE` transient sets** — expensive, adds Redis write load on every read. Rejected.
-- Cursor format evolves to store `(score, member)` instead of `(last_sort_value, last_reservation_id)`. The on-wire cursor is opaque, so this is an implementation detail clients don't see — no protocol bump.
+One `ZADD` on reserve is approximately O(log tenant reservations), rather than
+the seven writes in the original design. Commit, release, extend, expire, event,
+and decide do not update the index. Expected reserve latency impact is around
+1–2%, subject to the release benchmark gate.
 
-### Backfill migration
+One ZSET entry is roughly 80 bytes. At 100,000 retained reservations this is
+about 8 MB, versus roughly 56 MB for the discarded seven-index design.
 
-One-time job to populate all 7 ZSETs from existing `reservation:res_*` hashes:
-- Standalone `MigrationService` triggered by an admin endpoint, or on-startup idempotent check (count-compare index ZCARD vs. tenant reservation count; populate if drift).
-- **Read-path fallback during rollout:** if `ZRANGEBYSCORE` returns empty but the tenant has reservations (`EXISTS reservation:res_*`), fall back to the current SCAN path. Removes once migration completes.
+The target read complexity is O(log N + candidates examined) and bounded heap
+per batch. At 10,000 rows, the indexed default query should materially beat the
+164.9 ms pre-change p50; the exact acceptance number comes from the same-host
+Phase A release baseline.
 
-## Performance impact
+## Rollback
 
-### Write path — regression (new `ZADD`s inside Lua)
+The indexed path is feature-flagged. Rollback selects the current full-SCAN path
+without changing the wire cursor contract, then deletes `reservation:idx:*`
+keys after no readers use them. Reservation hashes remain authoritative.
 
-| Operation | Indices touched | Per-op cost (N=10k per tenant) | Expected latency delta |
-|---|---|---|---|
-| **Reserve** | **7** — all sort indices | 7 × O(log N) ≈ ~100 μs in Lua | **+3–6% p50** (5.3 ms → ~5.5–5.6 ms) |
-| **Commit** | 1 (status) | ~14 μs | **+1–2% p50** |
-| **Release** | 1 (status) | ~14 μs | **+1–2% p50** |
-| **Extend** | 1 (expires_at_ms, overwrite) | ~14 μs | **+1% p50** |
-| **Expire** (background) | 1 (status) | ~14 μs | off hot path |
-| **Decide** | 0 — no state change | — | unchanged |
-| **Event** | 0 — no reservation mutation | — | unchanged |
+## What this does not change
 
-**Concurrent throughput at 32 threads:** probably **−2 to −4%** (reserve-dominated mix). Benchmark reference: 2,632 ops/s at v0.1.25.7 → estimated 2,520–2,580 ops/s.
-
-All costs are in-memory, single-threaded inside Redis, no new network round-trips.
-
-### Read path — dramatic improvement
-
-| Scenario | Current full-SCAN | With ZSET | Delta |
-|---|---|---|---|
-| Sorted list, **100 reservations** | ~4 ms | ~3 ms | ~25% faster |
-| Sorted list, **1 k reservations** | ~10 ms | ~2 ms | **5× faster** |
-| Sorted list, **10 k reservations** | ~80–100 ms | ~2–3 ms | **30–50× faster** |
-| Sorted list, **100 k reservations** | ~800 ms+ | ~3–5 ms | **100×+ faster** |
-| Unsorted list (legacy SCAN path) | ~4 ms | unchanged | no change |
-| `GET /v1/reservations/{id}` | ~3 ms | unchanged | no change |
-| `GET /v1/balances` | ~4 ms | unchanged | no change |
-
-Inflection point is ~1 k reservations per tenant. Below that, SCAN is already fine.
-
-### Memory overhead
-
-- **~560 bytes/reservation** in index overhead (7 ZSET entries × ~80 bytes each).
-- At 100 k reservations: ~56 MB total.
-- For deployments with `maxmemory 256mb` (smaller prod setups), that's ~22% of the Redis budget — **worth flagging in ops docs**. For typical multi-GB Redis deployments, rounding error.
-
-## Benchmark suite impact
-
-### What would change in the existing benchmark (current suite at v0.1.25.7)
-
-| Benchmark | Current | Expected with ZSET | Release-gate risk |
-|---|---|---|---|
-| Reserve p50 | 5.3 ms | **5.5–5.6 ms (+4–6%)** | Safe — 25% gate has headroom, but chips into it |
-| Reserve p99 | ~13 ms | ~13.5–14 ms (+4–8%) | Safe |
-| Commit p50 | 4.6 ms | ~4.65 ms (+1%) | Within noise |
-| Release p50 | 4.8 ms | ~4.85 ms (+1%) | Within noise |
-| Extend p50 | 7.5 ms | ~7.6 ms (+1%) | Within noise |
-| LIST reservations (unsorted) | 4.5 ms | unchanged | no change |
-| Concurrent @ 32 threads | 2,632 ops/s | ~2,520–2,580 (−2 to −4%) | Safe |
-
-Reserve +4–6% consumes **about a fifth of the gate's 25% safety margin** in a single change. Future write-path work that stacks on this (new event emission, another filter dimension) could compound.
-
-### What would need to be ADDED to the suite
-
-The current `CyclesProtocolReadBenchmarkTest` has no sorted-list case — the endpoint was added in v0.1.25.12, the suite was last run at v0.1.25.7. To make the optimization's win visible:
-
-- **New benchmarks:** `LIST reservations sorted@1k`, `LIST reservations sorted@10k`.
-- Seed fixtures of 1 k / 10 k reservations inside the Testcontainers Redis (slower test setup: ~30 s seed time).
-- Run against both the current full-SCAN path (baseline) and the new ZSET path (comparison).
-
-**Without new benchmarks, the optimization looks like a pure regression** in the write path with no visible upside. The new benchmarks are not optional.
-
-### Release-process guidance (when this work is scheduled)
-
-1. **Freeze a baseline run at the version immediately preceding** the ZSET change so the regression is measured, not inferred. Do this before any of the ZSET code lands.
-2. **Do NOT use `[benchmark-skip]`** on the release notes. This is a hot-path change; benchmarks must run.
-3. **Re-baseline deliberately.** Mirror the v0.1.25.6 precedent ("zero overhead on success path" documented): write a BENCHMARKS.md section that explicitly documents the +5% reserve regression as an accepted trade-off for the read-path gain. Then manually update `benchmarks/baseline.json` on the merge commit.
-4. **Ship the sorted-list benchmarks in the same release** so the delta tells the full story.
-
-## Rollback story
-
-Pure Redis-only change, fully reversible:
-1. Delete all `reservation:idx:*` keys via `SCAN + DEL`.
-2. Flip the repository feature flag (add one) back to the full-SCAN path.
-3. Redeploy. No wire format changed; clients see no difference.
-
-## Effort estimate
-
-| Workstream | Days |
-|---|---|
-| Lua changes (5 scripts × ZADD + tests) | ~1 |
-| Repository (ZRANGE-based paging + filtered-sort hybrid) | ~2 |
-| Migration + fallback | ~1 |
-| Tests + new benchmarks | ~2 |
-| **Total** | **~1 week** |
-
-Tractable for a single engineer.
-
-## What this does NOT change
-
-- Wire format — cursors stay opaque; clients don't see the internals.
-- `cycles-protocol-v0.yaml` spec — no spec change required.
-- Admin spec / governance surface — pure runtime concern.
-- New sort keys — 7 covers the full spec enum; no scope creep.
-- Non-sorted list path — byte-for-byte unchanged.
+- No cycles-protocol spec or response-format change.
+- Cursors remain opaque to clients.
+- The unsorted legacy SCAN path is unchanged.
+- `reservation_id`, `tenant`, `scope_path`, `status`, `reserved`, and
+  `expires_at_ms` sorts continue to use the complete in-memory path.
+- No per-filter ZSETs or transient `ZINTERSTORE` keys.
 
 ## Decision log
 
-- **2026-04-16 (v0.1.25.12):** chose hybrid "load-all + sort-in-memory" for the initial sorted-list implementation; deferred ZSETs until a scale trigger. Rationale in `AUDIT.md` entry for v0.1.25.12. This document captures the deferred design for when a trigger fires.
+- **2026-04-16 (v0.1.25.12):** shipped load-all/sort-in-memory and deferred
+  indexing until scale justified it.
+- **2026-07-14 (#240):** measured the 10k path, rejected the old seven-index
+  readiness model, and chose a benchmark-first, one-index rollout with a strict
+  correctness fallback.

@@ -5,6 +5,44 @@
 
 ---
 
+### 2026-07-14 — v0.1.25.53: sorted-list scaling baseline
+
+This benchmark-only release is Phase A of #240. The sorted reservation path
+still performs its correctness-preserving global SCAN, tenant/filter hydration,
+in-memory sort, and cursor slice; no production repository or Lua behavior is
+changed.
+
+`CyclesProtocolReadBenchmarkTest` now seeds 1,000- and 10,000-row populations
+directly through pipelined Redis hashes, with half the rows belonging to the
+authenticated tenant and half to an unrelated tenant. Each measured request is
+the default sorted query (`created_at_ms desc`, `limit=20`). Three same-host
+trials produced median p50/p95/p99 of 22.5/40.9/48.3 ms at 1,000 total rows and
+164.9/210.2/232.0 ms at 10,000. The 10k path hydrates 5,000 matching rows to
+return 20, confirming the next read optimization target without relying on the
+old truncating 2,000-row cap.
+
+The parser, median aggregator, regression checker, and benchmark-data format
+now carry `list_sorted_1k_p50_ms` and `list_sorted_10k_p50_ms` as gating latency
+metrics. Shipping this measurement before the runtime index gives Phase B a
+real preceding-release baseline. The design note was rewritten around one
+default-sort ZSET with completeness count validation, explicit post-rollout
+readiness, restartable backfill, stale-member cleanup, bounded hydration, and a
+full-SCAN fallback; it explicitly rejects the permanent-marker failure modes
+removed from #235.
+
+Version/revision 0.1.25.52 → 0.1.25.53. Both production compose variants pin
+the matching image. There is no public schema, successful-response, or Redis
+storage change.
+
+**Validation.** `mvn clean verify -Pintegration-tests` completed 1,144 tests
+(31 model, 534 data, 579 API) with zero failures, errors, or skips; the
+authoritative protocol coverage check remained 11/11. JaCoCo line coverage is
+95.12% data and 95.56% API. The exact release benchmark command completed all
+17 cases with zero errors, emitted both new metrics, and parsed all nine
+headline values successfully. Focused three-run medians are recorded in
+`BENCHMARKS.md`. Both production Compose files pass `docker compose config
+--quiet` with their required variables supplied.
+
 ### 2026-07-14 — v0.1.25.52: replay-storage and ledger-helper follow-up
 
 This non-behavioral follow-up closes the two intentionally deferred cleanup
