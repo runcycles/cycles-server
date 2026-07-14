@@ -41,49 +41,6 @@ class RedisReservationCoreOpsTest extends BaseRedisReservationRepositoryTest {
         }
     }
 
-    // ---- scopeHasSegment ----
-
-    @Nested
-    @DisplayName("scopeHasSegment")
-    class ScopeHasSegment {
-
-        @Test
-        void shouldMatchExactSegmentAtStart() throws Exception {
-            assertThat(invokeScopeHasSegment("tenant:acme/workspace:dev", "tenant:acme")).isTrue();
-        }
-
-        @Test
-        void shouldMatchExactSegmentInMiddle() throws Exception {
-            assertThat(invokeScopeHasSegment("tenant:acme/workspace:dev/app:web", "workspace:dev")).isTrue();
-        }
-
-        @Test
-        void shouldMatchExactSegmentAtEnd() throws Exception {
-            assertThat(invokeScopeHasSegment("tenant:acme/workspace:dev", "workspace:dev")).isTrue();
-        }
-
-        @Test
-        void shouldRejectPrefixFalsePositive() throws Exception {
-            // "tenant:acme" must NOT match "tenant:acme-corp"
-            assertThat(invokeScopeHasSegment("tenant:acme-corp/workspace:dev", "tenant:acme")).isFalse();
-        }
-
-        @Test
-        void shouldRejectPartialMatch() throws Exception {
-            assertThat(invokeScopeHasSegment("tenant:acme/workspace:dev", "tenant:ac")).isFalse();
-        }
-
-        @Test
-        void shouldRejectMissingSegment() throws Exception {
-            assertThat(invokeScopeHasSegment("tenant:acme/workspace:dev", "app:web")).isFalse();
-        }
-
-        @Test
-        void shouldMatchSingleSegmentPath() throws Exception {
-            assertThat(invokeScopeHasSegment("tenant:acme", "tenant:acme")).isTrue();
-        }
-    }
-
     // ---- computePayloadHash ----
 
     @Nested

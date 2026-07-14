@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.repository.support;
 
+import io.runcycles.protocol.data.util.ScopePathMatcher;
 import io.runcycles.protocol.model.ReservationInclude;
 
 import java.util.Collections;
@@ -52,6 +53,8 @@ public record ReservationListQuery(
     }
 
     public String filterHash() {
+        // Include is projection-only and deliberately excluded. Preserve the
+        // established argument order so cursors remain valid across upgrades.
         return FilterHasher.hash(tenant, idempotencyKey, status,
             scopes.workspace(), scopes.app(), scopes.workflow(), scopes.agent(), scopes.toolset(),
             createdAt.from(), createdAt.to(), expiresAt.from(), expiresAt.to(),
@@ -118,13 +121,7 @@ public record ReservationListQuery(
         }
 
         private static boolean matchesSegment(String scopePath, String segment) {
-            if (segment == null) return true;
-            int index = scopePath.indexOf(segment);
-            if (index < 0) return false;
-            int end = index + segment.length();
-            boolean startBoundary = index == 0 || scopePath.charAt(index - 1) == '/';
-            boolean endBoundary = end == scopePath.length() || scopePath.charAt(end) == '/';
-            return startBoundary && endBoundary;
+            return segment == null || ScopePathMatcher.hasExactSegment(scopePath, segment);
         }
 
         @Override

@@ -2,16 +2,15 @@ package io.runcycles.protocol.data.repository;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
-import io.runcycles.protocol.data.repository.support.FilterHasher;
 import io.runcycles.protocol.data.repository.support.ReservationListQuery;
 import io.runcycles.protocol.data.repository.support.ScanPageCursor;
-import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
 import io.runcycles.protocol.data.service.LuaScriptRegistry;
 import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
+import io.runcycles.protocol.data.util.ScopePathMatcher;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -1543,7 +1542,7 @@ public class RedisReservationRepository {
      *
      * <p>Spec: cycles-protocol-v0.yaml revision 2026-04-16. When {@code sortBy} or
      * {@code sortDir} is provided, results are returned in requested order and the
-     * returned cursor encodes the sort state ({@link SortedListCursor}). When both are
+     * returned cursor encodes the sort state. When both are
      * null AND the caller supplies either no cursor or a legacy numeric SCAN cursor,
      * the original SCAN-cursor pagination path is used — preserves wire-compat for
      * clients predating revision 2026-04-16.
@@ -1570,8 +1569,7 @@ public class RedisReservationRepository {
      * include-aware overload (cycles-protocol revision 2026-06-19,
      * cycles-server#201). {@code include} is PROJECTION-ONLY: it selects which
      * optional metadata maps are serialized onto each summary row and is
-     * deliberately NOT part of the filter/cursor binding (see
-     * {@link FilterHasher} — it is not passed there), so changing {@code include}
+     * deliberately NOT part of the filter/cursor binding, so changing {@code include}
      * across pages never invalidates a cursor. {@code committed} is always
      * projected regardless of {@code include}.
      */
@@ -1646,12 +1644,17 @@ public class RedisReservationRepository {
                         // Filter by tenant and optional subject fields.
                         // Use exact segment boundary checks to avoid prefix false-positives
                         // (e.g. tenant "acme" must not match "tenant:acme-corp").
-                        if (!scopeHasSegment(trueScope, tenantSegment)) continue;
-                        if (workspaceSegment != null && !scopeHasSegment(trueScope, workspaceSegment)) continue;
-                        if (appSegment != null && !scopeHasSegment(trueScope, appSegment)) continue;
-                        if (workflowSegment != null && !scopeHasSegment(trueScope, workflowSegment)) continue;
-                        if (agentSegment != null && !scopeHasSegment(trueScope, agentSegment)) continue;
-                        if (toolsetSegment != null && !scopeHasSegment(trueScope, toolsetSegment)) continue;
+                        if (!ScopePathMatcher.hasExactSegment(trueScope, tenantSegment)) continue;
+                        if (workspaceSegment != null
+                                && !ScopePathMatcher.hasExactSegment(trueScope, workspaceSegment)) continue;
+                        if (appSegment != null
+                                && !ScopePathMatcher.hasExactSegment(trueScope, appSegment)) continue;
+                        if (workflowSegment != null
+                                && !ScopePathMatcher.hasExactSegment(trueScope, workflowSegment)) continue;
+                        if (agentSegment != null
+                                && !ScopePathMatcher.hasExactSegment(trueScope, agentSegment)) continue;
+                        if (toolsetSegment != null
+                                && !ScopePathMatcher.hasExactSegment(trueScope, toolsetSegment)) continue;
 
                         String trueUnitsStr = budget.get("unit");
                         Enums.UnitEnum unit = Enums.UnitEnum.valueOf(trueUnitsStr);
@@ -2028,20 +2031,6 @@ public class RedisReservationRepository {
     private String leafScope(String scopePath) {
         int lastSlash = scopePath.lastIndexOf('/');
         return lastSlash >= 0 ? scopePath.substring(lastSlash + 1) : scopePath;
-    }
-
-    /**
-     * Returns true when the scope path contains the given segment at an exact boundary.
-     * Segment boundaries are "/" or start/end of string, preventing prefix false-positives
-     * (e.g. "tenant:acme" must not match "tenant:acme-corp").
-     */
-    private boolean scopeHasSegment(String scopePath, String segment) {
-        int idx = scopePath.indexOf(segment);
-        if (idx < 0) return false;
-        int end = idx + segment.length();
-        boolean startOk = idx == 0 || scopePath.charAt(idx - 1) == '/';
-        boolean endOk = end == scopePath.length() || scopePath.charAt(end) == '/';
-        return startOk && endOk;
     }
 
     /**

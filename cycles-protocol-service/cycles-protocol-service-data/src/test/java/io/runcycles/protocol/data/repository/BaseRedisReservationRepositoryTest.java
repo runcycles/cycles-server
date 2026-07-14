@@ -200,12 +200,6 @@ abstract class BaseRedisReservationRepositoryTest {
         return (String) m.invoke(repository, scopePath);
     }
 
-    protected boolean invokeScopeHasSegment(String scopePath, String segment) throws Exception {
-        Method m = RedisReservationRepository.class.getDeclaredMethod("scopeHasSegment", String.class, String.class);
-        m.setAccessible(true);
-        return (boolean) m.invoke(repository, scopePath, segment);
-    }
-
     protected String invokeComputePayloadHash(Object request) throws Exception {
         Method m = RedisReservationRepository.class.getDeclaredMethod("computePayloadHash", Object.class);
         m.setAccessible(true);

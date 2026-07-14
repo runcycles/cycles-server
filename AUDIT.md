@@ -29,16 +29,20 @@ checked by the Redis/Lua composition test.
 
 Dedicated boundary tests pin include immutability, the existing filter hash,
 exact scope boundaries, inclusive time predicates, every mapper filter,
-projection safety, and the facade/component ownership split. The pre-existing
-query suite and 23-test real-Redis created-at index suite pass unchanged,
-covering both the indexed and authoritative fallback paths. A paired
+projection safety, the index consistency fields, and the facade/component
+ownership split. Reservation and balance filters now share one exact-segment
+matcher with the existing first-occurrence behavior pinned directly. The
+24-test real-Redis created-at index suite includes a shared query matrix that
+runs with a READY index and with the index disabled, asserting identical rows,
+ordering, page boundaries, cursor bytes, and error results across both paths.
+A paired
 three-trial benchmark against an isolated v0.1.25.54 worktree measured sorted
 1k p50 at 17.0ms in both versions and sorted 10k p50 at 16.9ms versus 17.6ms
 (+4.1%); all six 17-case trials completed with zero errors. Untouched
 operations moved by larger amounts and concurrency contained host stalls, so
 the listing delta is classified as measurement noise rather than a claimed
 optimization or regression. Clean default and integration-profile reactor
-verification completed 1,186 tests (31 model, 566 data, 589 API) with zero
+verification completed 1,182 tests (31 model, 562 data, 589 API) with zero
 failures, errors, or skips; protocol coverage remained 11/11 and JaCoCo line
 coverage was 95.22% data and 95.56% API.
 

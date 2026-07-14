@@ -115,6 +115,11 @@ class ReservationQueryBoundaryTest {
 
     @Test
     void projectionNeverHydratesReplaySnapshotsAndDetailArrayIsDefensive() {
+        List<String> summaryProjection = ReservationHashMapper.projection(
+            EnumSet.noneOf(ReservationInclude.class), false);
+        assertThat(summaryProjection)
+            .contains("reservation_id", "tenant", "created_at");
+
         assertThat(ReservationHashMapper.projection(
             EnumSet.allOf(ReservationInclude.class), true))
             .noneMatch(field -> field.endsWith("_response_json"));
