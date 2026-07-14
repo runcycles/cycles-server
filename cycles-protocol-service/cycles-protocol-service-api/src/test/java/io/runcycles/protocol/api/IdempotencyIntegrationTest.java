@@ -231,28 +231,6 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void shouldReturnSameCommitOnReplay() {
-            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
-            Map<String, Object> body = commitBody(800);
-
-            ResponseEntity<Map> resp1 = post(
-                    "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
-            // Rolling-upgrade compatibility: a pre-snapshot row can still replay
-            // through its surviving canonical Java body cache.
-            try (Jedis jedis = jedisPool.getResource()) {
-                assertThat(jedis.hdel("reservation:res_" + reservationId, "commit_response_json"))
-                        .isEqualTo(1L);
-            }
-            ResponseEntity<Map> resp2 = post(
-                    "/v1/reservations/" + reservationId + "/commit", API_KEY_SECRET_A, body);
-
-            assertThat(resp1.getStatusCode().value()).isEqualTo(200);
-            assertThat(resp2.getStatusCode().value()).isEqualTo(200);
-            assertThat(resp1.getBody().get("status")).isEqualTo("COMMITTED");
-            assertThat(resp2.getBody().get("status")).isEqualTo("COMMITTED");
-        }
-
-        @Test
         void commitReplayUsesSnapshotWithoutReadingCurrentBudget() {
             String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
             Map<String, Object> body = commitBody(800);
@@ -285,28 +263,6 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             // not a replay payload mismatch (409 IDEMPOTENCY_MISMATCH)
             assertThat(resp.getStatusCode().value()).isEqualTo(400);
             assertThat(resp.getBody().get("error")).isEqualTo("INVALID_REQUEST");
-        }
-
-        @Test
-        void shouldReturnSameReleaseOnReplay() {
-            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
-            Map<String, Object> body = releaseBody();
-
-            ResponseEntity<Map> resp1 = post(
-                    "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
-            // A pre-snapshot row can still replay through its surviving canonical body cache.
-            try (Jedis jedis = jedisPool.getResource()) {
-                assertThat(jedis.hdel("reservation:res_" + reservationId, "release_response_json"))
-                        .isEqualTo(1L);
-            }
-            ResponseEntity<Map> resp2 = post(
-                    "/v1/reservations/" + reservationId + "/release", API_KEY_SECRET_A, body);
-
-            assertThat(resp1.getStatusCode().value()).isEqualTo(200);
-            assertThat(resp1.getBody().get("status")).isEqualTo("RELEASED");
-            // Spec: idempotent replay with same key must return original successful response
-            assertThat(resp2.getStatusCode().value()).isEqualTo(200);
-            assertThat(resp2.getBody().get("status")).isEqualTo("RELEASED");
         }
 
         @Test
@@ -386,33 +342,6 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void eventReplayBackfillsSnapshotWhileLegacyFastResponseStillExists() {
-            Map<String, Object> body = eventBody(TENANT_A, 500);
-            String idempotencyKey = body.get("idempotency_key").toString();
-            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
-            String eventId = original.getBody().get("event_id").toString();
-            String idemKey = "idem:" + TENANT_A + ":event:" + idempotencyKey;
-
-            try (Jedis jedis = jedisPool.getResource()) {
-                String originalSnapshot = jedis.hget(
-                        "event:evt_" + eventId, "event_response_json");
-                assertThat(originalSnapshot).isNotBlank();
-                assertThat(jedis.hdel("event:evt_" + eventId, "event_response_json"))
-                        .isEqualTo(1);
-                jedis.psetex(idemKey + ":response", jedis.pttl(idemKey), originalSnapshot);
-            }
-
-            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
-
-            assertThat(replay.getStatusCode().value()).isEqualTo(201);
-            assertThat(replay.getBody()).isEqualTo(original.getBody());
-            try (Jedis jedis = jedisPool.getResource()) {
-                assertThat(jedis.hget("event:evt_" + eventId, "event_response_json"))
-                        .isEqualTo(jedis.get(idemKey + ":response"));
-            }
-        }
-
-        @Test
         void eventReplayUsesLegacyFastResponseWhenEventHashHasWrongType() {
             Map<String, Object> body = eventBody(TENANT_A, 500);
             String idempotencyKey = body.get("idempotency_key").toString();
@@ -432,30 +361,6 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             assertThat(replay.getStatusCode().value()).isEqualTo(201);
             assertThat(replay.getBody()).isEqualTo(original.getBody());
-        }
-
-        @Test
-        void eventReplayFailsRetriablyWhenLegacyRowHasNoOriginalSnapshot() {
-            Map<String, Object> body = eventBody(TENANT_A, 500);
-            String idempotencyKey = body.get("idempotency_key").toString();
-            ResponseEntity<Map> original = post("/v1/events", API_KEY_SECRET_A, body);
-            String eventId = original.getBody().get("event_id").toString();
-
-            try (Jedis jedis = jedisPool.getResource()) {
-                assertThat(jedis.exists(
-                        "idem:" + TENANT_A + ":event:" + idempotencyKey + ":response"))
-                        .isFalse();
-                assertThat(jedis.hdel("event:evt_" + eventId, "event_response_json"))
-                        .isEqualTo(1);
-            }
-
-            ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
-
-            assertThat(replay.getStatusCode().value()).isEqualTo(500);
-            assertThat(replay.getBody().get("error")).isEqualTo("INTERNAL_ERROR");
-            assertThat(replay.getBody().get("message").toString())
-                    .contains("do not retry automatically")
-                    .contains("do not", "reuse");
         }
 
         @Test
@@ -545,38 +450,6 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
 
             assertThat(response.getStatusCode().value()).isEqualTo(409);
             assertThat(response.getBody().get("error")).isEqualTo("IDEMPOTENCY_MISMATCH");
-        }
-
-        @Test
-        void legacyDryRunNamespaceReplaysAndBlocksChangedEndpointPayloads() {
-            Map<String, Object> dryRun = reservationBody(TENANT_A, 1000);
-            dryRun.put("dry_run", true);
-            String idempotencyKey = dryRun.get("idempotency_key").toString();
-            ResponseEntity<Map> original = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
-            String sharedKey = "idem:" + TENANT_A + ":reserve:" + idempotencyKey;
-            String legacyKey = "idem:" + TENANT_A + ":dry_run:" + idempotencyKey;
-            try (Jedis jedis = jedisPool.getResource()) {
-                jedis.rename(sharedKey, legacyKey);
-                jedis.rename(sharedKey + ":hash", legacyKey + ":hash");
-            }
-
-            ResponseEntity<Map> replay = post("/v1/reservations", API_KEY_SECRET_A, dryRun);
-            assertThat(replay.getStatusCode().value()).isEqualTo(200);
-            assertThat(replay.getBody()).isEqualTo(original.getBody());
-
-            Map<String, Object> changedDryRun = new HashMap<>(dryRun);
-            changedDryRun.put("estimate", Map.of("amount", 1001, "unit", "TOKENS"));
-            ResponseEntity<Map> changed = post(
-                    "/v1/reservations", API_KEY_SECRET_A, changedDryRun);
-            assertThat(changed.getStatusCode().value()).isEqualTo(409);
-
-            Map<String, Object> live = new HashMap<>(dryRun);
-            live.put("dry_run", false);
-            ResponseEntity<Map> liveResponse = post(
-                    "/v1/reservations", API_KEY_SECRET_A, live);
-            assertThat(liveResponse.getStatusCode().value()).isEqualTo(409);
-            assertThat(liveResponse.getBody().get("error"))
-                    .isEqualTo("IDEMPOTENCY_MISMATCH");
         }
 
         @Test

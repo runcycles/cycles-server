@@ -73,8 +73,8 @@ HTTP error body uses) plus two success-path sentinels (`OK` and
 `IDEMPOTENT_REPLAY`). The operationally-observable set on the domain
 counters is:
 
-- Success: `OK`, `IDEMPOTENT_REPLAY` (reserve idempotent replays only;
-  the other endpoints' idempotent replays fall into `OK`)
+- Success: `OK`, `IDEMPOTENT_REPLAY` (reserve, commit, and release replays use
+  `IDEMPOTENT_REPLAY`; direct-event replays currently use `OK`)
 - Budget denials: `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`,
   `DEBT_OUTSTANDING`
 - Budget state: `BUDGET_FROZEN`, `BUDGET_CLOSED`

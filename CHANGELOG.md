@@ -14,6 +14,36 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.57] — 2026-07-14
+
+### Added
+
+- **Deterministic lost-response recovery coverage.** The real-Redis integration
+  suite now discards the first successful HTTP result and repeats the exact
+  request for reserve, commit, release, direct event, dry-run, and decide. It
+  asserts byte-identical replay bodies, one ledger mutation, one durable
+  reservation/event identity, and no duplicate evidence or runtime event.
+- **Frozen rolling-upgrade Redis fixtures.** One compatibility matrix pins
+  pre-snapshot lifecycle fast bodies, the legacy event fast-body/backfill
+  shape, the former dry-run namespace, pre-index reservation hashes, and the
+  documented missing-original-body failure behavior.
+
+### Changed
+
+- Weaker one-off legacy replay cases were consolidated behind one fixture
+  owner and replaced with parameterized lifecycle matrices. Existing
+  Testcontainers Redis pause/recovery coverage remains the transport-outage
+  check; the new lost-response cases avoid probabilistic packet timing.
+
+### Compatibility
+
+- Test and documentation release only: no protocol schema, HTTP behavior,
+  production Java/Lua, Redis key layout, or performance-sensitive path changed.
+  The compatibility suite runs in the existing PR integration job, so no old
+  server binary or external chaos platform is required. `[benchmark-skip]`
+- Production and full-stack Compose defaults self-pin
+  `ghcr.io/runcycles/cycles-server:0.1.25.57`.
+
 ## [0.1.25.56] — 2026-07-14
 
 ### Added
