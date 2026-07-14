@@ -1974,9 +1974,9 @@ public class RedisReservationRepository {
 
             Map<String, Long> scopeDebtIncurred = parseScopeDebtIncurred(response);
 
-            if (!idempotentReplay) {
-                metrics.recordEvent(tenant, "APPLIED", "OK", overagePolicyTag);
-            }
+            metrics.recordEvent(tenant, "APPLIED",
+                    idempotentReplay ? "IDEMPOTENT_REPLAY" : "OK",
+                    overagePolicyTag);
             // Any scope that actually accrued debt counts as overdraft incurred
             // (event path creates debt the same way commit does).
             boolean anyDebt = scopeDebtIncurred != null

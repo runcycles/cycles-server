@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * End-to-end check that Micrometer's {@code http.server.requests} timer is accurate for
- * reservation endpoints under known workloads.
+ * End-to-end check that Micrometer's HTTP timers and custom Cycles domain counters
+ * are accurate under known workloads.
  *
  * <p>Rationale for the chosen approach: the HTTP {@code /actuator/prometheus} endpoint
  * isn't reliably registered in the {@code @SpringBootTest(RANDOM_PORT)} context (the
@@ -35,9 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * zero HTTP-layer wiring risk. A live-endpoint check still runs against the real server
  * when it's brought up manually; this test covers the counter accuracy contract.
  *
- * <p>If a future change adds custom reservation counters (reserve_total, commit_total,
- * etc.), extend this test to assert on them too. Until then the HTTP-layer timer is the
- * canonical signal.
  */
 @TestPropertySource(properties = {
         "admin.api-key=metrics-test-admin-key",
@@ -314,6 +311,41 @@ class MetricsCorrectnessIntegrationTest extends BaseIntegrationTest {
             assertThat(counterCount("cycles.events",
                     "tenant", TENANT_A, "decision", "APPLIED", "reason", "OK") - before)
                     .isEqualTo((double) n);
+        }
+
+        @Test
+        @DisplayName("successful replay is visible without double-counting overdraft")
+        void replayBumpsReplayCounterOnly() {
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedBudgetWithOverdraftLimit(jedis, TENANT_A, "TOKENS", 100, 1_000);
+            }
+            Map<String, Object> body = eventBody(TENANT_A, 500);
+            body.put("overage_policy", "ALLOW_WITH_OVERDRAFT");
+
+            double okBefore = counterCount("cycles.events",
+                    "tenant", TENANT_A, "decision", "APPLIED", "reason", "OK");
+            double replayBefore = counterCount("cycles.events",
+                    "tenant", TENANT_A, "decision", "APPLIED",
+                    "reason", "IDEMPOTENT_REPLAY");
+            double overdraftBefore = counterCount(
+                    "cycles.overdraft.incurred", "tenant", TENANT_A);
+
+            ResponseEntity<Map> original = post(
+                    "/v1/events", API_KEY_SECRET_A, body);
+            ResponseEntity<Map> replay = post(
+                    "/v1/events", API_KEY_SECRET_A, body);
+
+            assertThat(original.getStatusCode().value()).isEqualTo(201);
+            assertThat(replay.getStatusCode().value()).isEqualTo(201);
+            assertThat(replay.getBody()).isEqualTo(original.getBody());
+            assertThat(counterCount("cycles.events",
+                    "tenant", TENANT_A, "decision", "APPLIED", "reason", "OK")
+                    - okBefore).isEqualTo(1.0);
+            assertThat(counterCount("cycles.events",
+                    "tenant", TENANT_A, "decision", "APPLIED",
+                    "reason", "IDEMPOTENT_REPLAY") - replayBefore).isEqualTo(1.0);
+            assertThat(counterCount("cycles.overdraft.incurred", "tenant", TENANT_A)
+                    - overdraftBefore).isEqualTo(1.0);
         }
     }
 

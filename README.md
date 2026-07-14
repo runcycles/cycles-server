@@ -349,6 +349,9 @@ service exposes domain-level counters under the `cycles_*` namespace for
 reservation lifecycle, quarantine, events, and overdraft. Since v0.1.25.56,
 `cycles_maintenance_runs_total` and `cycles_maintenance_duration_seconds`
 also expose the fixed job/outcome of every scheduled Redis-maintenance tick.
+Successful keyed replays of reserve, commit, release, and direct-event requests
+use `reason=IDEMPOTENT_REPLAY`; mutation-only counters such as overdraft
+incurred remain exactly-once.
 Operators can alert on denials, overdraft incidence, quarantine, and
 maintenance failure without reverse-engineering them from HTTP status codes.
 

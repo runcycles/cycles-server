@@ -683,7 +683,9 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             assertThat(response.getEventId()).isEqualTo("existing-event-123");
             assertThat(response.isIdempotentReplay()).isTrue();
-            verify(metrics, never()).recordEvent(anyString(), anyString(), anyString(), anyString());
+            verify(metrics).recordEvent(
+                    "acme", "APPLIED", "IDEMPOTENT_REPLAY", "DEFAULT");
+            verify(metrics, never()).recordOverdraftIncurred(anyString());
         }
 
         @Test

@@ -14,6 +14,27 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.58] — 2026-07-14
+
+### Changed
+
+- **Successful direct-event replays are visible in domain metrics.** Every
+  successful keyed replay increments
+  `cycles_events_total{decision="APPLIED",reason="IDEMPOTENT_REPLAY"}` rather
+  than disappearing from the event request counter. Fresh applications remain
+  tagged `reason="OK"`.
+- Mutation-only observability remains exactly-once: replaying an event that
+  originally incurred debt does not increment `cycles_overdraft_incurred_total`
+  again.
+
+### Compatibility
+
+- Metrics-only behavior change: no protocol schema, HTTP body, Redis command,
+  Lua script, ledger mutation, or runtime-event behavior changed. The replay
+  path adds one in-memory Micrometer counter increment. `[benchmark-skip]`
+- Production and full-stack Compose defaults self-pin
+  `ghcr.io/runcycles/cycles-server:0.1.25.58`.
+
 ## [0.1.25.57] — 2026-07-14
 
 ### Added
