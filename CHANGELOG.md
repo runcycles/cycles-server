@@ -14,6 +14,34 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.52] — 2026-07-14
+
+### Performance
+
+- **Keyed events retain one canonical replay body.** New idempotent events keep
+  their immutable original response only in the 30-day event hash instead of
+  duplicating it in a separate seven-day `:response` string. Replays read the
+  hash snapshot directly, preserving one Redis lookup while removing one write,
+  one expiring key, and one full response copy per keyed event.
+
+### Changed
+
+- **Per-scope over-limit marking has one implementation.** Commit and direct
+  event scripts now call a shared exact-int ledger helper for both
+  `ALLOW_IF_AVAILABLE` and the zero-overdraft
+  `ALLOW_WITH_OVERDRAFT` fallback. The protocol behavior is unchanged: only
+  scopes whose pre-mutation balance could not cover the requested amount are
+  marked over-limit.
+
+### Compatibility
+
+- Pre-0.1.25.52 event rows that only have the legacy seven-day `:response` key
+  still replay byte-identically. The replay path reads that key only when the
+  event snapshot is absent and opportunistically backfills the snapshot without
+  recreating missing event hashes or overwriting an existing canonical body.
+- No request or response schema changes. Production and full-stack compose
+  defaults self-pin `ghcr.io/runcycles/cycles-server:0.1.25.52`.
+
 ## [0.1.25.51] — 2026-07-13
 
 ### Fixed

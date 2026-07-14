@@ -202,12 +202,8 @@ if compare_int(delta, "0") > 0 then
         -- The minimum scope caps the operation, but healthier descendants must
         -- remain eligible for reservations after their limiting ancestor recovers.
         if compare_int(capped_delta, delta) < 0 then
-            for _, scope in ipairs(affected_scopes) do
-                if compare_int(pre_budget_state[scope].remaining, delta) < 0 then
-                    local budget_key = "budget:" .. scope .. ":" .. actual_unit
-                    redis.call('HSET', budget_key, 'is_over_limit', 'true')
-                end
-            end
+            mark_uncovered_scopes(affected_scopes, pre_budget_state, delta,
+                actual_unit, false)
         end
     elseif overage_policy == "ALLOW_WITH_OVERDRAFT" then
         -- Spec: "If overdraft_limit is absent or 0, behaves as ALLOW_IF_AVAILABLE."
@@ -280,13 +276,8 @@ if compare_int(delta, "0") > 0 then
         charged_amount = add_int(estimate_amount, capped_delta)
         -- Mark over-limit on zero-limit scopes if full delta couldn't be covered
         if compare_int(capped_delta, delta) < 0 then
-            for _, scope in ipairs(affected_scopes) do
-                if compare_int(scope_budget_cache[scope].overdraft_limit, "0") == 0
-                   and compare_int(scope_budget_cache[scope].remaining, delta) < 0 then
-                    local budget_key = "budget:" .. scope .. ":" .. actual_unit
-                    redis.call('HSET', budget_key, 'is_over_limit', 'true')
-                end
-            end
+            mark_uncovered_scopes(affected_scopes, scope_budget_cache, delta,
+                actual_unit, true)
         end
     end
 end
