@@ -121,6 +121,7 @@ class RollingUpgradeCompatibilityIntegrationTest extends BaseIntegrationTest {
 
         assertThat(replay.getStatusCode().value()).isEqualTo(500);
         JsonNode error = objectMapper.readTree(replay.getBody());
+        assertThat(error.path("error").asText()).isEqualTo("INTERNAL_ERROR");
         assertThat(error.path("message").asText())
                 .contains("do not retry automatically")
                 .contains("do not", "reuse");

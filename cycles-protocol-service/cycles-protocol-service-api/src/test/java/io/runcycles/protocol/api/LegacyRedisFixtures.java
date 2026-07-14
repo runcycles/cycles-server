@@ -23,9 +23,12 @@ final class LegacyRedisFixtures {
         String reservationKey = reservationKey(reservationId);
         String bodyKey = lifecycleBodyKey(reservationId, operation);
         assertThat(jedis.get(bodyKey)).as("legacy %s fast body", operation).isNotBlank();
-        jedis.hdel(reservationKey,
+        assertThat(jedis.hdel(reservationKey,
                 operation + "_response_json",
-                operation + "_response_state",
+                operation + "_response_state"))
+                .as("current %s response snapshot fields", operation)
+                .isEqualTo(2);
+        jedis.hdel(reservationKey,
                 operation + "_evidence_id",
                 operation + "_evidence_url");
     }
@@ -55,7 +58,9 @@ final class LegacyRedisFixtures {
         assertThat(jedis.get(mappingKey)).isEqualTo(eventId);
         assertThat(jedis.hdel("event:evt_" + eventId, "event_response_json"))
                 .isEqualTo(1);
-        jedis.del(mappingKey + ":response");
+        assertThat(jedis.del(mappingKey + ":response"))
+                .as("current event writer does not persist the legacy fast body")
+                .isZero();
     }
 
     static void moveDryRunToLegacyNamespace(Jedis jedis, String tenant,
