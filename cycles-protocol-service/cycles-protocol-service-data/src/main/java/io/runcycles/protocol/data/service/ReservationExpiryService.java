@@ -91,8 +91,10 @@ public class ReservationExpiryService {
                                 LogSanitizer.sanitize(quarantineReason),
                                 LogSanitizer.sanitize(resultNode.path("error").asText()),
                                 LogSanitizer.sanitize(resultNode.path("message").asText()));
-                        metrics.recordQuarantined(
-                                resultNode.path("tenant").asText(null), quarantineReason);
+                        JsonNode tenantNode = resultNode.path("tenant");
+                        String tenantId = tenantNode.isTextual()
+                                ? tenantNode.asText(null) : null;
+                        metrics.recordQuarantined(tenantId, quarantineReason);
                         continue;
                     }
                     // Emit reservation.expired event if the Lua script actually expired this reservation

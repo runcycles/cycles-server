@@ -197,6 +197,21 @@ class ReservationExpiryServiceTest {
     }
 
     @Test
+    void shouldTreatNonTextualQuarantineTenantAsUnknown() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(List.of("bad-id"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("bad-id")))
+                .thenReturn("{\"status\":\"ERROR\",\"error\":\"INTERNAL_ERROR\","
+                        + "\"message\":\"Reservation has invalid estimate data\","
+                        + "\"quarantine_reason\":\"INVALID_ESTIMATE\","
+                        + "\"tenant\":false}");
+
+        service.expireReservations();
+
+        verify(metrics).recordQuarantined(null, "INVALID_ESTIMATE");
+    }
+
+    @Test
     void shouldNotEmitEventForAlreadyExpiredSkipResult() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(List.of("id1"));
