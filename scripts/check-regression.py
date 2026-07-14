@@ -48,6 +48,8 @@ HEADLINE_METRICS = [
     ("commit_p99_ms",             True,  False),
     ("release_p50_ms",            True,  True),
     ("event_p50_ms",              True,  True),
+    ("list_sorted_1k_p50_ms",     True,  True),
+    ("list_sorted_10k_p50_ms",    True,  True),
     ("concurrent_throughput_32t", False, True),
 ]
 

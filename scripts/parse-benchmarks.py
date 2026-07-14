@@ -6,7 +6,7 @@ for the perf-regression pipeline.
 Usage:
     python scripts/parse-benchmarks.py <surefire-reports-dir> [--trial-of N]
 
-Emits one JSON object on stdout with the seven headline metrics defined
+Emits one JSON object on stdout with the nine headline metrics defined
 in `benchmarks/README.md`. Values are in ms except throughput (ops/s).
 
 When called with `--trial-of N` (for N=1..3), emits an object tagged with
@@ -62,6 +62,8 @@ EXTRACTORS = [
     ("commit_p99_ms",  BENCH_LINE.format(op="Commit"),  3),
     ("release_p50_ms", BENCH_LINE.format(op="Release"), 1),
     ("event_p50_ms",   BENCH_LINE.format(op="Event"),   1),
+    ("list_sorted_1k_p50_ms", BENCH_LINE.format(op="LIST sorted @1k"), 1),
+    ("list_sorted_10k_p50_ms", BENCH_LINE.format(op="LIST sorted @10k"), 1),
 ]
 
 CONCURRENT_32T_RE = re.compile(

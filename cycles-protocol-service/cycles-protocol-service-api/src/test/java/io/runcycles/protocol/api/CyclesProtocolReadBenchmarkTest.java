@@ -3,6 +3,8 @@ package io.runcycles.protocol.api;
 import org.junit.jupiter.api.*;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Pipeline;
 
 import java.util.*;
 import java.util.stream.LongStream;
@@ -79,6 +81,18 @@ class CyclesProtocolReadBenchmarkTest extends BaseIntegrationTest {
     }
 
     @Test
+    @DisplayName("GET /v1/reservations sorted at 1k total rows")
+    void benchmarkSortedReservationsAt1k() {
+        benchmarkSortedReservations(1_000, "LIST sorted @1k");
+    }
+
+    @Test
+    @DisplayName("GET /v1/reservations sorted at 10k total rows")
+    void benchmarkSortedReservationsAt10k() {
+        benchmarkSortedReservations(10_000, "LIST sorted @10k");
+    }
+
+    @Test
     @DisplayName("GET /v1/balances")
     void benchmarkGetBalances() {
         long[] timings = runBenchmark("GET balances", () -> {
@@ -151,5 +165,51 @@ class CyclesProtocolReadBenchmarkTest extends BaseIntegrationTest {
         body.put("action", Map.of("kind", "llm.completion", "name", "test-model"));
         body.put("estimate", Map.of("unit", "TOKENS", "amount", amount));
         return body;
+    }
+
+    /**
+     * Seed half the population for the authenticated tenant and half for an unrelated
+     * tenant. The current sorted path scans the global reservation keyspace before
+     * filtering by tenant, so this fixture exposes both population size and tenant
+     * selectivity. Direct pipelined hashes keep setup time out of the measurement.
+     */
+    private void benchmarkSortedReservations(int totalRows, String benchmarkName) {
+        seedReservationPopulation(totalRows);
+
+        long[] timings = runBenchmark(benchmarkName, () -> {
+            ResponseEntity<Map> resp = get(
+                    "/v1/reservations?limit=20&sort_by=created_at_ms&sort_dir=desc",
+                    API_KEY_SECRET_A);
+            assertThat(resp.getStatusCode().value()).isEqualTo(200);
+            assertThat((List<?>) resp.getBody().get("reservations")).hasSize(20);
+        });
+        record(new BenchmarkResult(benchmarkName, p(timings, 50), p(timings, 95), p(timings, 99),
+                timings[0], timings[timings.length - 1], mean(timings)));
+    }
+
+    private void seedReservationPopulation(int totalRows) {
+        final long createdAtBase = 1_700_000_000_000L;
+        try (Jedis jedis = jedisPool.getResource(); Pipeline pipeline = jedis.pipelined()) {
+            for (int i = 0; i < totalRows; i++) {
+                String tenant = i % 2 == 0 ? TENANT_A : TENANT_B;
+                String reservationId = String.format("bench-%05d", i);
+                pipeline.hset("reservation:res_" + reservationId, Map.ofEntries(
+                        Map.entry("reservation_id", reservationId),
+                        Map.entry("tenant", tenant),
+                        Map.entry("state", "ACTIVE"),
+                        Map.entry("subject_json", "{\"tenant\":\"" + tenant + "\"}"),
+                        Map.entry("action_json", "{\"kind\":\"llm.completion\",\"name\":\"benchmark\"}"),
+                        Map.entry("estimate_amount", "100"),
+                        Map.entry("estimate_unit", "TOKENS"),
+                        Map.entry("scope_path", "tenant:" + tenant),
+                        Map.entry("affected_scopes", "[\"tenant:" + tenant + "\"]"),
+                        Map.entry("created_at", String.valueOf(createdAtBase + i)),
+                        Map.entry("expires_at", String.valueOf(createdAtBase + 86_400_000L + i))));
+                if ((i + 1) % 500 == 0) {
+                    pipeline.sync();
+                }
+            }
+            pipeline.sync();
+        }
     }
 }

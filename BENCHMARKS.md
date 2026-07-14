@@ -27,8 +27,8 @@ running them would only measure environmental noise. Skipped releases:
   list endpoint. The sorted path is opt-in (clients must pass the
   new params to activate it); legacy list behaviour is byte-for-byte
   unchanged and all existing benchmarks exercise the legacy path.
-  Benchmarks for the sorted path are worth adding once real tenant
-  populations exercise the O(N) full-SCAN; see OPERATIONS.md.
+  Population benchmarks for the sorted path were added after v0.1.25.52 under
+  #240; see the frozen pre-index baseline below.
 - **v0.1.25.13** — hydration cap + enum wire annotations on the sorted
   list path. Write-path unchanged.
 - **v0.1.25.14** — trace_id (W3C Trace Context) correlation. The new
@@ -39,7 +39,34 @@ running them would only measure environmental noise. Skipped releases:
   Benchmarks deliberately skipped — they would only measure
   environmental noise. [benchmark-skip]
 
-Last benchmarked release: **v0.1.25.52**.
+Last benchmarked release: **v0.1.25.53**.
+
+---
+
+## v0.1.25.53 — Sorted-list scaling baseline
+
+**Date:** 2026-07-14
+
+**Tag:** `v0.1.25.53` *(benchmark-only follow-up; tag after merge)*
+
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X
+64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Method:** The runtime is unchanged from v0.1.25.52. Each fixture contains
+equal numbers of authenticated-tenant and unrelated-tenant reservation hashes,
+requests `limit=20&sort_by=created_at_ms&sort_dir=desc`, and measures 200
+requests after 50 warmups. Fixture writes are pipelined and complete before
+timing starts. Values are medians of three same-host trials.
+
+| Total rows | Target-tenant rows | p50 | p95 | p99 |
+|---:|---:|---:|---:|---:|
+| 1,000 | 500 | 22.5ms | 40.9ms | 48.3ms |
+| 10,000 | 5,000 | 164.9ms | 210.2ms | 232.0ms |
+
+**Assessment:** The 7.3x p50 increase for a 10x population confirms the
+global-SCAN/hydrate/sort path is the next material read bottleneck. These two
+p50s are parsed into nightly and release benchmark data so #240's planned
+indexed path has a machine-readable preceding-release comparison point.
 
 ---
 
