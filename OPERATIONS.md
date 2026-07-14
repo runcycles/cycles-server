@@ -41,7 +41,7 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 
 | Metric | Tags | What it tells you |
 |---|---|---|
-| `cycles_events_total` | `tenant`, `decision`, `reason`, `overage_policy` | Every `POST /v1/events` outcome. Events are direct-debit — `decision=APPLIED`, with `reason=OK` on a fresh success and `reason=IDEMPOTENT_REPLAY` on a successful replay. |
+| `cycles_events_total` | `tenant`, `decision`, `reason`, `overage_policy` | Every repository-handled `POST /v1/events` outcome. Events are direct-debit — `decision=APPLIED`, with `reason=OK` on a fresh success and `reason=IDEMPOTENT_REPLAY` on a successful replay. |
 
 ### Overdraft
 
