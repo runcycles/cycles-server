@@ -5,7 +5,12 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.repository.RedisReservationQueryRepository;
+import io.runcycles.protocol.data.repository.ReservationHashMapper;
+import io.runcycles.protocol.data.repository.support.ReservationListQuery;
 import io.runcycles.protocol.data.repository.support.SortedListCursor;
+import io.runcycles.protocol.model.Enums;
+import io.runcycles.protocol.model.ReservationInclude;
 import io.runcycles.protocol.model.ReservationListResponse;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -20,9 +25,13 @@ import redis.clients.jedis.Pipeline;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,6 +51,8 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
     private static JedisPool jedisPool;
     private ReservationCreatedAtIndexService indexService;
     private RedisReservationRepository repository;
+    private RedisReservationQueryRepository queryRepository;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeAll
     static void startRedis() {
@@ -76,10 +87,16 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
         setField(indexService, "failureBackoffMs", 3_600_000L);
 
         repository = new RedisReservationRepository();
+        meterRegistry = new SimpleMeterRegistry();
+        CyclesMetrics metrics = new CyclesMetrics(meterRegistry, false);
+        ReservationHashMapper hashMapper = new ReservationHashMapper(new ObjectMapper());
         setField(repository, "jedisPool", jedisPool);
         setField(repository, "objectMapper", new ObjectMapper());
         setField(repository, "reservationCreatedAtIndex", indexService);
-        setField(repository, "metrics", new CyclesMetrics(new SimpleMeterRegistry(), false));
+        setField(repository, "metrics", metrics);
+        setField(repository, "reservationHashMapper", hashMapper);
+        queryRepository = new RedisReservationQueryRepository(jedisPool, metrics, hashMapper);
+        setField(repository, "reservationQueryRepository", queryRepository);
     }
 
     @Test
@@ -428,6 +445,57 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
     }
 
     @Test
+    void readyIndexAndScanFallbackHaveIdenticalQueryResultsCursorsAndErrors() throws Exception {
+        seedParityRows();
+        assertThat(indexService.reconcileNow().tenantsFailed()).isZero();
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(indexService.isReady(jedis, "tenant-a")).isTrue();
+        }
+
+        List<ParityQuery> matrix = List.of(
+            new ParityQuery("all-desc", cursor -> ReservationListQuery.builder("tenant-a", 2)
+                .cursor(cursor).sort("created_at_ms", "desc").build()),
+            new ParityQuery("active-asc-window", cursor ->
+                ReservationListQuery.builder("tenant-a", 1)
+                    .status("ACTIVE")
+                    .cursor(cursor).sort("created_at_ms", "asc")
+                    .createdAt(900L, 2_500L)
+                    .build()),
+            new ParityQuery("compound-filter-and-projection", cursor ->
+                ReservationListQuery.builder("tenant-a", 1)
+                    .idempotencyKey("idem-b")
+                    .status("COMMITTED")
+                    .scopes("dev", "chat", "wf", "ag", "ts")
+                    .cursor(cursor).sort("created_at_ms", "desc")
+                    .createdAt(1_500L, 2_500L)
+                    .expiresAt(62_000L, 62_000L)
+                    .finalizedAt(2_400L, 2_600L)
+                    .include(Set.of(ReservationInclude.METADATA))
+                    .build()),
+            new ParityQuery("empty-scope-filter", cursor ->
+                ReservationListQuery.builder("tenant-a", 2)
+                    .scopes("devops", null, null, null, null)
+                    .cursor(cursor).sort("created_at_ms", "desc")
+                    .build()));
+
+        Map<String, List<ReservationListResponse>> indexed = runParityMatrix(matrix);
+        List<ErrorResult> indexedErrors = parityErrors();
+        assertThat(indexReadCount("INDEX")).isGreaterThan(0.0);
+
+        setField(indexService, "enabled", false);
+        Map<String, List<ReservationListResponse>> scanned = runParityMatrix(matrix);
+        List<ErrorResult> scanErrors = parityErrors();
+        assertThat(indexReadCount("SCAN_DISABLED")).isGreaterThan(0.0);
+
+        assertThat(scanned).usingRecursiveComparison().isEqualTo(indexed);
+        assertThat(scanErrors).isEqualTo(indexedErrors);
+        assertThat(indexed.get("all-desc")).hasSize(2);
+        assertThat(indexed.get("all-desc").get(0).getNextCursor()).isNotNull();
+        assertThat(ids(indexed.get("compound-filter-and-projection").get(0)))
+            .containsExactly("r-b");
+    }
+
+    @Test
     void indexedReaderScansBoundedBatchesForSelectiveFilters() {
         for (int i = 0; i < 300; i++) {
             seed(String.format("r%03d", i), "tenant-a", 10_000L + i,
@@ -694,6 +762,99 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
         assertThat(ReservationCreatedAtIndexService.isExactRedisScore(9_007_199_254_740_992L)).isTrue();
         assertThat(ReservationCreatedAtIndexService.isExactRedisScore(9_007_199_254_740_993L)).isFalse();
         assertThat(ReservationCreatedAtIndexService.isExactRedisScore(-9_007_199_254_740_993L)).isFalse();
+    }
+
+    private Map<String, List<ReservationListResponse>> runParityMatrix(
+            List<ParityQuery> matrix) {
+        Map<String, List<ReservationListResponse>> results = new LinkedHashMap<>();
+        for (ParityQuery parityQuery : matrix) {
+            List<ReservationListResponse> pages = new ArrayList<>();
+            String cursor = null;
+            do {
+                ReservationListResponse page = queryRepository.list(
+                    parityQuery.queryFactory().apply(cursor), indexService);
+                pages.add(page);
+                cursor = page.getNextCursor();
+                if (pages.size() > 20) {
+                    throw new AssertionError("Parity query did not terminate: " + parityQuery.name());
+                }
+            } while (cursor != null);
+            results.put(parityQuery.name(), pages);
+        }
+        return results;
+    }
+
+    private double indexReadCount(String outcome) {
+        return meterRegistry.get("cycles.reservations.created_at_index.reads")
+            .tag("outcome", outcome)
+            .counter()
+            .count();
+    }
+
+    private List<ErrorResult> parityErrors() {
+        ReservationListQuery unfiltered = ReservationListQuery.builder("tenant-a", 2)
+            .sort("created_at_ms", "desc")
+            .build();
+        String invalidBoundary = new SortedListCursor(
+            1, "created_at_ms", "desc", unfiltered.filterHash(),
+            "not-a-number", "r-b").encode();
+        String mismatchedFilter = new SortedListCursor(
+            1, "created_at_ms", "desc", unfiltered.filterHash(),
+            "2000", "r-b").encode();
+
+        return List.of(
+            captureError(ReservationListQuery.builder("tenant-a", 2)
+                .cursor(invalidBoundary).sort("created_at_ms", "desc").build()),
+            captureError(ReservationListQuery.builder("tenant-a", 2)
+                .status("ACTIVE")
+                .cursor(mismatchedFilter).sort("created_at_ms", "desc").build()));
+    }
+
+    private ErrorResult captureError(ReservationListQuery query) {
+        try {
+            queryRepository.list(query, indexService);
+            throw new AssertionError("Expected query to fail: " + query);
+        } catch (CyclesProtocolException e) {
+            return new ErrorResult(e.getErrorCode(), e.getHttpStatus(), e.getMessage());
+        }
+    }
+
+    private void seedParityRows() {
+        seed("r-a", "tenant-a", 1_000L, "ACTIVE");
+        seed("r-b", "tenant-a", 2_000L, "COMMITTED");
+        seed("r-c", "tenant-a", 2_000L, "ACTIVE");
+        seed("r-d", "tenant-a", 3_000L, "RELEASED");
+        seed("other", "tenant-b", 4_000L, "ACTIVE");
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            String devScope = "tenant:tenant-a/workspace:dev/app:chat/"
+                + "workflow:wf/agent:ag/toolset:ts";
+            jedis.hset("reservation:res_r-a", Map.of(
+                "scope_path", devScope,
+                "idempotency_key", "idem-a",
+                "metadata_json", "{\"source\":\"a\"}"));
+            jedis.hset("reservation:res_r-b", Map.of(
+                "scope_path", devScope,
+                "idempotency_key", "idem-b",
+                "metadata_json", "{\"source\":\"b\"}",
+                "charged_amount", "80",
+                "committed_at", "2500"));
+            jedis.hset("reservation:res_r-c", Map.of(
+                "scope_path", "tenant:tenant-a/workspace:prod/app:batch",
+                "idempotency_key", "idem-c"));
+            jedis.hset("reservation:res_r-d", Map.of(
+                "scope_path", devScope,
+                "idempotency_key", "idem-d",
+                "released_at", "3500"));
+        }
+    }
+
+    private record ParityQuery(
+        String name, Function<String, ReservationListQuery> queryFactory) {
+    }
+
+    private record ErrorResult(
+        Enums.ErrorCode errorCode, int httpStatus, String message) {
     }
 
     private ReservationListResponse list(String tenant, String status, int limit, String cursor,

@@ -5,6 +5,51 @@
 
 ---
 
+### 2026-07-14 — v0.1.25.55: typed reservation-query boundary
+
+Issue #243 begins the implementation-quality roadmap with a behavior-preserving
+decomposition of the largest repository seam. The two public
+`listReservations` overloads remain on `RedisReservationRepository`, but now
+translate their legacy positional inputs once into immutable
+`ReservationListQuery` groups for scopes, sort state, and inclusive time
+windows. `RedisReservationQueryRepository` owns SCAN pagination, sorted
+fallback, completeness-gated created-at traversal, cursor validation, and
+index outcome metrics. `ReservationHashMapper` is the single owner of Redis
+hash projections, filter matching, finalized-time resolution, and detail/list
+wire-model hydration.
+
+The extraction deliberately changes no Redis command sequence, Lua script,
+key layout, index readiness rule, cursor encoding, filter hash, stable sort,
+or HTTP model. The created-at index service is passed into each query rather
+than captured by the component, preserving failover and repair behavior when
+its runtime state changes. Projection sets are immutable, include selections
+are snapshotted at the facade boundary, and the detail field array is returned
+defensively. The extracted component directly owns the batch-size contract
+checked by the Redis/Lua composition test.
+
+Dedicated boundary tests pin include immutability, the existing filter hash,
+exact scope boundaries, inclusive time predicates, every mapper filter,
+projection safety, the index consistency fields, and the facade/component
+ownership split. Reservation and balance filters now share one exact-segment
+matcher with the existing first-occurrence behavior pinned directly. The
+24-test real-Redis created-at index suite includes a shared query matrix that
+runs with a READY index and with the index disabled, asserting identical rows,
+ordering, page boundaries, cursor bytes, and error results across both paths.
+A paired
+three-trial benchmark against an isolated v0.1.25.54 worktree measured sorted
+1k p50 at 17.0ms in both versions and sorted 10k p50 at 16.9ms versus 17.6ms
+(+4.1%); all six 17-case trials completed with zero errors. Untouched
+operations moved by larger amounts and concurrency contained host stalls, so
+the listing delta is classified as measurement noise rather than a claimed
+optimization or regression. Clean default and integration-profile reactor
+verification completed 1,182 tests (31 model, 562 data, 589 API) with zero
+failures, errors, or skips; protocol coverage remained 11/11 and JaCoCo line
+coverage was 95.22% data and 95.56% API.
+
+Version/revision 0.1.25.54 → 0.1.25.55.
+
+---
+
 ### 2026-07-14 — v0.1.25.54: completeness-gated created-at index
 
 This release implements Phase B of #240 without changing the protocol schema,

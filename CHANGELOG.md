@@ -14,6 +14,30 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.55] — 2026-07-14
+
+### Changed
+
+- **Reservation listing now has a typed internal query boundary.** The public
+  repository facade retains both existing method signatures, while SCAN,
+  sorted fallback, and bounded created-at index traversal consume one immutable
+  `ReservationListQuery`. This removes the 18-parameter internal call chain and
+  keeps cursor binding, filter windows, scope matching, and projection choices
+  together.
+- **Reservation hash hydration has one owner.** Summary/detail projections,
+  optional metadata/evidence inclusion, finalized-time resolution, filtering,
+  and model mapping now live in `ReservationHashMapper`, shared by listing and
+  single-reservation reads.
+
+### Compatibility
+
+- No protocol schema, HTTP signature, response shape, Redis key, Lua script,
+  filter, ordering, cursor, or feature-flag change. Existing SCAN and
+  completeness-gated index fallback semantics are preserved and covered by
+  the same real-Redis integration suite.
+- Production and full-stack Compose defaults self-pin
+  `ghcr.io/runcycles/cycles-server:0.1.25.55`.
+
 ## [0.1.25.54] — 2026-07-14
 
 ### Performance
