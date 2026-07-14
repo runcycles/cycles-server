@@ -5,6 +5,8 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.repository.RedisReservationQueryRepository;
+import io.runcycles.protocol.data.repository.ReservationHashMapper;
 import io.runcycles.protocol.data.repository.support.SortedListCursor;
 import io.runcycles.protocol.model.ReservationListResponse;
 import org.junit.jupiter.api.AfterAll;
@@ -76,10 +78,15 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
         setField(indexService, "failureBackoffMs", 3_600_000L);
 
         repository = new RedisReservationRepository();
+        CyclesMetrics metrics = new CyclesMetrics(new SimpleMeterRegistry(), false);
+        ReservationHashMapper hashMapper = new ReservationHashMapper(new ObjectMapper());
         setField(repository, "jedisPool", jedisPool);
         setField(repository, "objectMapper", new ObjectMapper());
         setField(repository, "reservationCreatedAtIndex", indexService);
-        setField(repository, "metrics", new CyclesMetrics(new SimpleMeterRegistry(), false));
+        setField(repository, "metrics", metrics);
+        setField(repository, "reservationHashMapper", hashMapper);
+        setField(repository, "reservationQueryRepository",
+            new RedisReservationQueryRepository(jedisPool, metrics, hashMapper));
     }
 
     @Test

@@ -3,6 +3,7 @@ package io.runcycles.protocol.data.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.repository.RedisReservationQueryRepository;
 import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -206,7 +207,7 @@ class RedisConfigTest {
         assertThat(reserve).contains(indexExpression).contains(metadataExpression);
         assertThat(index).contains(indexExpression).contains(metadataExpression);
 
-        Field javaBatch = RedisReservationRepository.class
+        Field javaBatch = RedisReservationQueryRepository.class
             .getDeclaredField("SORTED_INDEX_BATCH_SIZE");
         javaBatch.setAccessible(true);
         int batchSize = javaBatch.getInt(null);

@@ -49,6 +49,12 @@ abstract class BaseRedisReservationRepositoryTest {
         omField.setAccessible(true);
         omField.set(repository, objectMapper);
 
+        ReservationHashMapper hashMapper = new ReservationHashMapper(objectMapper);
+        RedisReservationQueryRepository queryRepository =
+            new RedisReservationQueryRepository(jedisPool, metrics, hashMapper);
+        setField("reservationHashMapper", hashMapper);
+        setField("reservationQueryRepository", queryRepository);
+
         setField("reserveScript", "RESERVE_SCRIPT");
         setField("commitScript", "COMMIT_SCRIPT");
         setField("releaseScript", "RELEASE_SCRIPT");

@@ -807,7 +807,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             Map<String, String> validFields = reservationFields("r1", "ACTIVE");
             Map<String, String> brokenFields = new HashMap<>();
             brokenFields.put("reservation_id", "r2");
-            // Missing all other fields -> will throw during buildReservationSummary
+            // Missing all other fields -> canonical hash hydration will reject it.
 
             Pipeline pipeline = mock(Pipeline.class);
             Response<Map<String, String>> resp1 = mock(Response.class);
@@ -1050,7 +1050,7 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(jedisPool.getResource()).thenReturn(jedis);
             doNothing().when(jedis).close();
 
-            int threshold = RedisReservationRepository.SORTED_HYDRATE_WARN_THRESHOLD;
+            int threshold = RedisReservationQueryRepository.SORTED_HYDRATE_WARN_THRESHOLD;
             int total = threshold + 10;
 
             List<String> keys = new ArrayList<>(total);

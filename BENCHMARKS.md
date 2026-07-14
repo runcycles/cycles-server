@@ -39,7 +39,49 @@ running them would only measure environmental noise. Skipped releases:
   Benchmarks deliberately skipped — they would only measure
   environmental noise. [benchmark-skip]
 
-Last benchmarked release: **v0.1.25.54**.
+Last benchmarked release: **v0.1.25.55**.
+
+---
+
+## v0.1.25.55 — Typed reservation-query boundary
+
+**Date:** 2026-07-14
+
+**Tag:** `v0.1.25.55` *(PR follow-up for #243; tag after merge)*
+
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X
+64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Method:** Paired same-host comparison: three complete benchmark trials of
+the candidate working tree and three trials from an isolated worktree at the
+merged v0.1.25.54 commit. Every trial completed all 17 cases with zero errors;
+each value below is the median of its three trials. The protocol YAML was
+provided through the validator's supported local-file override after the
+remote raw-GitHub fetch was unavailable.
+
+**Hot-path change:** reservation listing crosses a typed immutable query
+boundary and uses a shared hash mapper. Redis commands, Lua, projections,
+candidate batch sizes, cursor encoding, and index readiness checks are
+otherwise unchanged.
+
+| Metric | v0.1.25.54 paired median | v0.1.25.55 median | Delta |
+|---|---:|---:|---:|
+| Sorted list, 1k p50 | 17.0ms | 17.0ms | 0.0% |
+| Sorted list, 10k p50 | 16.9ms | 17.6ms | +4.1% |
+| Reserve p50 | 15.6ms | 14.0ms | -10.3% |
+| Reserve p99 | 21.3ms | 18.6ms | -12.7% |
+| Commit p50 | 14.1ms | 12.6ms | -10.6% |
+| Commit p99 | 23.8ms | 20.3ms | -14.7% |
+| Release p50 | 14.4ms | 14.0ms | -2.8% |
+| Event p50 | 14.3ms | 13.6ms | -4.9% |
+| 32-thread throughput | 561.6 ops/s | 794.2 ops/s | +41.4% |
+
+**Assessment:** the refactored listing path is performance-neutral. Its 1k
+median is identical and its 10k median moved +4.1%, far below the 25% release
+threshold while retaining the flat population curve. The apparent write-path
+and throughput improvements are not attributed to this change: those paths
+were untouched, and the 32-thread trials contained host stalls, making their
+spread a measurement-noise indicator rather than an optimization result.
 
 ---
 

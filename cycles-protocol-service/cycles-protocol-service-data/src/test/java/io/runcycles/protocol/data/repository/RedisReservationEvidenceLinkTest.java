@@ -4,10 +4,8 @@ import io.runcycles.protocol.model.*;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Method;
 import java.util.EnumSet;
 import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -83,19 +81,10 @@ class RedisReservationEvidenceLinkTest extends BaseRedisReservationRepositoryTes
                         .cyclesEvidenceUrl("http://h/v1/evidence/" + HEX_A).build())
                 .build());
 
-        assertThat(invokeToSummary(detail, EnumSet.of(ReservationInclude.EVIDENCE)).getEvidence())
+        ReservationHashMapper mapper = new ReservationHashMapper(objectMapper);
+        assertThat(mapper.toSummary(detail, EnumSet.of(ReservationInclude.EVIDENCE)).getEvidence())
                 .isNotNull();
-        assertThat(invokeToSummary(detail, EnumSet.noneOf(ReservationInclude.class)).getEvidence())
+        assertThat(mapper.toSummary(detail, EnumSet.noneOf(ReservationInclude.class)).getEvidence())
                 .isNull();
-    }
-
-    // ---- reflection helpers ----
-
-    private ReservationSummary invokeToSummary(ReservationDetail detail, Set<ReservationInclude> include)
-            throws Exception {
-        Method m = RedisReservationRepository.class.getDeclaredMethod(
-                "toSummary", ReservationDetail.class, Set.class);
-        m.setAccessible(true);
-        return (ReservationSummary) m.invoke(repository, detail, include);
     }
 }
