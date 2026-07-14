@@ -5,6 +5,49 @@
 
 ---
 
+### 2026-07-14 — v0.1.25.57: Redis failure and rolling-upgrade matrices
+
+Issue #247 closes the failure-injection and mixed-version CI item from the
+implementation-quality roadmap. The new deterministic lost-response matrix
+runs through the full HTTP/controller/repository/Lua/Redis path for reserve,
+commit, release, direct event, dry-run, and decide. Each case deliberately
+discards the first successful result, repeats the exact request, and compares
+the raw JSON body rather than only selected fields. Ledger hashes, reservation
+and event identities, TTL membership, evidence queue length, and emitted
+runtime-event count prove that recovery did not repeat a durable or
+side-effecting operation.
+
+The timing model is deliberate: a successful request whose response is ignored
+is the deterministic equivalent of losing the connection after Redis commits.
+It exercises the server state that the retry observes without a flaky attempt
+to sever a packet in the narrow commit-to-response window. The pre-existing
+dedicated-Redis pause test remains responsible for bounded failure, readiness,
+recovery, and TTL-index behavior during a real Redis transport outage.
+
+`LegacyRedisFixtures` owns the supported old storage shapes. A parameterized
+current-reader matrix covers reserve/commit/release rows that have only their
+legacy fast body, plus the accepted pre-snapshot state where both immutable
+snapshot and fast body are unavailable. Separate cases pin event fast-body
+replay and `HSETNX` snapshot backfill, the event do-not-retry response when no
+canonical body survives, the 24-hour legacy dry-run namespace bridge and its
+409 mismatch semantics, and backfill of a reservation hash created before the
+optional per-tenant created-at index. Tests that previously approximated these
+seams independently were removed in favor of this single compatibility owner.
+
+This is a test/documentation-only release. No production code, protocol wire
+shape, Redis layout, or foreground command path changes, so benchmarks are
+intentionally skipped under the documented policy. `[benchmark-skip]`
+
+Clean integration-profile reactor verification completed 1,206 tests (31
+model, 575 data, 600 API) with zero failures, errors, or skips. The contract
+suite used the current `cycles-protocol@main` YAML through the supported
+local-file override and reported 11/11 operation coverage. JaCoCo line
+coverage remains 95.14% data and 95.56% API.
+
+Version/revision 0.1.25.56 → 0.1.25.57.
+
+---
+
 ### 2026-07-14 — v0.1.25.56: leased scheduled Redis maintenance
 
 Issue #245 closes the scheduler-coordination item from the implementation

@@ -41,7 +41,7 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 
 | Metric | Tags | What it tells you |
 |---|---|---|
-| `cycles_events_total` | `tenant`, `decision`, `reason`, `overage_policy` | Every `POST /v1/events` outcome. Events are direct-debit — `decision=APPLIED` on success. |
+| `cycles_events_total` | `tenant`, `decision`, `reason`, `overage_policy` | `POST /v1/events` applications and failures. Events are direct-debit — `decision=APPLIED` on a fresh success. Successful idempotent replays are intentionally not recounted. |
 
 ### Overdraft
 
@@ -73,8 +73,9 @@ HTTP error body uses) plus two success-path sentinels (`OK` and
 `IDEMPOTENT_REPLAY`). The operationally-observable set on the domain
 counters is:
 
-- Success: `OK`, `IDEMPOTENT_REPLAY` (reserve idempotent replays only;
-  the other endpoints' idempotent replays fall into `OK`)
+- Success: `OK`, `IDEMPOTENT_REPLAY` (reserve, commit, and release replays use
+  `IDEMPOTENT_REPLAY`; successful direct-event replays do not emit a
+  `cycles_events_total` sample)
 - Budget denials: `BUDGET_EXCEEDED`, `OVERDRAFT_LIMIT_EXCEEDED`,
   `DEBT_OUTSTANDING`
 - Budget state: `BUDGET_FROZEN`, `BUDGET_CLOSED`

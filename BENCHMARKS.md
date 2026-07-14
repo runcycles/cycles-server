@@ -41,6 +41,9 @@ running them would only measure environmental noise. Skipped releases:
 - **v0.1.25.56** — distributed leases and bounded metrics for scheduled Redis
   maintenance only. No HTTP controller, request repository, ledger Lua, or
   reservation-list path changed. [benchmark-skip]
+- **v0.1.25.57** — integration-only lost-response and rolling-upgrade Redis
+  matrices. Production Java, Lua, Redis commands, and HTTP paths are unchanged.
+  [benchmark-skip]
 
 Last benchmarked release: **v0.1.25.55**.
 

@@ -236,6 +236,13 @@ mvn test -pl cycles-protocol-service-api -am -Pproperty-tests
 
 `*IntegrationTest.java` classes use [Testcontainers](https://www.testcontainers.org/) to spin up a Redis instance automatically. Excluded from the default build; enabled via the `-Pintegration-tests` Maven profile.
 
+PR CI includes deterministic Redis resilience contracts: a paused-Redis
+transport test, a lost-successful-response replay matrix for all idempotent
+write/evaluation endpoints, and frozen legacy Redis-shape fixtures for rolling
+upgrades. The lost-response cases discard a completed response instead of
+using packet-timing sleeps, then prove byte-identical replay, exactly-once
+ledger/evidence/event side effects, and unchanged mismatch behavior.
+
 ### Property-based tests
 
 [jqwik](https://jqwik.net/)-driven property tests that force concurrent interleavings and assert system-wide invariants. Four property tests ship today:
