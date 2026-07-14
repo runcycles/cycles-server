@@ -17,6 +17,7 @@ import java.time.Duration;
 public class RedisConfig {
     private static final Logger LOG = LoggerFactory.getLogger(RedisConfig.class);
     private static final String INT64_HELPERS = "lua/int64-helpers.lua";
+    private static final String LEDGER_HELPERS = "lua/ledger-helpers.lua";
     
     @Autowired(required = false) private BuildProperties buildProperties;
     @Value("${redis.host:localhost}") private String host;
@@ -84,7 +85,9 @@ public class RedisConfig {
     }
 
     private String loadLedgerLuaScript(String path) throws IOException {
-        return loadLuaScript(INT64_HELPERS) + "\n" + loadLuaScript(path);
+        return loadLuaScript(INT64_HELPERS) + "\n"
+            + loadLuaScript(LEDGER_HELPERS) + "\n"
+            + loadLuaScript(path);
     }
 
     private String loadLuaScript(String path) throws IOException {

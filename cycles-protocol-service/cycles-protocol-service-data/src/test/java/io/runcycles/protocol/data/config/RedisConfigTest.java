@@ -9,8 +9,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.info.BuildProperties;
 import redis.clients.jedis.JedisPool;
 
+import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Properties;
 
@@ -127,8 +129,8 @@ class RedisConfigTest {
     }
 
     @Test
-    @DisplayName("should prepend one shared uncovered-scope marker to ledger scripts")
-    void shouldComposeLedgerScriptsWithSharedUncoveredScopeMarker() throws Exception {
+    @DisplayName("should prepend one separate uncovered-scope ledger helper")
+    void shouldComposeLedgerScriptsWithSeparateUncoveredScopeHelper() throws Exception {
         List<String> scripts = List.of(
             redisConfig.reserveLuaScript(), redisConfig.commitLuaScript(),
             redisConfig.releaseLuaScript(), redisConfig.extendLuaScript(),
@@ -144,6 +146,24 @@ class RedisConfigTest {
             .contains("mark_uncovered_scopes(affected_scopes, scope_budget_cache");
         assertThat(redisConfig.eventLuaScript())
             .contains("mark_uncovered_scopes(budgeted_scopes, scope_budget_cache");
+    }
+
+    @Test
+    @DisplayName("int64 helper resource should remain side-effect free")
+    void shouldKeepInt64HelperResourceSideEffectFree() throws Exception {
+        try (InputStream int64 = getClass().getClassLoader()
+                .getResourceAsStream("lua/int64-helpers.lua");
+             InputStream ledger = getClass().getClassLoader()
+                .getResourceAsStream("lua/ledger-helpers.lua")) {
+            assertThat(int64).isNotNull();
+            assertThat(ledger).isNotNull();
+            String int64Source = new String(int64.readAllBytes(), StandardCharsets.UTF_8);
+            String ledgerSource = new String(ledger.readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(int64Source).doesNotContain("redis.call");
+            assertThat(ledgerSource)
+                .contains("local function mark_uncovered_scopes(")
+                .contains("redis.call('HSET', budget_key, 'is_over_limit', 'true')");
+        }
     }
 
     @Test

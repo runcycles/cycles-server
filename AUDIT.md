@@ -25,10 +25,11 @@ an incompatible Redis type; missing hashes are never recreated.
 **One uncovered-scope rule.** The normative per-scope marking predicate was
 copied across the available-only and zero-overdraft branches in both
 `commit.lua` and `event.lua`. All four call sites now use
-`mark_uncovered_scopes` from the shared exact-int prelude. Callers pass their
-already hydrated pre-mutation state, required amount, unit, and whether only
-zero-limit scopes are eligible, so the refactor adds no Redis reads and retains
-the exact signed-int64 comparisons introduced in v0.1.25.50.
+`mark_uncovered_scopes` from a dedicated mutating ledger prelude loaded after
+the side-effect-free exact-int helpers. Callers pass their already hydrated
+pre-mutation state, required amount, unit, and whether only zero-limit scopes
+are eligible, so the refactor adds no Redis reads and retains the exact
+signed-int64 comparisons introduced in v0.1.25.50.
 
 The pre-v0.1.25.51 dry-run namespace bridge remains intentionally supported:
 removing it on a calendar deadline would break a later direct upgrade from an
@@ -38,8 +39,8 @@ documented scaling design rather than being mixed into this low-risk cleanup.
 Version/revision 0.1.25.51 → 0.1.25.52. Both production compose variants pin
 the matching image. There is no public schema or successful-response change.
 
-**Validation.** `mvn clean verify -Pintegration-tests` completed 1,143 tests
-(31 model, 533 data, 579 API) with zero failures, errors, or skips. The local
+**Validation.** `mvn clean verify -Pintegration-tests` completed 1,144 tests
+(31 model, 534 data, 579 API) with zero failures, errors, or skips. The local
 authoritative protocol checkout passed all 11 declared operations. JaCoCo line
 coverage is 95.12% data and 95.56% API. Focused real-Redis tests additionally
 pin snapshot-only event replay, legacy fast-key backfill, wrong-type legacy
@@ -51,9 +52,11 @@ concurrency errors. Median reserve/commit/release/event p50 was
 9.6/8.5/9.2/8.8 ms and 32-thread throughput was 1,421.8 ops/s. Relative to the
 v0.1.25.51 same-host medians, the latency changes were
 +12.9%/+3.7%/+5.7%/+10.0% and throughput improved 8.5%; all are below the 25%
-regression threshold and distributed across untouched paths. The measurable
-benefit is storage/write amplification: one fewer response-sized write and
-expiring Redis key per new keyed event.
+regression threshold. Untouched reserve had the largest latency increase,
+while untouched extend and all four read paths improved, so the cross-path
+spread supports ordinary host/container variance rather than an event-path
+regression. The measurable benefit is storage/write amplification: one fewer
+response-sized write and expiring Redis key per new keyed event.
 
 ### 2026-07-13 — v0.1.25.51: protocol correctness follow-up
 

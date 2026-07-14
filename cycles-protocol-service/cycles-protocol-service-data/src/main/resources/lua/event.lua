@@ -349,7 +349,7 @@ if compare_int(effective_amount, amount) < 0 then
 end
 local result_json = cjson.encode(result)
 
--- Store idempotency mapping and original response payload (expire after 7 days).
+-- Store the 30-day response snapshot plus seven-day idempotency mapping/hash.
 if idempotency_key ~= "" and idempotency_key ~= nil then
     local idem_key = "idem:" .. tenant .. ":event:" .. idempotency_key
     -- Single canonical source for exact replay. Pre-v0.1.25.52 rows may still

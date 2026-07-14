@@ -95,11 +95,13 @@ reads.
 **Regression assessment:** Against the immediately preceding v0.1.25.51
 same-host medians, reserve/commit/release/event p50 changed
 +12.9%/+3.7%/+5.7%/+10.0%, while 32-thread throughput improved 8.5%. All
-changes are below the 25% regression threshold and are distributed across
-untouched operations, indicating ordinary host/container variance rather than
-a regression. The intended event optimization removes one response-sized write
-and expiring key; the request-latency benchmark is neutral within measurement
-noise. The release workflow's shared-runner rolling median remains authoritative.
+changes are below the 25% regression threshold. Untouched reserve had the
+largest latency increase (+12.9%), while untouched extend and all four read
+paths improved; that cross-path spread supports ordinary host/container
+variance rather than an event-path regression. The intended event optimization
+removes one response-sized write and expiring key; the request-latency benchmark
+is neutral within measurement noise. The release workflow's shared-runner
+rolling median remains authoritative.
 
 ---
 

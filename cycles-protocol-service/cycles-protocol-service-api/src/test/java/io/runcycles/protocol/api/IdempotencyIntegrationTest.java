@@ -442,8 +442,11 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
             String eventId = original.getBody().get("event_id").toString();
 
             try (Jedis jedis = jedisPool.getResource()) {
-                jedis.del("idem:" + TENANT_A + ":event:" + idempotencyKey + ":response");
-                jedis.hdel("event:evt_" + eventId, "event_response_json");
+                assertThat(jedis.exists(
+                        "idem:" + TENANT_A + ":event:" + idempotencyKey + ":response"))
+                        .isFalse();
+                assertThat(jedis.hdel("event:evt_" + eventId, "event_response_json"))
+                        .isEqualTo(1);
             }
 
             ResponseEntity<Map> replay = post("/v1/events", API_KEY_SECRET_A, body);
