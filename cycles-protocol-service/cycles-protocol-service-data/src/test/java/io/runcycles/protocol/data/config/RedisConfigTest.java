@@ -3,6 +3,7 @@ package io.runcycles.protocol.data.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.service.ReservationCreatedAtIndexService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,8 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -187,6 +190,36 @@ class RedisConfigTest {
 
         assertThat(redisConfig.reserveLuaScript())
                 .contains("local pending_prefix = \"" + javaPrefix + "\"");
+    }
+
+    @Test
+    @DisplayName("reservation index key grammar and page bounds should match Java")
+    void reservationIndexLuaContractMatchesJava() throws Exception {
+        String tenant = "contract-tenant";
+        String indexExpression = luaKeyExpression(
+            ReservationCreatedAtIndexService.indexKey(tenant), tenant);
+        String metadataExpression = luaKeyExpression(
+            ReservationCreatedAtIndexService.metadataKey(tenant), tenant);
+        String reserve = redisConfig.reserveLuaScript();
+        String index = redisConfig.reservationCreatedAtIndexLuaScript();
+
+        assertThat(reserve).contains(indexExpression).contains(metadataExpression);
+        assertThat(index).contains(indexExpression).contains(metadataExpression);
+
+        Field javaBatch = RedisReservationRepository.class
+            .getDeclaredField("SORTED_INDEX_BATCH_SIZE");
+        javaBatch.setAccessible(true);
+        int batchSize = javaBatch.getInt(null);
+        Matcher luaCap = Pattern.compile("page_size > (\\d+)").matcher(index);
+        assertThat(luaCap.find()).isTrue();
+        assertThat(batchSize).isLessThanOrEqualTo(Integer.parseInt(luaCap.group(1)));
+    }
+
+    private static String luaKeyExpression(String key, String tenant) {
+        int tenantOffset = key.indexOf(tenant);
+        assertThat(tenantOffset).isGreaterThanOrEqualTo(0);
+        return "'" + key.substring(0, tenantOffset) + "' .. tenant .. '"
+            + key.substring(tenantOffset + tenant.length()) + "'";
     }
 
     @Test

@@ -1632,6 +1632,12 @@ public class RedisReservationRepository {
             : EnumSet.copyOf(include);
         boolean sortRequested = sortBy != null || sortDir != null;
         Optional<SortedListCursor> parsedCursor = SortedListCursor.decode(startCursor);
+        if ((parsedCursor.isPresent() && !parsedCursor.get().hasValidBoundary())
+                || (sortRequested && startCursor != null && !startCursor.isBlank()
+                    && parsedCursor.isEmpty())) {
+            throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,
+                "cursor contains an invalid sorted-list boundary", 400);
+        }
 
         // Route to sorted path when sort params are provided OR when the incoming cursor
         // is a sorted-path cursor (client may omit sort params on the follow-up request,
@@ -1997,10 +2003,20 @@ public class RedisReservationRepository {
                     Map<String, String> fields = HashProjections.mapHashFields(
                         projection, responses.get(reservationId).get());
                     if (fields.isEmpty()) {
-                        stale.add(reservationId);
-                        continue;
+                        if (jedis.exists("reservation:res_" + reservationId)) {
+                            reservationCreatedAtIndex.invalidate(jedis, tenant);
+                            return null;
+                        } else {
+                            stale.add(reservationId);
+                            continue;
+                        }
                     }
-                    if (!tenant.equals(fields.get("tenant"))) {
+                    String rowTenant = fields.get("tenant");
+                    if (rowTenant == null) {
+                        reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        return null;
+                    }
+                    if (!tenant.equals(rowTenant)) {
                         stale.add(reservationId);
                         continue;
                     }
@@ -2008,7 +2024,13 @@ public class RedisReservationRepository {
                         reservationCreatedAtIndex.invalidate(jedis, tenant);
                         return null;
                     }
-                    long rowScore = Long.parseLong(fields.get("created_at"));
+                    long rowScore;
+                    try {
+                        rowScore = Long.parseLong(fields.get("created_at"));
+                    } catch (NumberFormatException e) {
+                        reservationCreatedAtIndex.invalidate(jedis, tenant);
+                        return null;
+                    }
                     if (rowScore != score) {
                         reservationCreatedAtIndex.invalidate(jedis, tenant);
                         return null;

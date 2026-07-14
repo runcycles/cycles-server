@@ -20,6 +20,7 @@ import redis.clients.jedis.Pipeline;
 import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -72,6 +73,7 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
         setField(indexService, "luaScripts", registry);
         setField(indexService, "indexScript", indexScript);
         setField(indexService, "enabled", true);
+        setField(indexService, "failureBackoffMs", 3_600_000L);
 
         repository = new RedisReservationRepository();
         setField(repository, "jedisPool", jedisPool);
@@ -183,6 +185,7 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
         assertThat(result.tenantsFailed()).isEqualTo(2);
         try (Jedis jedis = jedisPool.getResource()) {
             assertThat(jedis.exists(ReservationCreatedAtIndexService.metadataKey("tenant-a"))).isFalse();
+            assertThat(jedis.exists(ReservationCreatedAtIndexService.indexKey("tenant-a"))).isFalse();
             assertThat(jedis.exists(ReservationCreatedAtIndexService.metadataKey("tenant-b"))).isFalse();
         }
     }
@@ -197,6 +200,14 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
         try (Jedis jedis = jedisPool.getResource()) {
             jedis.hset("reservation:res_bad", "created_at", "1000");
         }
+        indexService.repairIfRequested();
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(indexService.isReady(jedis, "tenant-a")).isFalse();
+        }
+        Field nextRepair = ReservationCreatedAtIndexService.class
+            .getDeclaredField("nextRepairAtMs");
+        nextRepair.setAccessible(true);
+        ((java.util.concurrent.atomic.AtomicLong) nextRepair.get(indexService)).set(0L);
         indexService.repairIfRequested();
         try (Jedis jedis = jedisPool.getResource()) {
             assertThat(indexService.isReady(jedis, "tenant-a")).isTrue();
@@ -235,6 +246,75 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
     }
 
     @Test
+    void malformedExistingRowsInvalidateInsteadOfCreatingACompleteLookingOmission() {
+        seed("read-bad", "tenant-a", 1_000L, "ACTIVE");
+        seed("sweep-bad", "tenant-b", 2_000L, "ACTIVE");
+        seed("missing-tenant", "tenant-c", 3_000L, "ACTIVE");
+        seed("cross-tenant", "tenant-d", 4_000L, "ACTIVE");
+        seed("identity-bad", "tenant-e", 5_000L, "ACTIVE");
+        seed("empty-projection", "tenant-f", 6_000L, "ACTIVE");
+        indexService.reconcileNow();
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.hset("reservation:res_read-bad", "created_at", "not-an-int64");
+            jedis.hset("reservation:res_sweep-bad", "created_at", "not-an-int64");
+            jedis.hdel("reservation:res_missing-tenant", "tenant");
+            jedis.hset("reservation:res_cross-tenant", "tenant", "another-tenant");
+            jedis.hset("reservation:res_identity-bad", "reservation_id", "different-id");
+            jedis.hdel("reservation:res_empty-projection",
+                "reservation_id", "tenant", "created_at");
+        }
+
+        assertThat(ids(list("tenant-a", null, 10, null, "desc", null, null))).isEmpty();
+        indexService.sweepStaleMembers();
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-a"))).isFalse();
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-b"))).isFalse();
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-c"))).isFalse();
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-d"))).isTrue();
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-e"))).isFalse();
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-f"))).isFalse();
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-a"), "read-bad")).isNotNull();
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-b"), "sweep-bad")).isNotNull();
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-c"), "missing-tenant")).isNotNull();
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-d"), "cross-tenant")).isNull();
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-e"), "identity-bad")).isNotNull();
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-f"), "empty-projection")).isNotNull();
+        }
+    }
+
+    @Test
+    void reconciliationReplacesAnExclusivelyOwnedWrongTypeIndex() {
+        seed("r1", "tenant-a", 1_000L, "ACTIVE");
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.set(ReservationCreatedAtIndexService.indexKey("tenant-a"), "wrong-type");
+            jedis.hset(ReservationCreatedAtIndexService.metadataKey("tenant-a"), Map.of(
+                "state", "READY", "expected_count", "0"));
+        }
+
+        assertThat(indexService.reconcileNow().tenantsFailed()).isZero();
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.type(
+                ReservationCreatedAtIndexService.indexKey("tenant-a"))).isEqualTo("zset");
+            assertThat(jedis.zscore(
+                ReservationCreatedAtIndexService.indexKey("tenant-a"), "r1")).isEqualTo(1_000.0);
+            assertThat(indexService.isReady(jedis, "tenant-a")).isTrue();
+        }
+    }
+
+    @Test
     void sweepQuarantinesInvalidIndexesAndContinuesWithHealthyTenants() {
         seed("healthy", "tenant-c", 3_000L, "ACTIVE");
         indexService.reconcileNow();
@@ -265,6 +345,64 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
             indexService.invalidate(jedis, null);
             indexService.invalidate(jedis, " ");
         }
+    }
+
+    @Test
+    void oneTenantValidationFailureDoesNotAbortTheRestOfTheSweep() throws Exception {
+        seed("broken", "tenant-a", 1_000L, "ACTIVE");
+        seed("stale", "tenant-b", 2_000L, "ACTIVE");
+        indexService.reconcileNow();
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del("reservation:res_stale");
+        }
+
+        LuaScriptRegistry tenantFailureRegistry = new LuaScriptRegistry() {
+            @Override
+            public Object eval(Jedis jedis, String scriptName, String scriptSource, String... args) {
+                if (args.length >= 2 && "validate".equals(args[0])
+                        && "tenant-a".equals(args[1])) {
+                    throw new IllegalStateException("tenant index unavailable");
+                }
+                return super.eval(jedis, scriptName, scriptSource, args);
+            }
+        };
+        setField(indexService, "luaScripts", tenantFailureRegistry);
+
+        indexService.sweepStaleMembers();
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(jedis.exists(
+                ReservationCreatedAtIndexService.metadataKey("tenant-a"))).isFalse();
+            assertThat(jedis.zcard(
+                ReservationCreatedAtIndexService.indexKey("tenant-b"))).isZero();
+        }
+    }
+
+    @Test
+    void redisAndLuaContractFailuresFailClosedWithoutStoppingScheduledRepair() throws Exception {
+        LuaScriptRegistry failingRegistry = mock(LuaScriptRegistry.class);
+        when(failingRegistry.eval(any(Jedis.class), anyString(), anyString(), any(String[].class)))
+            .thenThrow(new IllegalStateException("script unavailable"));
+        setField(indexService, "luaScripts", failingRegistry);
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThat(indexService.isReady(jedis, "tenant-a")).isFalse();
+        }
+
+        LuaScriptRegistry malformedRegistry = mock(LuaScriptRegistry.class);
+        when(malformedRegistry.eval(any(Jedis.class), anyString(), anyString(), any(String[].class)))
+            .thenReturn(List.of("member-without-score"));
+        setField(indexService, "luaScripts", malformedRegistry);
+        try (Jedis jedis = jedisPool.getResource()) {
+            assertThatThrownBy(() -> indexService.readPage(
+                jedis, "tenant-a", "asc", "-inf", "+inf", null, null, 20))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Invalid reservation created-at index page response");
+        }
+
+        JedisPool brokenPool = mock(JedisPool.class);
+        when(brokenPool.getResource()).thenThrow(new IllegalStateException("redis unavailable"));
+        setField(indexService, "jedisPool", brokenPool);
+        indexService.sweepStaleMembers();
     }
 
     @Test
@@ -495,7 +633,35 @@ class ReservationCreatedAtIndexServiceIntegrationTest {
             "not-a-number", "good").encode();
         assertThatThrownBy(() -> list("tenant-a", null, 10, invalid, "desc", null, null))
             .isInstanceOf(CyclesProtocolException.class)
-            .hasMessageContaining("invalid created_at_ms boundary");
+            .hasMessageContaining("invalid sorted-list boundary");
+
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del(ReservationCreatedAtIndexService.metadataKey("tenant-a"));
+        }
+        assertThatThrownBy(() -> list("tenant-a", null, 10, invalid, "desc", null, null))
+            .isInstanceOf(CyclesProtocolException.class)
+            .hasMessageContaining("invalid sorted-list boundary");
+
+        String missingBoundaryJson = "{\"v\":1,\"sb\":\"created_at_ms\","
+            + "\"sd\":\"desc\",\"fh\":\""
+            + filterHashForWindow("tenant-a", null, null)
+            + "\",\"lrid\":\"good\"}";
+        String missingBoundary = Base64.getUrlEncoder().withoutPadding().encodeToString(
+            missingBoundaryJson.getBytes(StandardCharsets.UTF_8));
+        assertThatThrownBy(() -> list(
+            "tenant-a", null, 10, missingBoundary, "desc", null, null))
+            .isInstanceOf(CyclesProtocolException.class)
+            .hasMessageContaining("invalid sorted-list boundary");
+
+        String invalidExpires = new SortedListCursor(
+            1, "expires_at_ms", "asc", filterHashForWindow("tenant-a", null, null),
+            "not-a-number", "good").encode();
+        assertThatThrownBy(() -> repository.listReservations(
+            "tenant-a", null, null, null, null, null, null, null,
+            10, invalidExpires, "expires_at_ms", "asc",
+            null, null, null, null, null, null))
+            .isInstanceOf(CyclesProtocolException.class)
+            .hasMessageContaining("invalid sorted-list boundary");
 
         String belowWindow = new SortedListCursor(
             1, "created_at_ms", "desc", filterHashForWindow("tenant-a", 1_500L, 2_500L),

@@ -37,9 +37,14 @@ called out but are not breaking to API clients.
   `ZCARD`. Missing metadata, type/count drift, malformed historical rows, or
   any read error falls back to the complete reservation-hash scan.
 - A nightly sweep removes stale pointers and corrects score drift; indexed
-  reads also clean missing hashes lazily. Repair attempts are demand-triggered
-  and rate-limited to a five-minute cadence so a corrupt row cannot create a
-  continuous global-SCAN loop.
+  reads also clean missing hashes lazily. Malformed existing rows invalidate
+  readiness instead of deleting their pointer, and wrong-type index keys are
+  removed before a restartable rebuild.
+- Reconciliation runs on a bounded four-thread scheduling pool so it cannot
+  block the five-second expiry sweep. Deterministic malformed-row failures back
+  off for one hour rather than rescanning the global keyspace every five minutes.
+- Sorted cursors are structurally and numerically validated before Redis work,
+  producing the same `400 INVALID_REQUEST` on indexed and fallback paths.
 - After one authoritative scan proves a tenant has no reservations, READY/0
   metadata represents the otherwise non-persistent empty ZSET. Repeated empty
   reads stay cheap, and the tenant's first reserve atomically advances the
@@ -53,8 +58,8 @@ called out but are not breaking to API clients.
 - The read/backfill switch defaults off. Multi-pod operators must deploy this
   writer version everywhere with
   `RESERVATION_CREATED_AT_INDEX_ENABLED=false`, then enable it only after no
-  older writer remains. The documented single-instance production Compose
-  topology defaults it on and self-pins `0.1.25.54`.
+  older writer remains. Both production Compose files require explicit opt-in
+  and self-pin `0.1.25.54`.
 - No protocol schema, response body, ordering, filtering, or cursor-format
   change. Disabling the flag immediately restores the previous full-SCAN path;
   reservation hashes remain authoritative.

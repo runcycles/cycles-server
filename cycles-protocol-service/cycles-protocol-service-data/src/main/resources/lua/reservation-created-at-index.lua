@@ -16,6 +16,13 @@ local meta_key = 'reservation:idxmeta:' .. tenant .. ':created_at_ms'
 if operation == 'validate' then
     local index_type = redis.call('TYPE', index_key).ok
     local meta_type = redis.call('TYPE', meta_key).ok
+    if index_type ~= 'none' and index_type ~= 'zset' then
+        redis.call('DEL', index_key)
+        if meta_type ~= 'none' then
+            redis.call('DEL', meta_key)
+        end
+        return 0
+    end
     if index_type == 'none' and meta_type == 'none' then
         return 2
     end
@@ -46,6 +53,7 @@ end
 if operation == 'finalize' then
     local index_type = redis.call('TYPE', index_key).ok
     if index_type ~= 'none' and index_type ~= 'zset' then
+        redis.call('DEL', index_key)
         redis.call('DEL', meta_key)
         return -1
     end
@@ -73,6 +81,9 @@ if operation == 'remove' then
         return 0
     end
     if index_type ~= 'zset' then
+        if index_type ~= 'none' then
+            redis.call('DEL', index_key)
+        end
         redis.call('DEL', meta_key)
         return -1
     end

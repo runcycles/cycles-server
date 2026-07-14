@@ -28,10 +28,13 @@ READY records the current ZCARD as `expected_count`; every post-readiness
 reserve increments it only when ZADD adds a member. Readers require the index
 to be a ZSET, metadata to be a READY hash, and `expected_count == ZCARD` both
 before and after candidate hydration. Missing completeness state, eviction,
-deletion, type or count drift, member identity/score divergence, and Redis
-errors select the existing complete full-SCAN implementation. Reservation
-hashes remain the sole authority. The only missing-ZSET ready state is an
-explicitly proven empty tenant with expected_count=0.
+deletion, type or count drift, Redis errors, and member identity/score
+divergence encountered in the traversed candidate range select the existing
+complete full-SCAN implementation. Count-neutral external score corruption
+outside a requested time range remains detectable by the nightly authoritative
+sweep rather than that bounded request. Reservation hashes remain the sole
+authority. The only missing-ZSET ready state is an explicitly proven empty
+tenant with expected_count=0.
 
 **Bounded stable iteration.** The index page operation executes inside Redis
 and returns at most 128 `(reservation_id, score)` pairs per call. It walks
@@ -53,10 +56,15 @@ p50 was 8.4ms versus the unchanged v0.1.25.52/53 9.6ms reference, and 32-thread
 throughput moved -3.2%, both within measurement noise.
 
 **Cleanup, repair, and observability.** Indexed reads lazily remove missing
-hashes. A 03:45 nightly sweep removes stale members, corrects score drift, and
-atomically repairs the expected count; one invalid index cannot abort the rest
-of the sweep. Demand-triggered reconciliation is rate-limited to five minutes
-so a permanent malformed row cannot cause a continuous global scan. The
+hashes. A malformed existing hash invalidates readiness instead of deleting its
+pointer, so repairing the authoritative row cannot leave a complete-looking
+omission. A 03:45 nightly sweep removes stale members, corrects score drift,
+and atomically repairs the expected count; one invalid index cannot abort the
+rest of the sweep. Wrong-type index keys are deleted and rebuilt. A four-thread
+scheduled-maintenance pool prevents reconciliation from blocking the five-second
+expiry sweep. Demand-triggered reconciliation runs at most every five minutes,
+and a deterministic malformed-row failure then backs off for one hour before
+another global attempt. The
 empty-tenant case is explicit: after one authoritative fallback scan finds no
 tenant rows, READY/expected_count=0 represents Redis's otherwise non-persistent
 empty ZSET. Subsequent empty reads use the index path, and the first reserve
@@ -69,25 +77,26 @@ SCAN_DISABLED, SCAN_NOT_READY, SCAN_DRIFT, and SCAN_ERROR.
 **Rollout safety.** The application default is disabled because an old writer
 cannot update the new index or counter. Multi-pod operators deploy v0.1.25.54
 everywhere with `RESERVATION_CREATED_AT_INDEX_ENABLED=false`, then enable and
-restart only after the mixed-writer window has closed. The documented
-single-writer production Compose topology safely defaults it on; requests use
-full SCAN during the initial five-second/backfill window. Rollback is the flag
-alone, after which index/meta keys may be deleted. Both Compose images self-pin
-0.1.25.54.
+restart only after the mixed-writer window has closed. Both production Compose
+files also default it off, making activation an explicit act even when a
+single-writer file is later reused or scaled. Requests use full SCAN during the
+initial five-second/backfill window. Rollback is the flag alone, after which
+index/meta keys may be deleted. Both Compose images self-pin 0.1.25.54.
 
 **Validation.** The real-Redis data suite traverses 10,000 rows across 100
 pages with no duplicates, exercises a 300-member equal-timestamp group in both
-directions, validates forged/missing tie cursors, selective filters, every
+directions, validates forged/missing tie cursors and uniform malformed-cursor
+400s with and without readiness, selective filters, every
 scope predicate, time bounds, mid-read readiness loss, malformed rows, unsafe
-scores, wrong Redis types, post-readiness identity/tenant corruption,
-restartable repair, score correction, and stale cleanup. API integration covers
+scores, self-healed wrong Redis types, post-readiness identity/tenant corruption,
+repair backoff, restartable repair, score correction, and stale cleanup. API integration covers
 pre/post and concurrent readiness-boundary
 writers, fallback without omission, tie pagination, selective filters,
 malformed history, wrong-type fail-open reserve, and sweep count repair. The
 three complete benchmark trials ran all 17 cases with zero errors. Final reactor
-verification completed 1,175 tests (31 model, 555 data, 589 API) with zero
+verification completed 1,181 tests (31 model, 561 data, 589 API) with zero
 failures, errors, or skips; the protocol coverage report remained 11/11.
-JaCoCo line coverage is 95.06% data and 95.56% API.
+JaCoCo line coverage is 95.10% data and 95.56% API.
 
 Version/revision 0.1.25.53 → 0.1.25.54.
 

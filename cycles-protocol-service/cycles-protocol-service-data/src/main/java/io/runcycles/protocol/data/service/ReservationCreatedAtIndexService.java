@@ -1,5 +1,6 @@
 package io.runcycles.protocol.data.service;
 
+import io.runcycles.protocol.data.util.HashProjections;
 import io.runcycles.protocol.data.util.LogSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Builds, validates, and repairs the optional per-tenant reservation
@@ -45,6 +47,10 @@ public class ReservationCreatedAtIndexService {
     private static final String RESERVATION_PREFIX = "reservation:res_";
     private static final long MAX_EXACT_REDIS_INTEGER = 9_007_199_254_740_992L;
     private static final int SCAN_BATCH_SIZE = 500;
+    private static final List<String> INDEX_ROW_FIELDS =
+        List.of("reservation_id", "tenant", "created_at");
+    private static final String[] INDEX_ROW_FIELD_ARRAY =
+        INDEX_ROW_FIELDS.toArray(String[]::new);
 
     @Autowired private JedisPool jedisPool;
     @Autowired private LuaScriptRegistry luaScripts;
@@ -54,7 +60,11 @@ public class ReservationCreatedAtIndexService {
     @Value("${cycles.reservation-index.created-at.enabled:false}")
     private boolean enabled;
 
+    @Value("${cycles.reservation-index.created-at.failure-backoff-ms:3600000}")
+    private long failureBackoffMs;
+
     private final AtomicBoolean repairRequested = new AtomicBoolean(true);
+    private final AtomicLong nextRepairAtMs = new AtomicLong(0L);
 
     public boolean isEnabled() {
         return enabled;
@@ -167,13 +177,21 @@ public class ReservationCreatedAtIndexService {
         fixedDelayString = "${cycles.reservation-index.created-at.repair-interval-ms:300000}",
         initialDelayString = "${cycles.reservation-index.created-at.initial-delay-ms:5000}")
     public void repairIfRequested() {
-        if (!enabled || !repairRequested.compareAndSet(true, false)) return;
+        if (!enabled || !repairRequested.get()) return;
+        long now = Instant.now().toEpochMilli();
+        if (now < nextRepairAtMs.get()
+                || !repairRequested.compareAndSet(true, false)) return;
         try {
             ReconcileResult result = reconcileNow();
             if (result.tenantsFailed() > 0) {
+                nextRepairAtMs.set(saturatingAdd(
+                    Instant.now().toEpochMilli(), Math.max(0L, failureBackoffMs)));
                 repairRequested.set(true);
+            } else {
+                nextRepairAtMs.set(0L);
             }
         } catch (Exception e) {
+            nextRepairAtMs.set(0L);
             repairRequested.set(true);
             LOG.error("Reservation created-at index repair failed; indexed reads remain disabled", e);
         }
@@ -189,6 +207,7 @@ public class ReservationCreatedAtIndexService {
 
         Set<String> tenantsSeen = new HashSet<>();
         Set<String> failedTenants = new HashSet<>();
+        Set<String> preparedTenants = new HashSet<>();
         int keysScanned = 0;
 
         try (Jedis jedis = jedisPool.getResource()) {
@@ -199,7 +218,7 @@ public class ReservationCreatedAtIndexService {
                 List<String> keys = scan.getResult();
                 keysScanned += keys.size();
                 if (!keys.isEmpty()) {
-                    backfillBatch(jedis, keys, tenantsSeen, failedTenants);
+                    backfillBatch(jedis, keys, tenantsSeen, failedTenants, preparedTenants);
                 }
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor));
@@ -229,11 +248,11 @@ public class ReservationCreatedAtIndexService {
     }
 
     private void backfillBatch(Jedis jedis, List<String> keys, Set<String> tenantsSeen,
-                               Set<String> failedTenants) {
+                               Set<String> failedTenants, Set<String> preparedTenants) {
         Map<String, Response<List<String>>> projections = new LinkedHashMap<>();
         try (Pipeline pipeline = jedis.pipelined()) {
             for (String key : keys) {
-                projections.put(key, pipeline.hmget(key, "reservation_id", "tenant", "created_at"));
+                projections.put(key, pipeline.hmget(key, INDEX_ROW_FIELD_ARRAY));
             }
             pipeline.sync();
         }
@@ -242,10 +261,11 @@ public class ReservationCreatedAtIndexService {
         for (Map.Entry<String, Response<List<String>>> entry : projections.entrySet()) {
             String key = entry.getKey();
             try {
-                List<String> values = entry.getValue().get();
-                String reservationId = valueAt(values, 0);
-                String tenant = valueAt(values, 1);
-                String createdAtRaw = valueAt(values, 2);
+                Map<String, String> fields = HashProjections.mapHashFields(
+                    INDEX_ROW_FIELDS, entry.getValue().get());
+                String reservationId = fields.get("reservation_id");
+                String tenant = fields.get("tenant");
+                String createdAtRaw = fields.get("created_at");
                 if (tenant == null || tenant.isBlank()) {
                     LOG.warn("Skipping reservation with no tenant during created-at backfill: key={}",
                         LogSanitizer.sanitize(key));
@@ -259,6 +279,12 @@ public class ReservationCreatedAtIndexService {
                         || !isExactRedisScore(createdAt)) {
                     failedTenants.add(tenant);
                     continue;
+                }
+                if (preparedTenants.add(tenant)) {
+                    // Validation also deletes an exclusively-owned wrong-type
+                    // index key so this reconciliation can rebuild it.
+                    luaScripts.eval(jedis, "reservationCreatedAtIndex", indexScript,
+                        "validate", tenant);
                 }
                 rows.add(new BackfillRow(tenant, reservationId, createdAt));
             } catch (Exception e) {
@@ -338,6 +364,11 @@ public class ReservationCreatedAtIndexService {
     private SweepResult sweepIndex(Jedis jedis, String indexKey) {
         String tenant = tenantFromIndexKey(indexKey);
         if (tenant == null) return new SweepResult(0, 0);
+        long validation = ((Number) luaScripts.eval(
+            jedis, "reservationCreatedAtIndex", indexScript, "validate", tenant)).longValue();
+        if (validation != 1L) {
+            requestRepair();
+        }
         int removed = 0;
         int corrected = 0;
         String cursor = "0";
@@ -349,7 +380,7 @@ public class ReservationCreatedAtIndexService {
             try (Pipeline pipeline = jedis.pipelined()) {
                 for (Tuple tuple : tuples) {
                     projections.put(tuple, pipeline.hmget(
-                        RESERVATION_PREFIX + tuple.getElement(), "reservation_id", "tenant", "created_at"));
+                        RESERVATION_PREFIX + tuple.getElement(), INDEX_ROW_FIELD_ARRAY));
                 }
                 pipeline.sync();
             }
@@ -358,25 +389,47 @@ public class ReservationCreatedAtIndexService {
             for (Map.Entry<Tuple, Response<List<String>>> entry : projections.entrySet()) {
                 Tuple tuple = entry.getKey();
                 try {
-                    List<String> values = entry.getValue().get();
-                    String reservationId = valueAt(values, 0);
-                    String rowTenant = valueAt(values, 1);
-                    String createdAtRaw = valueAt(values, 2);
-                    if (!tuple.getElement().equals(reservationId) || !tenant.equals(rowTenant)) {
+                    Map<String, String> fields = HashProjections.mapHashFields(
+                        INDEX_ROW_FIELDS, entry.getValue().get());
+                    if (fields.isEmpty()) {
+                        if (jedis.exists(RESERVATION_PREFIX + tuple.getElement())) {
+                            invalidate(jedis, tenant);
+                            return new SweepResult(removed, corrected);
+                        } else {
+                            stale.add(tuple.getElement());
+                            continue;
+                        }
+                    }
+                    String reservationId = fields.get("reservation_id");
+                    String rowTenant = fields.get("tenant");
+                    String createdAtRaw = fields.get("created_at");
+                    if (rowTenant == null) {
+                        invalidate(jedis, tenant);
+                        return new SweepResult(removed, corrected);
+                    }
+                    if (!tenant.equals(rowTenant)) {
                         stale.add(tuple.getElement());
                         continue;
+                    }
+                    if (!tuple.getElement().equals(reservationId)) {
+                        invalidate(jedis, tenant);
+                        return new SweepResult(removed, corrected);
                     }
                     long createdAt = Long.parseLong(createdAtRaw);
                     if (!isExactRedisScore(createdAt)) {
                         invalidate(jedis, tenant);
-                        continue;
+                        return new SweepResult(removed, corrected);
                     }
                     if (tuple.getScore() != (double) createdAt) {
                         jedis.zadd(indexKey, createdAt, tuple.getElement());
                         corrected++;
                     }
                 } catch (Exception e) {
-                    stale.add(tuple.getElement());
+                    invalidate(jedis, tenant);
+                    LOG.warn("Invalid reservation row found during created-at index sweep: tenant={} reservation_id={}",
+                        LogSanitizer.sanitize(tenant),
+                        LogSanitizer.sanitize(tuple.getElement()), e);
+                    return new SweepResult(removed, corrected);
                 }
             }
             if (!stale.isEmpty()) {
@@ -394,13 +447,10 @@ public class ReservationCreatedAtIndexService {
         return tenant.isBlank() ? null : tenant;
     }
 
-    private static String valueAt(List<String> values, int index) {
-        return values != null && values.size() > index ? values.get(index) : null;
-    }
-
     private static String safeTenant(Response<List<String>> response) {
         try {
-            return valueAt(response.get(), 1);
+            return HashProjections.mapHashFields(
+                INDEX_ROW_FIELDS, response.get()).get("tenant");
         } catch (Exception ignored) {
             return null;
         }
@@ -408,6 +458,10 @@ public class ReservationCreatedAtIndexService {
 
     public static boolean isExactRedisScore(long value) {
         return value >= -MAX_EXACT_REDIS_INTEGER && value <= MAX_EXACT_REDIS_INTEGER;
+    }
+
+    private static long saturatingAdd(long left, long right) {
+        return right > Long.MAX_VALUE - left ? Long.MAX_VALUE : left + right;
     }
 
     private record BackfillRow(String tenant, String reservationId, long createdAt) {}

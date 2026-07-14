@@ -431,9 +431,11 @@ don't fit.
 | `cycles.events.emit.queue-capacity` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, the API drops only the event side effect and logs a structured warning instead of growing heap without limit. |
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
-| `cycles.reservation-index.created-at.enabled` | `false` | Enables backfill and indexed reads for `created_at_ms` sorting. In a multi-pod deployment, leave false for the first rollout and enable only after every writer runs v0.1.25.54+. The single-instance production Compose topology defaults `RESERVATION_CREATED_AT_INDEX_ENABLED=true`. |
+| `spring.task.scheduling.pool.size` | `4` | Bounded workers for expiry plus audit, event, and index maintenance. Keep at least `2`; production can override with `CYCLES_SCHEDULER_POOL_SIZE`. |
+| `cycles.reservation-index.created-at.enabled` | `false` | Enables backfill and indexed reads for `created_at_ms` sorting. Both production Compose files default it off. In every topology, enable only after every writer runs v0.1.25.54+. |
 | `cycles.reservation-index.created-at.repair-interval-ms` | `300000` | Minimum delay between demand-triggered reconciliation attempts. Lower only when a large initial backfill completes comfortably and faster repair is operationally necessary. |
 | `cycles.reservation-index.created-at.initial-delay-ms` | `5000` | Delay before the first enabled reconciliation after startup. Leave unless startup Redis load needs staggering. |
+| `cycles.reservation-index.created-at.failure-backoff-ms` | `3600000` | Backoff after a reconciliation completes with malformed tenant rows. This prevents permanent corruption from driving a full-keyspace scan every five minutes; override with `RESERVATION_CREATED_AT_INDEX_FAILURE_BACKOFF_MS`. |
 | `cycles.reservation-index.created-at.sweep-cron` | `0 45 3 * * *` | Nightly stale-member and score-drift cleanup. Override with `RESERVATION_CREATED_AT_INDEX_SWEEP_CRON` to move the Redis maintenance window. |
 | `cycles.tenant-config.cache-ttl-ms` | `60000` | Lower if admin tenant config changes need to take effect faster than 60s. |
 | `admin.api-key` | (empty) | Set to a fixed-length secret to enable the admin-on-behalf-of endpoint (v0.1.25.8+) and operational endpoint access. Production Compose requires it. |
