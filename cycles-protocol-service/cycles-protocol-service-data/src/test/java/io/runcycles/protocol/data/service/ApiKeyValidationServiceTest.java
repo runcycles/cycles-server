@@ -2,16 +2,19 @@ package io.runcycles.protocol.data.service;
 
 import io.runcycles.protocol.data.repository.ApiKeyRepository;
 import io.runcycles.protocol.model.auth.ApiKeyValidationResponse;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.Logger;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -19,7 +22,13 @@ import static org.mockito.Mockito.when;
 class ApiKeyValidationServiceTest {
 
     @Mock private ApiKeyRepository apiKeyRepository;
-    @InjectMocks private ApiKeyValidationService service;
+    @Mock private Logger logger;
+    private ApiKeyValidationService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new ApiKeyValidationService(apiKeyRepository, logger);
+    }
 
     @Test
     void shouldReturnValidForActiveKey() {
@@ -102,14 +111,31 @@ class ApiKeyValidationServiceTest {
 
     @Test
     void shouldHandleNullToken() {
-        when(apiKeyRepository.validate(null)).thenReturn(
-                ApiKeyValidationResponse.builder()
-                        .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+        ApiKeyValidationResponse response = ApiKeyValidationResponse.builder()
+            .valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
+        when(apiKeyRepository.validate(null)).thenReturn(response);
+        when(logger.isDebugEnabled()).thenReturn(true);
 
         ApiKeyValidationResponse result = service.isValid(null);
 
         assertThat(result.isValid()).isFalse();
         assertThat(result.getReason()).isEqualTo("KEY_NOT_FOUND");
+        verify(logger).debug(
+            "API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
+            false, null, false, "", null, "KEY_NOT_FOUND");
+    }
+
+    @Test
+    void shouldHandleBlankToken() {
+        when(apiKeyRepository.validate(" ")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+        when(logger.isDebugEnabled()).thenReturn(true);
+
+        assertThat(service.isValid(" ").isValid()).isFalse();
+        verify(logger).debug(
+            "API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
+            false, 1, false, "", null, "KEY_NOT_FOUND");
     }
 
     @Test
@@ -117,5 +143,23 @@ class ApiKeyValidationServiceTest {
         assertThat(ApiKeyValidationService.safeLogValue("tenant\r\nfake=1"))
                 .isEqualTo("tenant  fake=1");
         assertThat(ApiKeyValidationService.safeLogValue(null)).isNull();
+    }
+
+    @Test
+    void validationWorksWithDebugLoggingDisabledAndEnabled() {
+        String key = "cyc_live_loggingkey1234567890123456";
+        ApiKeyValidationResponse response = ApiKeyValidationResponse.builder()
+            .valid(true).tenantId("tenant\r\nfake=1").keyId("key\r\n1")
+            .reason("ok\nx").build();
+        when(apiKeyRepository.validate(key)).thenReturn(response);
+        when(logger.isDebugEnabled()).thenReturn(false, true);
+
+        assertThat(service.isValid(key)).isSameAs(response);
+        assertThat(service.isValid(key)).isSameAs(response);
+
+        verify(logger, times(2)).isDebugEnabled();
+        verify(logger).debug(
+            "API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
+            true, key.length(), true, "tenant  fake=1", "key  1", "ok x");
     }
 }

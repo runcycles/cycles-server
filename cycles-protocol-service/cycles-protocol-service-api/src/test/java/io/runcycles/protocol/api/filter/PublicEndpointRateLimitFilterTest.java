@@ -9,6 +9,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.lang.reflect.Method;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -189,5 +190,39 @@ class PublicEndpointRateLimitFilterTest {
         }
         verify(chain, never()).doFilter(org.mockito.ArgumentMatchers.argThat(r -> false),
                 org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void nullPathPassesAndNullClientWithExistingCorrelationHeadersIsLimited() throws Exception {
+        MockHttpServletRequest noPath = new MockHttpServletRequest();
+        noPath.setRequestURI(null);
+        filter.doFilter(noPath, new MockHttpServletResponse(), chain);
+
+        PublicEndpointRateLimitFilter zeroLimit =
+            new PublicEndpointRateLimitFilter(objectMapper, true, 0, clock::get);
+        MockHttpServletRequest anonymous = evidenceRequest();
+        anonymous.setRemoteAddr(null);
+        anonymous.setAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE,
+            "0123456789abcdef0123456789abcdef");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        response.setHeader(RequestIdFilter.REQUEST_ID_HEADER, "existing-request");
+        response.setHeader(TraceContextFilter.TRACE_ID_HEADER, "existing-trace");
+
+        zeroLimit.doFilter(anonymous, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(429);
+        assertThat(response.getHeader(RequestIdFilter.REQUEST_ID_HEADER)).isEqualTo("existing-request");
+        assertThat(response.getHeader(TraceContextFilter.TRACE_ID_HEADER)).isEqualTo("existing-trace");
+        assertThat(objectMapper.readTree(response.getContentAsString()).get("trace_id").asText())
+            .isEqualTo("0123456789abcdef0123456789abcdef");
+    }
+
+    @Test
+    void sanitizerCoversNullAndControlCharacters() throws Exception {
+        Method sanitize = PublicEndpointRateLimitFilter.class
+            .getDeclaredMethod("sanitize", String.class);
+        sanitize.setAccessible(true);
+        assertThat(sanitize.invoke(null, new Object[]{null})).isNull();
+        assertThat(sanitize.invoke(null, "a\r\nb")).isEqualTo("a  b");
     }
 }

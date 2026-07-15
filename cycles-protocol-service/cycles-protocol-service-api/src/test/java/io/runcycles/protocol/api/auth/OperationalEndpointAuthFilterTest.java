@@ -16,6 +16,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import java.lang.reflect.Method;
 
 @DisplayName("OperationalEndpointAuthFilter")
 class OperationalEndpointAuthFilterTest {
@@ -143,5 +144,53 @@ class OperationalEndpointAuthFilterTest {
         filter.doFilterInternal(request, response, chain);
 
         verify(chain, times(1)).doFilter(request, response);
+    }
+
+    @Test
+    void nullPathBlankCredentialsAndNullConfigurationCoverDefensiveBranches() throws Exception {
+        request.setRequestURI(null);
+        filter.doFilterInternal(request, response, chain);
+        verify(chain).doFilter(request, response);
+
+        request = new MockHttpServletRequest();
+        response = new MockHttpServletResponse();
+        request.setRequestURI("/actuator/info");
+        request.addHeader("X-Admin-API-Key", " ");
+        filter.doFilterInternal(request, response, chain);
+        assertThat(response.getStatus()).isEqualTo(401);
+
+        ReflectionTestUtils.setField(filter, "adminApiKey", null);
+        request = new MockHttpServletRequest();
+        response = new MockHttpServletResponse();
+        request.setRequestURI("/actuator/info");
+        filter.doFilterInternal(request, response, chain);
+        assertThat(response.getStatus()).isEqualTo(500);
+    }
+
+    @Test
+    void everyProtectedPrefixAndExistingCorrelationHeaderAlternativeIsHandled() throws Exception {
+        for (String path : new String[]{"/v3/api-docs/openapi.json", "/webjars/swagger-ui.js"}) {
+            MockHttpServletRequest protectedRequest = new MockHttpServletRequest();
+            protectedRequest.setRequestURI(path);
+            protectedRequest.addHeader("X-Admin-API-Key", "admin-secret");
+            filter.doFilterInternal(protectedRequest, new MockHttpServletResponse(), chain);
+        }
+
+        request.setRequestURI("/actuator/info");
+        request.setAttribute(TraceContextFilter.TRACE_ID_ATTRIBUTE, " ");
+        response.setHeader(RequestIdFilter.REQUEST_ID_HEADER, "existing-request");
+        response.setHeader(TraceContextFilter.TRACE_ID_HEADER, "existing-trace");
+        filter.doFilterInternal(request, response, chain);
+        assertThat(response.getHeader(RequestIdFilter.REQUEST_ID_HEADER)).isEqualTo("existing-request");
+        assertThat(response.getHeader(TraceContextFilter.TRACE_ID_HEADER)).isEqualTo("existing-trace");
+    }
+
+    @Test
+    void logSanitizerCoversNullAndControlCharacters() throws Exception {
+        Method method = OperationalEndpointAuthFilter.class
+            .getDeclaredMethod("safeLogValue", Object.class);
+        method.setAccessible(true);
+        assertThat(method.invoke(null, new Object[]{null})).isNull();
+        assertThat(method.invoke(null, "a\r\nb")).isEqualTo("a  b");
     }
 }

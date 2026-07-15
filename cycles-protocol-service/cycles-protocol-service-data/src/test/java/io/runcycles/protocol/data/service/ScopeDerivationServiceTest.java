@@ -59,6 +59,15 @@ class ScopeDerivationServiceTest {
         }
 
         @Test
+        void shouldSkipBlankLevels() {
+            Subject subject = new Subject();
+            subject.setTenant(" ");
+            subject.setWorkspace("dev");
+
+            assertThat(service.buildScopePath(subject)).isEqualTo("workspace:dev");
+        }
+
+        @Test
         void shouldBuildFullHierarchy() {
             Subject subject = new Subject();
             subject.setTenant("acme");

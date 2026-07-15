@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -90,6 +91,9 @@ class EvidenceEmitterTest {
         assertThat(req.has("overage_policy")).isFalse();
         assertThat(req.has("metadata")).isFalse();
         assertThat(captor.getValue()).doesNotContain(":null");
+
+        // A second preparation reuses the lazily-created NON_NULL mapper.
+        assertThat(emitter.prepare("reserve", 101L, null, payload)).isNotNull();
     }
 
     @Test
@@ -184,6 +188,41 @@ class EvidenceEmitterTest {
                 .doesNotThrowAnyException();
 
         verify(metrics).recordEvidenceEmitFailed("reserve");
+    }
+
+    @Test
+    void identityConfigurationChecksNullAndBlankValuesIndependently() throws Exception {
+        setField("serverId", null);
+        setField("signerDid", SIGNER_DID);
+        assertThat(emitter.prepare("reserve", 1L, null, Map.of())).isNull();
+
+        setField("serverId", SERVER_ID);
+        setField("signerDid", null);
+        assertThat(emitter.prepare("reserve", 1L, null, Map.of())).isNull();
+
+        setField("signerDid", " ");
+        assertThat(emitter.prepare("reserve", 1L, null, Map.of())).isNull();
+    }
+
+    @Test
+    void failureLoggingToleratesPartiallyConfiguredIdentity() throws Exception {
+        Method recordFailure = EvidenceEmitter.class.getDeclaredMethod(
+            "recordFailure", String.class, String.class, Exception.class);
+        recordFailure.setAccessible(true);
+
+        setField("serverId", null);
+        setField("signerDid", null);
+        recordFailure.invoke(emitter, "reserve", null, new RuntimeException("failed"));
+        setField("serverId", SERVER_ID);
+        setField("signerDid", " ");
+        recordFailure.invoke(emitter, "commit", "trace", new RuntimeException("failed"));
+        setField("serverId", " ");
+        setField("signerDid", SIGNER_DID);
+        recordFailure.invoke(emitter, "release", "trace", new RuntimeException("failed"));
+
+        verify(metrics).recordEvidenceEmitFailed("reserve");
+        verify(metrics).recordEvidenceEmitFailed("commit");
+        verify(metrics).recordEvidenceEmitFailed("release");
     }
 
     private void setField(String name, Object value) throws Exception {

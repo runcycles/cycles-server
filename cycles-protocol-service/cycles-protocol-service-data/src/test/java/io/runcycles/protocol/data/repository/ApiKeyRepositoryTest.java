@@ -19,6 +19,7 @@ import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 
 import java.time.Instant;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 
@@ -294,6 +295,49 @@ class ApiKeyRepositoryTest {
 
             assertThat(result.isValid()).isFalse();
             assertThat(result.getReason()).isEqualTo("INTERNAL_ERROR");
+        }
+
+        @Test
+        void shouldReturnInternalErrorWhenSecretIsNullBeforePrefixExtraction() {
+            ApiKeyValidationResponse result = repository.validate(null);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getReason()).isEqualTo("INTERNAL_ERROR");
+        }
+
+        @Test
+        void shouldHandleRedisFailureBeforePrefixIsAssigned() {
+            ApiKeyRepository spyRepository = spy(repository);
+            doThrow(new JedisConnectionException("lookup failed"))
+                .when(spyRepository).extractPrefix(secret);
+
+            assertThat(spyRepository.validate(secret).getReason()).isEqualTo("INTERNAL_ERROR");
+        }
+
+        @Test
+        void shouldAcceptExplicitlyActiveTenantRecord() throws Exception {
+            stubJedis();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+            ApiKey apiKey = ApiKey.builder().keyId(keyId).tenantId("acme-corp")
+                .keyHash(hash).status(ApiKeyStatus.ACTIVE).permissions(List.of()).build();
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(apiKey));
+            when(jedis.get("tenant:acme-corp")).thenReturn("{\"status\":\"ACTIVE\"}");
+
+            assertThat(repository.validate(secret).isValid()).isTrue();
+        }
+
+        @Test
+        void nullHashAndUnhashableSecretBypassBcryptCache() throws Exception {
+            Method verifyCached = ApiKeyRepository.class.getDeclaredMethod(
+                "verifyKeyWithCache", String.class, String.class);
+            verifyCached.setAccessible(true);
+
+            assertThat((boolean) verifyCached.invoke(repository, null, null)).isFalse();
+
+            Method hashForCache = ApiKeyRepository.class.getDeclaredMethod(
+                "hashKeyForCache", String.class, String.class);
+            hashForCache.setAccessible(true);
+            assertThat(hashForCache.invoke(repository, "secret", null)).isNotNull();
         }
 
         @Test

@@ -35,6 +35,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
+import jakarta.servlet.http.HttpServletRequest;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -54,6 +56,7 @@ class ReservationControllerTest {
 
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private ReservationController controller;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
@@ -1108,6 +1111,56 @@ class ReservationControllerTest {
         }
     }
 
+    @Test
+    void directCreateCoversNullSubjectSparseBalancesAndOptionalDenialFields() {
+        ReservationController target = org.springframework.test.util.AopTestUtils.getTargetObject(controller);
+        HttpServletRequest servletRequest = mock(HttpServletRequest.class);
+        ReservationCreateRequest missingSubject = new ReservationCreateRequest();
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> target.create(null, missingSubject, servletRequest))
+            .isInstanceOf(CyclesProtocolException.class);
+
+        ReservationCreateRequest request = new ReservationCreateRequest();
+        request.setIdempotencyKey("direct");
+        request.setSubject(new Subject(TENANT, null, null, null, null, null, null));
+        request.setAction(new Action("test", "test", null));
+        request.setEstimate(null);
+        Balance noRemaining = Balance.builder().scopePath("a").build();
+        Balance nullAmount = Balance.builder().scopePath("b")
+            .remaining(new SignedAmount(Enums.UnitEnum.TOKENS, null)).build();
+        Balance valid = Balance.builder().scopePath("c")
+            .remaining(new SignedAmount(Enums.UnitEnum.TOKENS, 4L)).build();
+        ReservationCreateResponse sparse = ReservationCreateResponse.builder()
+            .decision(Enums.DecisionEnum.DENY).reasonCode(null).scopePath("tenant:" + TENANT)
+            .balances(List.of(noRemaining, nullAmount, valid)).build();
+        ReservationCreateResponse empty = ReservationCreateResponse.builder()
+            .decision(Enums.DecisionEnum.DENY).balances(List.of()).build();
+        when(repository.createReservation(any(), eq(TENANT), any())).thenReturn(sparse, empty);
+
+        org.assertj.core.api.Assertions.assertThat(target.create(null, request, servletRequest).getBody())
+            .isSameAs(sparse);
+        org.assertj.core.api.Assertions.assertThat(target.create(null, request, servletRequest).getBody())
+            .isSameAs(empty);
+    }
+
+    @Test
+    void oneSidedLifecycleWindowsReachRepository() throws Exception {
+        long expiresFrom = java.time.Instant.parse("2026-05-22T10:00:00Z").toEpochMilli();
+        long finalizedFrom = java.time.Instant.parse("2026-05-22T11:00:00Z").toEpochMilli();
+        when(repository.listReservations(any(), any(), any(), any(), any(), any(), any(), any(),
+            anyInt(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+            .thenReturn(ReservationListResponse.builder().reservations(List.of()).hasMore(false).build());
+
+        mockMvc.perform(get("/v1/reservations")
+                .param("expires_from", "2026-05-22T10:00:00Z")
+                .param("finalized_from", "2026-05-22T11:00:00Z"))
+            .andExpect(status().isOk());
+
+        verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(),
+            any(), eq(50), any(), any(), any(), any(), any(), eq(expiresFrom), eq((Long) null),
+            eq(finalizedFrom), eq((Long) null), any());
+    }
+
     // v0.1.25.8 (cycles-protocol revision 2026-04-13): admin-on-behalf-of
     // dual-auth on list/get/release. Tests cover the controller-level
     // branching only — filter-level admin-key validation is exercised
@@ -1138,6 +1191,13 @@ class ReservationControllerTest {
                     .andExpect(jsonPath("$.error").value("INVALID_REQUEST"))
                     .andExpect(jsonPath("$.message").value(
                         org.hamcrest.Matchers.containsString("tenant query parameter is required")));
+        }
+
+        @Test @DisplayName("listReservations with admin auth rejects blank tenant")
+        void adminListWithBlankTenantRejected() throws Exception {
+            mockMvc.perform(get("/v1/reservations").param("tenant", " "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
         }
 
         @Test @DisplayName("getReservation with admin auth bypasses tenant ownership check")

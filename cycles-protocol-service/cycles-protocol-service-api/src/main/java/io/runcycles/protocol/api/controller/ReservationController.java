@@ -212,8 +212,8 @@ public class ReservationController extends BaseController{
                     .resourceType("reservation")
                     .resourceId(reservationId)
                     .status(200)
-                    .sourceIp(httpRequest != null ? httpRequest.getRemoteAddr() : null)
-                    .userAgent(httpRequest != null ? httpRequest.getHeader("User-Agent") : null)
+                    .sourceIp(httpRequest.getRemoteAddr())
+                    .userAgent(httpRequest.getHeader("User-Agent"))
                     .requestId(resolveRequestId(httpRequest))
                     .traceId(resolveTraceId(httpRequest))
                     .metadata(java.util.Map.of(
@@ -233,7 +233,7 @@ public class ReservationController extends BaseController{
             // real time without having to query the audit endpoint.
             LOG.warn("[ADMIN_ON_BEHALF_OF] releaseReservation reservation_id={} tenant={} request_id={} trace_id={} source_ip={} reason={}",
                 safeLogValue(reservationId), safeLogValue(tenant), resolveRequestId(httpRequest), resolveTraceId(httpRequest),
-                safeLogValue(httpRequest != null ? httpRequest.getRemoteAddr() : null),
+                safeLogValue(httpRequest.getRemoteAddr()),
                 safeReason != null ? safeReason : "(none)");
         }
         return ResponseEntity.ok(response);

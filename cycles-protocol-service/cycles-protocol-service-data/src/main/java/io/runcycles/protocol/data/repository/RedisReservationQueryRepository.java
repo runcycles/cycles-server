@@ -474,7 +474,7 @@ public class RedisReservationQueryRepository {
                 ? Long.MIN_VALUE : Long.parseLong(lastSortValue);
             raw = Long.compare(rowNumber, lastNumber);
         } else {
-            String left = rowValue == null ? "" : rowValue;
+            String left = rowValue;
             String right = lastSortValue == null ? "" : lastSortValue;
             raw = left.compareTo(right);
         }

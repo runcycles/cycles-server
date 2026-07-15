@@ -91,5 +91,28 @@ class SortedListCursorTest {
             "hash", "1", "res_1").hasValidBoundary()).isFalse();
         assertThat(new SortedListCursor(1, "status", "sideways",
             "hash", "ACTIVE", "res_1").hasValidBoundary()).isFalse();
+        assertThat(new SortedListCursor(1, null, "desc",
+            "hash", "1", "res_1").hasValidBoundary()).isFalse();
+        assertThat(new SortedListCursor(1, "status", null,
+            "hash", "ACTIVE", "res_1").hasValidBoundary()).isFalse();
+        assertThat(new SortedListCursor(1, "reserved", "asc",
+            "hash", "42", "res_1").hasValidBoundary()).isTrue();
+        assertThat(new SortedListCursor(1, "reserved", "asc",
+            "hash", "not-a-number", "res_1").hasValidBoundary()).isFalse();
+    }
+
+    @Test
+    void decodeRejectsEachInvalidEnvelopeField() {
+        assertThat(decodeJson("{\"v\":2,\"sb\":\"status\",\"sd\":\"asc\",\"fh\":\"h\",\"lsv\":\"ACTIVE\",\"lrid\":\"r\"}")).isEmpty();
+        assertThat(decodeJson("{\"v\":1,\"sb\":null,\"sd\":\"asc\",\"fh\":\"h\",\"lsv\":\"ACTIVE\",\"lrid\":\"r\"}")).isEmpty();
+        assertThat(decodeJson("{\"v\":1,\"sb\":\"status\",\"sd\":null,\"fh\":\"h\",\"lsv\":\"ACTIVE\",\"lrid\":\"r\"}")).isEmpty();
+        assertThat(decodeJson("{\"v\":1,\"sb\":\"status\",\"sd\":\"asc\",\"fh\":null,\"lsv\":\"ACTIVE\",\"lrid\":\"r\"}")).isEmpty();
+        assertThat(decodeJson("{\"v\":1,\"sb\":\"status\",\"sd\":\"asc\",\"fh\":\"h\",\"lsv\":\"ACTIVE\",\"lrid\":null}")).isEmpty();
+    }
+
+    private static Optional<SortedListCursor> decodeJson(String json) {
+        String encoded = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        return SortedListCursor.decode(encoded);
     }
 }

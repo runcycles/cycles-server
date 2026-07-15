@@ -67,4 +67,31 @@ class ScanPageCursorTest {
         assertThat(cursor.redisCursor()).isEqualTo(encoded);
         assertThat(cursor.offset()).isZero();
     }
+
+    @Test
+    void encodedCursorRejectsEveryInvalidFieldCombination() {
+        assertFallsBack("{\"v\":2,\"t\":\"scan\",\"c\":\"17\",\"o\":1}");
+        assertFallsBack("{\"v\":1,\"t\":\"scan\",\"c\":null,\"o\":1}");
+        assertFallsBack("{\"v\":1,\"t\":\"scan\",\"c\":\"17\",\"o\":-1}");
+    }
+
+    @Test
+    void blankRedisCursorAndNegativeOffsetNormalizeAtTheBoundary() {
+        ScanPageCursor cursor = new ScanPageCursor();
+
+        assertThat(cursor.redisCursor()).isEqualTo("0");
+        assertThat(cursor.offset()).isZero();
+
+        String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(
+            "{\"v\":1,\"t\":\"scan\",\"c\":\" \",\"o\":1}".getBytes(StandardCharsets.UTF_8));
+        assertThat(ScanPageCursor.decode(encoded).redisCursor()).isEqualTo("0");
+    }
+
+    private static void assertFallsBack(String json) {
+        String encoded = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(json.getBytes(StandardCharsets.UTF_8));
+        ScanPageCursor cursor = ScanPageCursor.decode(encoded);
+        assertThat(cursor.redisCursor()).isEqualTo(encoded);
+        assertThat(cursor.offset()).isZero();
+    }
 }
