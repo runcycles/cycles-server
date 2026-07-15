@@ -211,3 +211,5 @@
 
 {"timestamp": "2026-07-14T17:43:27Z", "commit": "bf972c5", "tag": "v0.1.25.55", "trials": 3, "reserve_p50_ms": 3.1, "reserve_p99_ms": 6.7, "commit_p50_ms": 2.6, "commit_p99_ms": 7.6, "release_p50_ms": 2.9, "event_p50_ms": 2.9, "list_sorted_1k_p50_ms": 3.6, "list_sorted_10k_p50_ms": 3.9, "concurrent_throughput_32t": 640.4}
 
+{"timestamp": "2026-07-15T09:05:56Z", "commit": "4ad4567", "tag": null, "trials": 3, "reserve_p50_ms": 4.8, "reserve_p99_ms": 10.2, "commit_p50_ms": 3.8, "commit_p99_ms": 8.7, "release_p50_ms": 4.5, "event_p50_ms": 4.1, "list_sorted_1k_p50_ms": 5.1, "list_sorted_10k_p50_ms": 5.8, "concurrent_throughput_32t": 418.6}
+
