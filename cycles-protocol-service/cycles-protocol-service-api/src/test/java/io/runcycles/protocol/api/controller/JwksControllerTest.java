@@ -23,6 +23,8 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
+import java.lang.reflect.Method;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -224,5 +226,44 @@ class JwksControllerTest {
         JwksController controller = new JwksController(SIGNER_DID, "2026-06", 0L, "{\"oops\":true}");
         Map<String, Object> body = controller.getEvidenceJwks().getBody();
         assertThat((List<Map<String, Object>>) body.get("keys")).hasSize(1);
+    }
+
+    @Test
+    void nullConfigurationAndInvalidSignerWithHistoryRemainFailOpen() throws Exception {
+        JwksController empty = new JwksController(null, null, 0L, null);
+        assertThatThrownBy(empty::getEvidenceJwks).isInstanceOf(CyclesProtocolException.class);
+
+        JwksController invalid = new JwksController("did:cycles:not-raw", null, 0L,
+            "[{\"signer_did\":\"" + "ab".repeat(32)
+                + "\",\"kid\":\"old\",\"nbf_ms\":0,\"exp_ms\":100}]");
+        assertThatThrownBy(invalid::getEvidenceJwks).isInstanceOf(CyclesProtocolException.class);
+
+        Method safe = JwksController.class.getDeclaredMethod("safeLogValue", Object.class);
+        safe.setAccessible(true);
+        assertThat(safe.invoke(null, new Object[]{null})).isNull();
+        assertThat(safe.invoke(null, "a\r\nb")).isEqualTo("a  b");
+    }
+
+    @Test
+    void retirementWindowPredicateCoversNullMissingInvalidAndValidEntries() {
+        var retired = Arrays.asList(
+            (io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey) null,
+            new io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey("ab".repeat(32), "null-exp", 0L, null),
+            new io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey("ab".repeat(32), "empty", 10L, 10L),
+            new io.runcycles.protocol.api.evidence.JwksDocuments.RetiredKey("ab".repeat(32), "valid", 0L, 20L));
+        assertThat(JwksController.activeKeyWindowPredatesRetirement(0L, retired)).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void parserRejectsEveryNonIntegralOrOutOfRangeWindowBound() {
+        String retired = "["
+            + "{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"nbf-text\",\"nbf_ms\":\"0\",\"exp_ms\":1},"
+            + "{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"exp-text\",\"nbf_ms\":0,\"exp_ms\":\"1\"},"
+            + "{\"signer_did\":\"" + "ab".repeat(32) + "\",\"kid\":\"nbf-huge\",\"nbf_ms\":9223372036854775808,\"exp_ms\":1}"
+            + "]";
+        JwksController controller = new JwksController(SIGNER_DID, null, 0L, retired);
+        assertThat((List<Map<String, Object>>) controller.getEvidenceJwks().getBody().get("keys"))
+            .hasSize(1);
     }
 }

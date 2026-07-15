@@ -7,7 +7,9 @@ import io.runcycles.protocol.api.contract.ContractValidationConfig;
 import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
+import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.model.*;
+import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mock;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -45,6 +49,7 @@ class EventControllerTest {
 
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private EventController controller;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
@@ -182,5 +187,16 @@ class EventControllerTest {
                 .andExpect(jsonPath("$.event_id").value("evt_replay"));
 
         verifyNoInteractions(eventEmitter);
+    }
+
+    @Test
+    void nullSubjectReachesControllerDefensiveValidation() {
+        EventCreateRequest request = EventCreateRequest.builder()
+            .idempotencyKey("direct").subject(null).action(new Action("tool", "search", null))
+            .actual(new Amount(Enums.UnitEnum.TOKENS, 1L)).build();
+
+        EventController target = org.springframework.test.util.AopTestUtils.getTargetObject(controller);
+        assertThatThrownBy(() -> target.create(null, request, mock(HttpServletRequest.class)))
+            .isInstanceOf(CyclesProtocolException.class);
     }
 }

@@ -173,6 +173,16 @@ class ApiKeyAuthenticationFilterTest {
     }
 
     @Test
+    void shouldGenerateTraceIdWhenFilterAttributeIsBlank() throws Exception {
+        request.setAttribute(
+                io.runcycles.protocol.api.filter.TraceContextFilter.TRACE_ID_ATTRIBUTE, "   ");
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(response.getHeader("X-Cycles-Trace-Id")).matches("[0-9a-f]{32}");
+    }
+
+    @Test
     void shouldUseRequestIdFromFilterAttribute() throws Exception {
         request.setAttribute(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_ATTRIBUTE, "req-from-filter");
         request.addHeader("X-Cycles-API-Key", "cyc_live_badkey123456789");

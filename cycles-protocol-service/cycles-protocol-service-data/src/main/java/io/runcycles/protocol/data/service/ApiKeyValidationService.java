@@ -16,12 +16,10 @@ public class ApiKeyValidationService {
 
     public ApiKeyValidationResponse isValid (String apiToken){
         ApiKeyValidationResponse apiKeyValidationResponse = apiKeyRepository.validate(apiToken) ;
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
-                    apiToken != null && !apiToken.isBlank(), apiToken != null ? apiToken.length() : null,
-                    apiKeyValidationResponse.isValid(), safeLogValue(apiKeyValidationResponse.getTenantId()),
-                    safeLogValue(apiKeyValidationResponse.getKeyId()), safeLogValue(apiKeyValidationResponse.getReason()));
-        }
+        LOG.debug("API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
+                apiToken != null && !apiToken.isBlank(), apiToken != null ? apiToken.length() : null,
+                apiKeyValidationResponse.isValid(), safeLogValue(apiKeyValidationResponse.getTenantId()),
+                safeLogValue(apiKeyValidationResponse.getKeyId()), safeLogValue(apiKeyValidationResponse.getReason()));
         return apiKeyValidationResponse ;
     }
 

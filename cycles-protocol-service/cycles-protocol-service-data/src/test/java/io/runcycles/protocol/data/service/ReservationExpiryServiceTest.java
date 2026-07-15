@@ -13,6 +13,7 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,7 @@ class ReservationExpiryServiceTest {
         setField(service, "eventEmitter", eventEmitter);
         setField(service, "metrics", metrics);
         setField(service, "objectMapper", new ObjectMapper());
-        when(jedisPool.getResource()).thenReturn(jedis);
+        lenient().when(jedisPool.getResource()).thenReturn(jedis);
         // Mock Redis TIME — returns [seconds, microseconds].
         // Use lenient() because some tests override getResource() to throw before time() is called.
         lenient().when(jedis.time()).thenReturn(List.of("1710768000", "123456"));
@@ -269,5 +270,48 @@ class ReservationExpiryServiceTest {
         // res_2 should still emit despite res_1 failure
         verify(eventEmitter).emit(eq(EventType.RESERVATION_EXPIRED), eq("t2"),
                 any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void nullLuaResultIsContainedPerReservation() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+            .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1"))).thenReturn(null);
+
+        service.expireReservations();
+
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void eventHydrationAllowsCreatedAtWithoutExpiresAt() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+            .thenReturn(List.of("id1"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id1")))
+            .thenReturn("{\"status\":\"EXPIRED\"}");
+        when(jedis.hmget(eq("reservation:res_id1"), any(String[].class))).thenReturn(
+            java.util.Arrays.asList("t1", "tenant:t1", "TOKENS", "5", "100", null, null));
+
+        service.expireReservations();
+
+        verify(eventEmitter).emit(eq(EventType.RESERVATION_EXPIRED), eq("t1"), any(), any(),
+            argThat(data -> data instanceof io.runcycles.protocol.model.event.EventDataReservationExpired expired
+                && expired.getCreatedAt() != null && expired.getExpiredAt() == null),
+            any(), any(), any());
+    }
+
+    @Test
+    void privateEventBoundaryHandlesNullResultAndNullTraceOnFailure() throws Exception {
+        Method emitExpired = ReservationExpiryService.class.getDeclaredMethod("emitExpiredEvent",
+            Jedis.class, String.class, com.fasterxml.jackson.databind.JsonNode.class, TraceContext.class);
+        emitExpired.setAccessible(true);
+
+        emitExpired.invoke(service, jedis, "id-null", null, null);
+        com.fasterxml.jackson.databind.JsonNode expired = new ObjectMapper().readTree("{\"status\":\"EXPIRED\"}");
+        when(jedis.hmget(eq("reservation:res_id-error"), any(String[].class)))
+            .thenThrow(new RuntimeException("redis"));
+        emitExpired.invoke(service, jedis, "id-error", expired, null);
+
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
     }
 }

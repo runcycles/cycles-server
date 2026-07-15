@@ -77,6 +77,16 @@ class EventEmitterServiceTest {
     }
 
     @Test
+    void emit_exceptionWithActorIsContainedAndNullTraceDefaults() {
+        doThrow(new RuntimeException("fail")).when(repository).emit(any());
+
+        service.emit(EventType.RESERVATION_DENIED, "t1", null,
+            Actor.builder().type(ActorType.API_KEY).build(), null, null, null, null);
+
+        verify(repository, timeout(5000)).emit(any());
+    }
+
+    @Test
     void emit_queueFull_dropsNonBlockingEventWithoutThrowing() throws Exception {
         EventEmitterService bounded = new EventEmitterService(1, 1);
         setField(bounded, "repository", repository);
@@ -96,7 +106,8 @@ class EventEmitterServiceTest {
 
         // Worker is busy and the single queue slot is full; this must fail open
         // without blocking or throwing from the request path.
-        bounded.emit(EventType.RESERVATION_DENIED, "t1", null, null, null, "corr-3", "req-3");
+        bounded.emit(EventType.RESERVATION_DENIED, "t1", null,
+            Actor.builder().type(ActorType.API_KEY).build(), null, "corr-3", "req-3");
 
         release.countDown();
         verify(repository, timeout(5000).times(2)).emit(any());
@@ -330,5 +341,55 @@ class EventEmitterServiceTest {
 
         verify(repository, timeout(5000).times(2)).emit(argThat(e ->
                 e.getEventType() == EventType.BUDGET_EXHAUSTED));
+    }
+
+    @Test
+    void emitBalanceEvents_coversSparseAndZeroValuedBalanceFields() {
+        Enums.UnitEnum unit = Enums.UnitEnum.USD_MICROCENTS;
+        Balance noRemaining = Balance.builder().scopePath("s0").isOverLimit(false).build();
+        Balance nullRemainingAmount = Balance.builder().scopePath("s-null")
+            .remaining(new SignedAmount(unit, null)).build();
+        Balance nullAllocated = Balance.builder().scopePath("s1")
+            .remaining(new SignedAmount(unit, 0L)).build();
+        Balance zeroAllocated = Balance.builder().scopePath("s2")
+            .remaining(new SignedAmount(unit, 0L)).allocated(new Amount(unit, 0L)).build();
+        Balance nullUsage = Balance.builder().scopePath("s3")
+            .remaining(new SignedAmount(unit, 0L)).allocated(new Amount(unit, 10L)).build();
+        Balance noDebtFields = Balance.builder().scopePath("s4")
+            .isOverLimit(true).build();
+        Balance noOverdraftLimit = Balance.builder().scopePath("s5")
+            .debt(new Amount(unit, 5L)).isOverLimit(true).build();
+        Balance zeroOverdraftLimit = Balance.builder().scopePath("s6")
+            .debt(new Amount(unit, 5L)).overdraftLimit(new Amount(unit, 0L)).isOverLimit(true).build();
+
+        service.emitBalanceEvents(List.of(noRemaining, nullRemainingAmount, nullAllocated, zeroAllocated, nullUsage,
+                noDebtFields, noOverdraftLimit, zeroOverdraftLimit),
+            "t1", null, null, null, Map.of("s0", 0L), null, null, null, null, null);
+
+        verify(repository, timeout(5000).atLeast(6)).emit(any());
+    }
+
+    @Test
+    void emitBalanceEvents_debtConditionEvaluatesEveryShortCircuit() {
+        Enums.UnitEnum unit = Enums.UnitEnum.USD_MICROCENTS;
+        Balance noDebt = Balance.builder().scopePath("no-debt").build();
+        Balance validDebtWithoutLimit = Balance.builder().scopePath("valid")
+            .debt(new Amount(unit, 7L)).build();
+        Map<String, Long> perScope = new java.util.HashMap<>();
+        perScope.put("no-debt", 3L);
+        perScope.put("valid", 7L);
+        perScope.put("zero", 0L);
+        Balance zero = Balance.builder().scopePath("zero")
+            .debt(new Amount(unit, 1L)).build();
+        Balance nullDebtAmount = Balance.builder().scopePath("null-amount")
+            .debt(new Amount(unit, null)).build();
+        perScope.put("null-amount", 3L);
+
+        service.emitBalanceEvents(List.of(noDebt, zero, nullDebtAmount, validDebtWithoutLimit), "t1", null,
+            "res", "ALLOW_WITH_OVERDRAFT", perScope, null, null, null, null, null);
+
+        verify(repository, timeout(5000)).emit(argThat(event ->
+            event.getEventType() == EventType.BUDGET_DEBT_INCURRED
+                && "valid".equals(event.getScope())));
     }
 }

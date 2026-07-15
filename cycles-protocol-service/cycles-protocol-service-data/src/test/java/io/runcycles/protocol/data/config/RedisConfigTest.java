@@ -239,4 +239,14 @@ class RedisConfigTest {
         assertThat(pool).isNotNull();
         pool.close();
     }
+
+    @Test
+    @DisplayName("should create JedisPool without optional build metadata")
+    void shouldCreateJedisPoolWithoutBuildProperties() throws Exception {
+        setField("buildProperties", null);
+
+        try (JedisPool pool = redisConfig.jedisPool()) {
+            assertThat(pool).isNotNull();
+        }
+    }
 }

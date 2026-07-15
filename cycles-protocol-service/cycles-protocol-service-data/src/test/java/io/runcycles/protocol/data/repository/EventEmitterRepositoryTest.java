@@ -12,6 +12,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
@@ -280,6 +281,49 @@ class EventEmitterRepositoryTest {
     }
 
     @Test
+    void emit_nullEventIsContainedByFailOpenBoundary() {
+        repository.emit(null);
+
+        verifyNoInteractions(pipeline);
+    }
+
+    @Test
+    void emit_nullEventTypeLeavesCategoryUnset() {
+        stubPipelineForSubscriptions(Collections.emptySet(), Collections.emptySet(), Collections.emptyMap());
+        Event event = Event.builder().eventId("evt_existing").tenantId("t1")
+            .source("cycles-server").timestamp(Instant.now()).build();
+
+        repository.emit(event);
+
+        verify(pipeline).set(eq("event:evt_existing"), anyString());
+    }
+
+    @Test
+    void emit_handlesNullSubscriptionSets() {
+        stubPipelineForSubscriptions(null, null, Collections.emptyMap());
+        Event event = Event.builder().eventId("evt_null_sets")
+            .eventType(EventType.RESERVATION_DENIED).tenantId("t1")
+            .source("cycles-server").timestamp(Instant.now()).build();
+
+        repository.emit(event);
+
+        verify(pipeline, never()).lpush(eq("dispatch:pending"), anyString());
+    }
+
+    @Test
+    void emit_skipsDeletedSubscriptionPayload() {
+        Map<String, String> deleted = new HashMap<>();
+        deleted.put("whsub_deleted", null);
+        stubPipelineForSubscriptions(Set.of("whsub_deleted"), Collections.emptySet(), deleted);
+        Event event = Event.builder().eventType(EventType.RESERVATION_DENIED).tenantId("t1")
+            .source("cycles-server").timestamp(Instant.now()).build();
+
+        repository.emit(event);
+
+        verify(pipeline, never()).lpush(eq("dispatch:pending"), anyString());
+    }
+
+    @Test
     void retentionSweep_prunesEventAndDeliveryIndexes() {
         ScanResult<String> first = new ScanResult<>(ScanParams.SCAN_POINTER_START.getBytes(),
                 List.of("events:t1", "events:_all"));
@@ -330,6 +374,41 @@ class EventEmitterRepositoryTest {
         repository.sweepStaleIndexEntries();
 
         verify(jedis).zremrangeByScore(eq("deliveries:whsub_1"), eq(Double.NEGATIVE_INFINITY), anyDouble());
+    }
+
+    @Test
+    void retentionSweep_followsMultiBatchScanCursor() {
+        ScanResult<String> eventFirst = new ScanResult<>("7".getBytes(), List.of("events:t1"));
+        ScanResult<String> eventLast = new ScanResult<>(ScanParams.SCAN_POINTER_START.getBytes(), List.of());
+        ScanResult<String> deliveryLast = new ScanResult<>(ScanParams.SCAN_POINTER_START.getBytes(), List.of());
+        when(jedis.scan(eq(ScanParams.SCAN_POINTER_START), any(ScanParams.class)))
+            .thenReturn(eventFirst, deliveryLast);
+        when(jedis.scan(eq("7"), any(ScanParams.class))).thenReturn(eventLast);
+
+        repository.sweepStaleIndexEntries();
+
+        verify(jedis).scan(eq("7"), any(ScanParams.class));
+    }
+
+    @Test
+    void eventTypeMatcherCoversEmptyAndMismatchedFilterCombinations() throws Exception {
+        assertTrue(matchesEventType(WebhookSubscription.builder().build(), EventType.RESERVATION_DENIED));
+        assertTrue(matchesEventType(WebhookSubscription.builder()
+            .eventTypes(Collections.emptyList()).eventCategories(Collections.emptyList()).build(),
+            EventType.RESERVATION_DENIED));
+        assertFalse(matchesEventType(WebhookSubscription.builder()
+            .eventTypes(Collections.emptyList()).eventCategories(List.of(EventCategory.BUDGET)).build(),
+            EventType.RESERVATION_DENIED));
+        assertFalse(matchesEventType(WebhookSubscription.builder()
+            .eventTypes(List.of(EventType.BUDGET_CREATED)).eventCategories(Collections.emptyList()).build(),
+            EventType.RESERVATION_DENIED));
+    }
+
+    private boolean matchesEventType(WebhookSubscription subscription, EventType eventType) throws Exception {
+        Method matcher = EventEmitterRepository.class.getDeclaredMethod(
+            "matchesEventType", WebhookSubscription.class, EventType.class);
+        matcher.setAccessible(true);
+        return (boolean) matcher.invoke(repository, subscription, eventType);
     }
 
     // ---- matchesScope (spec scope_filter wildcard semantics) ----

@@ -22,6 +22,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.List;
 
@@ -32,8 +33,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mock;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 @WebMvcTest(
         controllers = DecisionController.class,
@@ -49,6 +52,7 @@ class DecisionControllerTest {
 
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private DecisionController controller;
     @MockitoBean private RedisReservationRepository repository;
     @MockitoBean private io.runcycles.protocol.data.service.EventEmitterService eventEmitter;
     @org.springframework.test.context.bean.override.mockito.MockitoBean private io.runcycles.protocol.data.metrics.CyclesMetrics cyclesMetrics;
@@ -207,5 +211,23 @@ class DecisionControllerTest {
                         .content(decideJson(TENANT)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.decision").value("DENY"));
+    }
+
+    @Test
+    void denialHandlesNullAndEmptyScopesReasonAndEstimate() {
+        DecisionRequest request = DecisionRequest.builder()
+            .idempotencyKey("direct").subject(new Subject(TENANT, null, null, null, null, null, null))
+            .action(new Action("test", "test", null)).estimate(null).build();
+        DecisionResponse noScopes = DecisionResponse.builder()
+            .decision(Enums.DecisionEnum.DENY).affectedScopes(null).reasonCode(null).build();
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(noScopes,
+            DecisionResponse.builder().decision(Enums.DecisionEnum.DENY)
+                .affectedScopes(List.of()).build());
+        HttpServletRequest servletRequest = mock(HttpServletRequest.class);
+
+        DecisionController target = org.springframework.test.util.AopTestUtils.getTargetObject(controller);
+        assertThat(target.decide(null, request, servletRequest).getBody()).isSameAs(noScopes);
+        assertThat(target.decide(null, request, servletRequest).getBody().getAffectedScopes())
+            .isEmpty();
     }
 }

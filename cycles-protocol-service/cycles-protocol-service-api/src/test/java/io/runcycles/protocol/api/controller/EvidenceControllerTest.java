@@ -3,8 +3,10 @@ package io.runcycles.protocol.api.controller;
 import io.runcycles.protocol.api.auth.ApiKeyAuthenticationFilter;
 import io.runcycles.protocol.api.contract.ContractValidationConfig;
 import io.runcycles.protocol.api.exception.GlobalExceptionHandler;
+import io.runcycles.protocol.api.filter.RequestIdFilter;
 import io.runcycles.protocol.data.repository.EvidenceStoreReader;
 import io.runcycles.protocol.data.service.ReservationExpiryService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,8 +17,11 @@ import org.springframework.context.annotation.FilterType;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -78,5 +83,24 @@ class EvidenceControllerTest {
     void returns400OnMalformedEvidenceId() throws Exception {
         mockMvc.perform(get("/v1/evidence/not-a-valid-content-hash"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void resolvesRequestIdDefensively() {
+        EvidenceController controller = new EvidenceController(store);
+        HttpServletRequest requestWithoutId = mock(HttpServletRequest.class);
+        HttpServletRequest requestWithId = mock(HttpServletRequest.class);
+        when(requestWithId.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE)).thenReturn(1234L);
+
+        String nullRequestId = ReflectionTestUtils.invokeMethod(
+                controller, "resolveRequestId", (HttpServletRequest) null);
+        String missingRequestId = ReflectionTestUtils.invokeMethod(
+                controller, "resolveRequestId", requestWithoutId);
+        String resolvedRequestId = ReflectionTestUtils.invokeMethod(
+                controller, "resolveRequestId", requestWithId);
+
+        assertThat(nullRequestId).isNull();
+        assertThat(missingRequestId).isNull();
+        assertThat(resolvedRequestId).isEqualTo("1234");
     }
 }

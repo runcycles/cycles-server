@@ -552,4 +552,13 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().getCyclesEvidence()).isNull();
         verify(evidenceEmitter, never()).emit(anyString(), anyLong(), any(), any());
     }
+
+    @Test
+    void requestErrorAndBothGenericBranchesHandleNullServletRequest() {
+        assertThat(handler.handleMessageNotReadable(null, null).getStatusCode().value()).isEqualTo(400);
+        assertThat(handler.handleGenericException(CyclesProtocolException.notFound("x"), null)
+            .getStatusCode().value()).isEqualTo(404);
+        assertThat(handler.handleGenericException(new RuntimeException("boom"), null)
+            .getStatusCode().value()).isEqualTo(500);
+    }
 }

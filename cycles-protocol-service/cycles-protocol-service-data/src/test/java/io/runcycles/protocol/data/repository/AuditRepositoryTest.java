@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
+import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,6 +17,7 @@ import redis.clients.jedis.resps.ScanResult;
 
 import java.lang.reflect.Field;
 import java.util.List;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -101,6 +103,26 @@ class AuditRepositoryTest {
     }
 
     @Test
+    void prepare_replacesBlankLogIdAndPreservesExistingTimestamp() throws Exception {
+        Instant timestamp = Instant.parse("2026-01-01T00:00:00Z");
+        AuditLogEntry entry = AuditLogEntry.builder().tenantId("tenant_test")
+            .logId(" ").timestamp(timestamp).operation("test.op").status(200).build();
+
+        AuditRepository.PreparedAudit prepared = repository.prepare(entry);
+
+        assertThat(prepared.logId()).startsWith("log_");
+        assertThat(prepared.score()).isEqualTo(timestamp.toEpochMilli());
+    }
+
+    @Test
+    void preparePreservesExistingLogId() throws Exception {
+        AuditLogEntry entry = AuditLogEntry.builder().tenantId("tenant_test")
+            .logId("log_existing").timestamp(Instant.now()).operation("test.op").status(200).build();
+
+        assertThat(repository.prepare(entry).logId()).isEqualTo("log_existing");
+    }
+
+    @Test
     void prepare_rejectsMissingTenantBeforeSerialization() {
         AuditLogEntry missing = AuditLogEntry.builder().operation("test.op").status(200).build();
         AuditLogEntry blank = AuditLogEntry.builder()
@@ -147,5 +169,30 @@ class AuditRepositoryTest {
             .thenThrow(new RuntimeException("redis down"));
         // Must not throw.
         repository.sweepStaleIndexEntries();
+    }
+
+    @Test
+    void scheduledSweepPassesRetentionEnablementToMaintenanceRunner() {
+        RedisMaintenanceRunner runner = org.mockito.Mockito.mock(RedisMaintenanceRunner.class);
+        setField(repository, "maintenanceRunner", runner);
+
+        repository.scheduledSweepStaleIndexEntries();
+        setField(repository, "retentionDays", 0);
+        repository.scheduledSweepStaleIndexEntries();
+
+        verify(runner, times(2)).runIf(eq(io.runcycles.protocol.data.maintenance.MaintenanceJob.AUDIT_RETENTION),
+            org.mockito.ArgumentMatchers.anyBoolean(), any(Runnable.class));
+    }
+
+    @Test
+    void sweepFollowsRedisScanCursorUntilCompletion() {
+        ScanResult<String> first = new ScanResult<>("9".getBytes(), List.of("audit:logs:tenant_a"));
+        ScanResult<String> last = new ScanResult<>(ScanParams.SCAN_POINTER_START.getBytes(), List.of());
+        when(jedis.scan(eq(ScanParams.SCAN_POINTER_START), any(ScanParams.class))).thenReturn(first);
+        when(jedis.scan(eq("9"), any(ScanParams.class))).thenReturn(last);
+
+        repository.sweepStaleIndexEntries();
+
+        verify(jedis).scan(eq("9"), any(ScanParams.class));
     }
 }

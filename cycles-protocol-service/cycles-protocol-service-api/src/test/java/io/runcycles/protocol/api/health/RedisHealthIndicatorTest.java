@@ -51,4 +51,26 @@ class RedisHealthIndicatorTest {
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails()).containsEntry("redis", "unavailable");
     }
+
+    @Test
+    void bytePongAndCommandFailureCoverBothRedisResponseAlternatives() {
+        JedisPool pool = mock(JedisPool.class);
+        Jedis jedis = mock(Jedis.class);
+        when(pool.getResource()).thenReturn(jedis);
+        when(jedis.sendCommand(Protocol.Command.PING)).thenReturn("PONG".getBytes())
+            .thenThrow(new IllegalStateException("command failed"));
+
+        assertThat(new RedisHealthIndicator(pool).health().getStatus()).isEqualTo(Status.UP);
+        assertThat(new RedisHealthIndicator(pool).health().getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    @Test
+    void shouldRejectNonPongByteResponse() {
+        JedisPool pool = mock(JedisPool.class);
+        Jedis jedis = mock(Jedis.class);
+        when(pool.getResource()).thenReturn(jedis);
+        when(jedis.sendCommand(Protocol.Command.PING)).thenReturn("NOPE".getBytes());
+
+        assertThat(new RedisHealthIndicator(pool).health().getStatus()).isEqualTo(Status.DOWN);
+    }
 }

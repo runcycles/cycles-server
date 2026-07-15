@@ -7,6 +7,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -229,6 +230,20 @@ class JwksDocumentsTest {
     void emptyRetiredList_isSingleActiveKey() {
         assertThat(allKeys(JwksDocuments.jwkSet(RAW_HEX, "k", 0L, List.of()))).hasSize(1);
         assertThat(allKeys(JwksDocuments.jwkSet(RAW_HEX, "k", 0L, null))).hasSize(1);
+    }
+
+    @Test
+    void nullKidsEntriesAndReverseDisjointWindowsCoverDefensiveBranches() {
+        List<Map<String, Object>> keys = allKeys(JwksDocuments.jwkSet(
+            RAW_HEX, null, 0L, Arrays.asList(
+                null,
+                new JwksDocuments.RetiredKey(RETIRED_HEX, null, 100L, 200L),
+                new JwksDocuments.RetiredKey(RETIRED_HEX, "earlier", 0L, 100L))));
+
+        assertThat(keys).hasSize(3);
+        assertThat(keys.get(0).get("kid")).isEqualTo(RAW_HEX.substring(0, 16));
+        assertThat(keys.get(1).get("kid")).isEqualTo(RETIRED_HEX.substring(0, 16));
+        assertThat(keys.get(2).get("kid")).isEqualTo("earlier");
     }
 
     private static Map<String, Object> firstKey(Optional<Map<String, Object>> set) {

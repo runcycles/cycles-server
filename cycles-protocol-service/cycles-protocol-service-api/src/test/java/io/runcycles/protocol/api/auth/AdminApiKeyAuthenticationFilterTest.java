@@ -219,4 +219,23 @@ class AdminApiKeyAuthenticationFilterTest {
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
         verify(chain, times(1)).doFilter(request, response);
     }
+
+    @Test
+    void nullConfigurationBlankTraceAndExistingHeadersCoverErrorAlternatives() throws Exception {
+        ReflectionTestUtils.setField(filter, "adminApiKey", null);
+        request.setMethod("GET");
+        request.setRequestURI("/v1/reservations");
+        request.addHeader("X-Admin-API-Key", "present");
+        request.setAttribute(io.runcycles.protocol.api.filter.TraceContextFilter.TRACE_ID_ATTRIBUTE, " ");
+        response.setHeader(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_HEADER, "existing-request");
+        response.setHeader(io.runcycles.protocol.api.filter.TraceContextFilter.TRACE_ID_HEADER, "existing-trace");
+
+        filter.doFilterInternal(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(500);
+        assertThat(response.getHeader(io.runcycles.protocol.api.filter.RequestIdFilter.REQUEST_ID_HEADER))
+            .isEqualTo("existing-request");
+        assertThat(response.getHeader(io.runcycles.protocol.api.filter.TraceContextFilter.TRACE_ID_HEADER))
+            .isEqualTo("existing-trace");
+    }
 }

@@ -5,6 +5,31 @@
 
 ---
 
+### 2026-07-15 — 95% branch coverage gate (no version bump)
+
+JaCoCo previously enforced 95% line coverage but did not gate branch coverage.
+The executable modules therefore passed CI at 95.14%/95.56% line coverage
+while their branch coverage was only 79.21% data and 80.72% API. Focused tests
+now exercise the Redis recovery, replay, pagination, maintenance, expiry,
+validation, authentication, controller, exception, JWKS, rate-limit, and health
+alternatives that were missing from the reports.
+
+Small production-source cleanups remove only provably redundant predicates and
+unreachable null fallbacks exposed by the branch audit; protocol behavior,
+wire shapes, Redis state, and foreground semantics are unchanged. The parent
+JaCoCo rule now applies the same `0.95` minimum to both `LINE` and `BRANCH`, so
+future regressions fail `verify` rather than relying on a manual report review.
+
+Full integration-profile reactor verification completed 1,308 tests (31
+model, 654 data, 623 API) with zero failures, errors, or skips. The current
+protocol YAML passed response validation and reported 11/11 operation coverage.
+Final JaCoCo coverage is 95.09% branch / 97.22% line for data and 95.53%
+branch / 97.40% line for API; both coverage checks passed. This is test and
+quality-gate work with no runtime behavior change, so benchmarks are
+intentionally skipped and the revision remains 0.1.25.58. `[benchmark-skip]`
+
+---
+
 ### 2026-07-14 — v0.1.25.58: direct-event replay metric parity
 
 Successful idempotent reserve, commit, and release requests already increment

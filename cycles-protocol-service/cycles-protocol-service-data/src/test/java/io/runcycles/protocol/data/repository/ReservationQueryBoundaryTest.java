@@ -4,11 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.repository.support.FilterHasher;
 import io.runcycles.protocol.data.repository.support.ReservationListQuery;
 import io.runcycles.protocol.model.ReservationInclude;
+import io.runcycles.protocol.model.ReservationDetail;
+import io.runcycles.protocol.model.ReservationEvidence;
 import io.runcycles.protocol.model.ReservationSummary;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Modifier;
 import java.util.EnumSet;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +21,74 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ReservationQueryBoundaryTest {
+
+    @Test
+    void queryNormalizesNullComponentsAndEvaluatesEveryPostIndexFilter() {
+        ReservationListQuery normalized = new ReservationListQuery(
+            "acme", null, null, null, 10, null, null, null, null, null, null);
+
+        assertThat(normalized.scopes()).isSameAs(ReservationListQuery.ScopeFilters.NONE);
+        assertThat(normalized.sort()).isSameAs(ReservationListQuery.SortOptions.NONE);
+        assertThat(normalized.createdAt()).isSameAs(ReservationListQuery.TimeWindow.NONE);
+        assertThat(normalized.expiresAt()).isSameAs(ReservationListQuery.TimeWindow.NONE);
+        assertThat(normalized.finalizedAt()).isSameAs(ReservationListQuery.TimeWindow.NONE);
+        assertThat(normalized.include()).isEmpty();
+        assertThat(normalized.hasPostIndexFilters()).isFalse();
+        assertThat(normalized.sortRequested()).isFalse();
+
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .idempotencyKey("idem").build().hasPostIndexFilters()).isTrue();
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .status("ACTIVE").build().hasPostIndexFilters()).isTrue();
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .scopes("workspace", null, null, null, null).build().hasPostIndexFilters()).isTrue();
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .expiresAt(1L, null).build().hasPostIndexFilters()).isTrue();
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .finalizedAt(null, 2L).build().hasPostIndexFilters()).isTrue();
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .include(Collections.emptySet()).build().include()).isEmpty();
+        assertThat(ReservationListQuery.builder("acme", 10)
+            .sort(null, "desc").build().sortRequested()).isTrue();
+    }
+
+    @Test
+    void scopeFiltersExerciseEverySegmentAndEqualityBoundary() {
+        ReservationListQuery.ScopeFilters none = ReservationListQuery.ScopeFilters.NONE;
+        assertThat(none.any()).isFalse();
+        assertThat(none.matches(null)).isTrue();
+
+        assertThat(new ReservationListQuery.ScopeFilters("w", null, null, null, null).any()).isTrue();
+        assertThat(new ReservationListQuery.ScopeFilters(null, "a", null, null, null).any()).isTrue();
+        assertThat(new ReservationListQuery.ScopeFilters(null, null, "wf", null, null).any()).isTrue();
+        assertThat(new ReservationListQuery.ScopeFilters(null, null, null, "agent", null).any()).isTrue();
+        assertThat(new ReservationListQuery.ScopeFilters(null, null, null, null, "tools").any()).isTrue();
+
+        ReservationListQuery.ScopeFilters all = new ReservationListQuery.ScopeFilters(
+            "w", "a", "wf", "agent", "tools");
+        String matching = "tenant:t/workspace:w/app:a/workflow:wf/agent:agent/toolset:tools";
+        assertThat(all.matches(matching)).isTrue();
+        assertThat(all.matches("tenant:t/app:a/workflow:wf/agent:agent/toolset:tools")).isFalse();
+        assertThat(all.matches("tenant:t/workspace:w/workflow:wf/agent:agent/toolset:tools")).isFalse();
+        assertThat(all.matches("tenant:t/workspace:w/app:a/agent:agent/toolset:tools")).isFalse();
+        assertThat(all.matches("tenant:t/workspace:w/app:a/workflow:wf/toolset:tools")).isFalse();
+        assertThat(all.matches("tenant:t/workspace:w/app:a/workflow:wf/agent:agent")).isFalse();
+
+        assertThat(all.equals(all)).isTrue();
+        assertThat(all.equals("not filters")).isFalse();
+        assertThat(all).isNotEqualTo(new ReservationListQuery.ScopeFilters(
+            "other", "a", "wf", "agent", "tools"));
+        assertThat(all).isNotEqualTo(new ReservationListQuery.ScopeFilters(
+            "w", "other", "wf", "agent", "tools"));
+        assertThat(all).isNotEqualTo(new ReservationListQuery.ScopeFilters(
+            "w", "a", "other", "agent", "tools"));
+        assertThat(all).isNotEqualTo(new ReservationListQuery.ScopeFilters(
+            "w", "a", "wf", "other", "tools"));
+        assertThat(all).isNotEqualTo(new ReservationListQuery.ScopeFilters(
+            "w", "a", "wf", "agent", "other"));
+        assertThat(all).isEqualTo(new ReservationListQuery.ScopeFilters(
+            "w", "a", "wf", "agent", "tools"));
+    }
 
     @Test
     void querySnapshotsIncludesAndOwnsTheLegacyFilterHashContract() {
@@ -129,6 +200,63 @@ class ReservationQueryBoundaryTest {
         String original = first[0];
         first[0] = "mutated";
         assertThat(mapper.detailFieldArray()[0]).isEqualTo(original);
+    }
+
+    @Test
+    void mapperCoversNullProjectionAndOptionalHydrationBoundaries() throws Exception {
+        assertThat(ReservationHashMapper.projection(null, false))
+            .doesNotContain("metadata_json", "committed_metadata_json", "reserve_evidence_id");
+        assertThat(ReservationHashMapper.projection(Set.of(ReservationInclude.COMMITTED_METADATA), false))
+            .contains("committed_metadata_json")
+            .doesNotContain("metadata_json", "reserve_evidence_id");
+        assertThat(ReservationHashMapper.projection(Set.of(ReservationInclude.EVIDENCE), false))
+            .contains("reserve_evidence_id")
+            .doesNotContain("metadata_json", "committed_metadata_json");
+
+        ReservationHashMapper mapper = new ReservationHashMapper(new ObjectMapper());
+        Map<String, String> minimal = validFields();
+        minimal.remove("affected_scopes");
+        minimal.put("metadata_json", "");
+        minimal.put("committed_metadata_json", "{\"phase\":\"final\"}");
+        ReservationDetail detail = mapper.buildDetail(minimal);
+
+        assertThat(detail.getAffectedScopes()).isEmpty();
+        assertThat(detail.getMetadata()).isNull();
+        assertThat(detail.getCommittedMetadata()).containsEntry("phase", "final");
+        assertThat(mapper.toSummary(detail, null).getCommittedMetadata()).isNull();
+        assertThat(mapper.toSummary(detail, Set.of(ReservationInclude.COMMITTED_METADATA))
+            .getCommittedMetadata()).containsEntry("phase", "final");
+    }
+
+    @Test
+    void mapperRejectsEveryMissingRequiredHashField() {
+        ReservationHashMapper mapper = new ReservationHashMapper(new ObjectMapper());
+        for (String required : List.of("estimate_unit", "estimate_amount", "state", "subject_json",
+                "action_json", "created_at", "expires_at")) {
+            Map<String, String> corrupted = validFields();
+            corrupted.remove(required);
+            assertThatThrownBy(() -> mapper.buildDetail(corrupted))
+                .isInstanceOf(io.runcycles.protocol.data.exception.CyclesProtocolException.class)
+                .hasMessageContaining("corrupted");
+        }
+    }
+
+    @Test
+    void evidenceHydrationRequiresCompleteRefsForEveryArtifact() {
+        assertThat(ReservationHashMapper.buildEvidence(Map.of())).isNull();
+        assertThat(ReservationHashMapper.buildEvidence(Map.of(
+            "reserve_evidence_id", "", "reserve_evidence_url", "url"))).isNull();
+        assertThat(ReservationHashMapper.buildEvidence(Map.of(
+            "reserve_evidence_id", "id", "reserve_evidence_url", ""))).isNull();
+
+        ReservationEvidence evidence = ReservationHashMapper.buildEvidence(Map.of(
+            "reserve_evidence_id", "reserve-id", "reserve_evidence_url", "reserve-url",
+            "commit_evidence_id", "commit-id", "commit_evidence_url", "commit-url",
+            "release_evidence_id", "release-id", "release_evidence_url", "release-url"));
+
+        assertThat(evidence.getReserve().getEvidenceId()).isEqualTo("reserve-id");
+        assertThat(evidence.getCommit().getEvidenceId()).isEqualTo("commit-id");
+        assertThat(evidence.getRelease().getEvidenceId()).isEqualTo("release-id");
     }
 
     private static Map<String, String> validFields() {

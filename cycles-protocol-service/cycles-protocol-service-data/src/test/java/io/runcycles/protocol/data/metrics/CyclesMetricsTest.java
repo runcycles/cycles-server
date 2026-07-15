@@ -162,6 +162,17 @@ class CyclesMetricsTest {
             assertThat(countOf("cycles.overdraft.incurred", "tenant", "tenant-a"))
                     .isEqualTo(1.0);
         }
+
+        @Test
+        void recordEvidenceEmitFailureNormalizesNullArtifactType() {
+            metrics.recordEvidenceEmitFailed("reserve");
+            metrics.recordEvidenceEmitFailed(null);
+
+            assertThat(countOf("cycles.evidence.emit_failed", "artifact_type", "reserve"))
+                .isEqualTo(1.0);
+            assertThat(countOf("cycles.evidence.emit_failed", "artifact_type", "unknown"))
+                .isEqualTo(1.0);
+        }
     }
 
     @Nested

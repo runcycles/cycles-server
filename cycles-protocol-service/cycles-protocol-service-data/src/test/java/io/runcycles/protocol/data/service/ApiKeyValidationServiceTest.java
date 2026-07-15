@@ -113,6 +113,15 @@ class ApiKeyValidationServiceTest {
     }
 
     @Test
+    void shouldHandleBlankToken() {
+        when(apiKeyRepository.validate(" ")).thenReturn(
+                ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("KEY_NOT_FOUND").build());
+
+        assertThat(service.isValid(" ").isValid()).isFalse();
+    }
+
+    @Test
     void safeLogValueFlattensLineBreaks() {
         assertThat(ApiKeyValidationService.safeLogValue("tenant\r\nfake=1"))
                 .isEqualTo("tenant  fake=1");

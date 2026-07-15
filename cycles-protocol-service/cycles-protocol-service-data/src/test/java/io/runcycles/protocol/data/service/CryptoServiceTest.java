@@ -40,6 +40,14 @@ class CryptoServiceTest {
     }
 
     @Test
+    void passThrough_nullKey() {
+        CryptoService service = new CryptoService(null);
+
+        assertThat(service.encrypt("plain")).isEqualTo("plain");
+        assertThat(service.isEnabled()).isFalse();
+    }
+
+    @Test
     void nullHandling() {
         CryptoService service = new CryptoService(generateKey());
         assertThat(service.encrypt(null)).isNull();
