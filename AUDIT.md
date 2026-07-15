@@ -15,17 +15,22 @@ validation, authentication, controller, exception, JWKS, rate-limit, and health
 alternatives that were missing from the reports.
 
 Small production-source cleanups remove only provably redundant predicates and
-unreachable null fallbacks exposed by the branch audit; protocol behavior,
-wire shapes, Redis state, and foreground semantics are unchanged. The parent
-JaCoCo rule now applies the same `0.95` minimum to both `LINE` and `BRANCH`, so
-future regressions fail `verify` rather than relying on a manual report review.
+unreachable null fallbacks exposed by the branch audit. Review follow-up
+retains the lazy debug-log guard on API-key validation and the defensive
+empty-page guards on both sorted pagination paths. Public-entry-point
+regressions pin the zero-limit behavior, while controller and maintenance tests
+now assert exact lifecycle bounds and enabled/disabled scheduler states. The
+parent JaCoCo rule applies the same `0.95` minimum to both `LINE` and `BRANCH`,
+so future regressions fail `verify` rather than relying on a manual report
+review.
 
-Full integration-profile reactor verification completed 1,308 tests (31
-model, 654 data, 623 API) with zero failures, errors, or skips. The current
+Full integration-profile reactor verification completed 1,311 tests (31
+model, 657 data, 623 API) with zero failures, errors, or skips. The current
 protocol YAML passed response validation and reported 11/11 operation coverage.
-Final JaCoCo coverage is 95.09% branch / 97.22% line for data and 95.53%
-branch / 97.40% line for API; both coverage checks passed. This is test and
-quality-gate work with no runtime behavior change, so benchmarks are
+Final JaCoCo coverage is 95.11% branch (1,691/1,778) / 97.17% line
+(3,121/3,212) for data and 95.53% branch (470/492) / 97.40% line (899/923)
+for API; both coverage checks passed. Public protocol behavior, wire shapes,
+Redis state, and foreground semantics are unchanged, so benchmarks are
 intentionally skipped and the revision remains 0.1.25.58. `[benchmark-skip]`
 
 ---

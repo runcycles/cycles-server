@@ -4,6 +4,7 @@ import io.runcycles.protocol.data.maintenance.MaintenanceJob;
 import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.Pipeline;
@@ -99,10 +100,15 @@ class ReservationCreatedAtIndexServiceBranchTest {
         service.scheduledRepairIfRequested();
         service.scheduledSweepStaleMembers();
 
-        verify(runner, times(2)).runIf(eq(MaintenanceJob.CREATED_AT_REPAIR),
-            anyBoolean(), any(Runnable.class));
-        verify(runner, times(2)).runIf(eq(MaintenanceJob.CREATED_AT_SWEEP),
-            anyBoolean(), any(Runnable.class));
+        InOrder order = inOrder(runner);
+        order.verify(runner).runIf(eq(MaintenanceJob.CREATED_AT_REPAIR), eq(true),
+            any(Runnable.class));
+        order.verify(runner).runIf(eq(MaintenanceJob.CREATED_AT_SWEEP), eq(true),
+            any(Runnable.class));
+        order.verify(runner).runIf(eq(MaintenanceJob.CREATED_AT_REPAIR), eq(false),
+            any(Runnable.class));
+        order.verify(runner).runIf(eq(MaintenanceJob.CREATED_AT_SWEEP), eq(false),
+            any(Runnable.class));
     }
 
     @Test

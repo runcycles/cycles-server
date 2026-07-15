@@ -9,17 +9,27 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class ApiKeyValidationService {
-    private static final Logger LOG = LoggerFactory.getLogger(ApiKeyValidationService.class);
+    private final ApiKeyRepository apiKeyRepository;
+    private final Logger logger;
 
     @Autowired
-    private ApiKeyRepository apiKeyRepository ;
+    public ApiKeyValidationService(ApiKeyRepository apiKeyRepository) {
+        this(apiKeyRepository, LoggerFactory.getLogger(ApiKeyValidationService.class));
+    }
+
+    ApiKeyValidationService(ApiKeyRepository apiKeyRepository, Logger logger) {
+        this.apiKeyRepository = apiKeyRepository;
+        this.logger = logger;
+    }
 
     public ApiKeyValidationResponse isValid (String apiToken){
         ApiKeyValidationResponse apiKeyValidationResponse = apiKeyRepository.validate(apiToken) ;
-        LOG.debug("API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
-                apiToken != null && !apiToken.isBlank(), apiToken != null ? apiToken.length() : null,
-                apiKeyValidationResponse.isValid(), safeLogValue(apiKeyValidationResponse.getTenantId()),
-                safeLogValue(apiKeyValidationResponse.getKeyId()), safeLogValue(apiKeyValidationResponse.getReason()));
+        if (logger.isDebugEnabled()) {
+            logger.debug("API key validation: api_key_present={} api_key_length={} valid={} tenant={} key_id={} reason={}",
+                    apiToken != null && !apiToken.isBlank(), apiToken != null ? apiToken.length() : null,
+                    apiKeyValidationResponse.isValid(), safeLogValue(apiKeyValidationResponse.getTenantId()),
+                    safeLogValue(apiKeyValidationResponse.getKeyId()), safeLogValue(apiKeyValidationResponse.getReason()));
+        }
         return apiKeyValidationResponse ;
     }
 

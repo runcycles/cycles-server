@@ -253,7 +253,7 @@ public class RedisReservationQueryRepository {
         List<ReservationSummary> page = new ArrayList<>(matching.subList(start, end));
 
         String nextCursor = null;
-        if (end < matching.size()) {
+        if (end < matching.size() && !page.isEmpty()) {
             ReservationSummary last = page.get(page.size() - 1);
             nextCursor = new SortedListCursor(
                 1, sortBy, sortDir, filterHash,
@@ -426,7 +426,7 @@ public class RedisReservationQueryRepository {
             ? new ArrayList<>(matching.subList(0, query.limit()))
             : new ArrayList<>(matching);
         String nextCursor = null;
-        if (hasMore) {
+        if (hasMore && !page.isEmpty()) {
             ReservationSummary last = page.get(page.size() - 1);
             nextCursor = new SortedListCursor(
                 1, "created_at_ms", sortDir, filterHash,

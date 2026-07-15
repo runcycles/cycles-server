@@ -180,6 +180,53 @@ class RedisReservationQueryBranchTest {
     }
 
     @Test
+    void zeroLimitSortedScanReturnsAnEmptyPageWhenRowsMatch() throws Exception {
+        ReservationListQuery query = ReservationListQuery.builder("tenant", 0)
+            .sort("status", "asc").build();
+        @SuppressWarnings("unchecked")
+        Response<List<String>> row = mock(Response.class);
+        when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(
+            new ScanResult<>("0".getBytes(), List.of("reservation:res_r1")));
+        when(jedis.pipelined()).thenReturn(pipeline);
+        when(pipeline.hmget(eq("reservation:res_r1"), any(String[].class))).thenReturn(row);
+        when(row.get()).thenReturn(project(query, Map.of("reservation_id", "r1")));
+        when(hashMapper.matchingSummary(anyMap(), eq(query))).thenReturn(
+            ReservationSummary.builder().reservationId("r1").build());
+
+        ReservationListResponse response = repository.list(query, null);
+
+        assertThat(response.getReservations()).isEmpty();
+        assertThat(response.getHasMore()).isFalse();
+        assertThat(response.getNextCursor()).isNull();
+    }
+
+    @Test
+    void zeroLimitIndexedReadReturnsAnEmptyPageWhenRowsMatch() throws Exception {
+        ReservationListQuery query = ReservationListQuery.builder("tenant", 0)
+            .sort("created_at_ms", "asc").build();
+        @SuppressWarnings("unchecked")
+        Response<List<String>> row = mock(Response.class);
+        when(jedis.pipelined()).thenReturn(pipeline);
+        when(pipeline.hmget(eq("reservation:res_r1"), any(String[].class))).thenReturn(row);
+        when(row.get()).thenReturn(project(query, Map.of(
+            "reservation_id", "r1", "tenant", "tenant", "created_at", "10")));
+        when(hashMapper.matchingSummary(anyMap(), eq(query))).thenReturn(
+            ReservationSummary.builder().reservationId("r1").createdAtMs(10L).build());
+        ReservationCreatedAtIndexService index = mock(ReservationCreatedAtIndexService.class);
+        when(index.isEnabled()).thenReturn(true);
+        when(index.isReady(jedis, "tenant")).thenReturn(true);
+        when(index.readPage(eq(jedis), eq("tenant"), eq("asc"), eq("-inf"), eq("+inf"),
+            isNull(), isNull(), eq(1))).thenReturn(List.of(
+                new ReservationCreatedAtIndexService.IndexCandidate("r1", 10)));
+
+        ReservationListResponse response = repository.list(query, index);
+
+        assertThat(response.getReservations()).isEmpty();
+        assertThat(response.getHasMore()).isTrue();
+        assertThat(response.getNextCursor()).isNull();
+    }
+
+    @Test
     void indexedReadRejectsFractionalScoresExistingEmptyHashesAndMissingTenants() throws Exception {
         ReservationListQuery query = ReservationListQuery.builder("tenant", 1).build();
         @SuppressWarnings("unchecked")

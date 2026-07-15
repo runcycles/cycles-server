@@ -4,11 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
+import io.runcycles.protocol.data.maintenance.MaintenanceJob;
 import io.runcycles.protocol.data.maintenance.RedisMaintenanceRunner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
@@ -26,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -180,8 +183,11 @@ class AuditRepositoryTest {
         setField(repository, "retentionDays", 0);
         repository.scheduledSweepStaleIndexEntries();
 
-        verify(runner, times(2)).runIf(eq(io.runcycles.protocol.data.maintenance.MaintenanceJob.AUDIT_RETENTION),
-            org.mockito.ArgumentMatchers.anyBoolean(), any(Runnable.class));
+        InOrder order = inOrder(runner);
+        order.verify(runner).runIf(eq(MaintenanceJob.AUDIT_RETENTION), eq(true),
+            any(Runnable.class));
+        order.verify(runner).runIf(eq(MaintenanceJob.AUDIT_RETENTION), eq(false),
+            any(Runnable.class));
     }
 
     @Test

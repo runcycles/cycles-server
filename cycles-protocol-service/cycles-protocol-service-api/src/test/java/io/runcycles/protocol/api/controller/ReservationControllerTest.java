@@ -1145,6 +1145,8 @@ class ReservationControllerTest {
 
     @Test
     void oneSidedLifecycleWindowsReachRepository() throws Exception {
+        long expiresFrom = java.time.Instant.parse("2026-05-22T10:00:00Z").toEpochMilli();
+        long finalizedFrom = java.time.Instant.parse("2026-05-22T11:00:00Z").toEpochMilli();
         when(repository.listReservations(any(), any(), any(), any(), any(), any(), any(), any(),
             anyInt(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
             .thenReturn(ReservationListResponse.builder().reservations(List.of()).hasMore(false).build());
@@ -1153,6 +1155,10 @@ class ReservationControllerTest {
                 .param("expires_from", "2026-05-22T10:00:00Z")
                 .param("finalized_from", "2026-05-22T11:00:00Z"))
             .andExpect(status().isOk());
+
+        verify(repository).listReservations(eq(TENANT), any(), any(), any(), any(), any(), any(),
+            any(), eq(50), any(), any(), any(), any(), any(), eq(expiresFrom), eq((Long) null),
+            eq(finalizedFrom), eq((Long) null), any());
     }
 
     // v0.1.25.8 (cycles-protocol revision 2026-04-13): admin-on-behalf-of
