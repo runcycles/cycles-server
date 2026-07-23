@@ -227,3 +227,5 @@
 
 {"timestamp": "2026-07-22T09:22:00Z", "commit": "fee8fee", "tag": null, "trials": 3, "reserve_p50_ms": 3.6, "reserve_p99_ms": 8.4, "commit_p50_ms": 3.0, "commit_p99_ms": 7.4, "release_p50_ms": 4.3, "event_p50_ms": 3.6, "list_sorted_1k_p50_ms": 4.7, "list_sorted_10k_p50_ms": 5.2, "concurrent_throughput_32t": 468.4}
 
+{"timestamp": "2026-07-23T09:19:12Z", "commit": "fee8fee", "tag": null, "trials": 3, "reserve_p50_ms": 3.5, "reserve_p99_ms": 9.2, "commit_p50_ms": 3.2, "commit_p99_ms": 10.6, "release_p50_ms": 3.7, "event_p50_ms": 3.4, "list_sorted_1k_p50_ms": 4.9, "list_sorted_10k_p50_ms": 5.3, "concurrent_throughput_32t": 439.4}
+
