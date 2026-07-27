@@ -5,6 +5,22 @@
 
 ---
 
+### 2026-07-27 — build and release dependency maintenance
+
+Dependabot PRs #253, #254, and #258 update the Maven flatten plugin from 1.7.3
+to 1.8.0, the full-SHA `actions/setup-python` pin from 6.3.0 to 7.0.0, and the
+full-SHA Docker login action from 4.4.0 to 4.5.1. Existing flattening,
+Python-version, and GHCR login inputs are unchanged. Setup Python's removed
+optional `pip-install` input is not used here; the Docker action's new OIDC
+support does not alter the existing username/token login.
+
+Server source, runtime dependencies, wire behavior, Redis state, release
+version, and production image pins are unchanged. Unit/contract and integration
+verification, the 95% line/branch coverage gates, CodeQL, container build,
+Trivy, and all remaining PR checks passed on the reviewed heads. The Maven
+plugin update was exercised by both Java verification gates.
+`[benchmark-skip]`
+
 ### 2026-07-15 — 95% branch coverage gate (no version bump)
 
 JaCoCo previously enforced 95% line coverage but did not gate branch coverage.
