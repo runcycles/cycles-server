@@ -54,10 +54,20 @@ if idempotency_key ~= "" and idempotency_key ~= nil then
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
+        -- remaining_ttl_ms is a volatile response observation (spec
+        -- v0.1.25.16): replays MUST NOT carry the stored value. Return the
+        -- reservation state and a fresh TIME snapshot so the Java layer can
+        -- recompute it from the ORIGINAL expires_at (0 when no longer ACTIVE).
+        local replay_vals = redis.call('HMGET', 'reservation:res_' .. existing_res_id,
+            'reserve_response_json', 'state')
+        local rt = redis.call('TIME')
+        local rnow = tonumber(rt[1]) * 1000 + math.floor(tonumber(rt[2]) / 1000)
         return cjson.encode({
             reservation_id = existing_res_id,
             idempotency_key = idempotency_key,
-            response_snapshot = redis.call('HGET', 'reservation:res_' .. existing_res_id, 'reserve_response_json'),
+            response_snapshot = replay_vals[1],
+            reservation_state = replay_vals[2],
+            server_now_ms = rnow,
             response_cache_ttl_ms = redis.call('PTTL', idem_key)
         })
     end
@@ -280,6 +290,9 @@ local response = cjson.encode({
     reservation_id = reservation_id,
     state = "ACTIVE",
     expires_at = tostring(expires_at),
+    -- Remaining lease at evaluation = the granted (possibly tenant-capped)
+    -- ttl, measured on the same Redis TIME snapshot that set expires_at.
+    remaining_ttl_ms = ttl_ms,
     affected_scopes = affected_scopes,
     balances = balances,
     -- Redis cjson emits numbers with only 14 significant digits. Preserve the

@@ -194,14 +194,19 @@ public class RedisReservationRepository {
                     // payload. Prefer the full original response cached at first create —
                     // byte-identical body (original balances + original cycles_evidence), so
                     // it matches the CyclesEvidence envelope the evidence_id points to.
+                    // SINGLE carve-out (spec v0.1.25.16): remaining_ttl_ms is volatile
+                    // transport metadata, excluded from the attested evidence payload, and
+                    // MUST be recomputed at replay time — never copied from the stored body.
                     ReservationCreateResponse original = readCachedReserveResponse(existingId);
                     if (original != null) {
+                        overrideReplayRemaining(original, response);
                         return original;
                     }
                     ReservationCreateResponse restored = restoreReserveResponse(
                         existingId, response.get("response_snapshot"),
                         replayCacheTtl(response.get("response_cache_ttl_ms")));
                     if (restored != null) {
+                        overrideReplayRemaining(restored, response);
                         return restored;
                     }
                     throw idempotencyReplayUnavailable();
@@ -450,8 +455,18 @@ public class RedisReservationRepository {
         Map<String, Object> evidenceBody = new LinkedHashMap<>();
         evidenceBody.put("request", request);
         evidenceBody.put("response", response);
-        EvidenceEmitter.EvidenceRef ref = evidenceEmitter.emit("reserve",
-                System.currentTimeMillis(), traceId, evidenceBody);
+        // remaining_ttl_ms is volatile transport metadata (evidence spec
+        // v0.2.2): the attested payload MUST exclude it, like cycles_evidence
+        // — evidence_id is computed before transport-only fields are stamped.
+        Long transientRemaining = response.getRemainingTtlMs();
+        response.setRemainingTtlMs(null);
+        EvidenceEmitter.EvidenceRef ref;
+        try {
+            ref = evidenceEmitter.emit("reserve",
+                    System.currentTimeMillis(), traceId, evidenceBody);
+        } finally {
+            response.setRemainingTtlMs(transientRemaining);
+        }
         if (ref != null) {
             response.setCyclesEvidence(CyclesEvidenceRef.builder()
                     .evidenceId(ref.evidenceId())
@@ -512,7 +527,16 @@ public class RedisReservationRepository {
         Map<String, Object> evidenceBody = new LinkedHashMap<>();
         evidenceBody.put("request", request);
         evidenceBody.put("response", response);
-        return evidenceEmitter.prepare("reserve", System.currentTimeMillis(), traceId, evidenceBody);
+        // remaining_ttl_ms is volatile transport metadata (evidence spec
+        // v0.2.2): the attested payload MUST exclude it, like cycles_evidence
+        // — evidence_id is computed before transport-only fields are stamped.
+        Long transientRemaining = response.getRemainingTtlMs();
+        response.setRemainingTtlMs(null);
+        try {
+            return evidenceEmitter.prepare("reserve", System.currentTimeMillis(), traceId, evidenceBody);
+        } finally {
+            response.setRemainingTtlMs(transientRemaining);
+        }
     }
 
     private void persistReserveResponse(ReservationCreateResponse response,
@@ -547,6 +571,7 @@ public class RedisReservationRepository {
             .scopePath(response.get("scope_path").toString())
             .reserved(new Amount(unit, parseLong(response.get("estimate_amount"))))
             .expiresAtMs(parseLong(response.get("expires_at")))
+            .remainingTtlMs(parseNullableLong(response.get("remaining_ttl_ms")))
             .caps(caps)
             .balances(parseLuaBalances(response, unit))
             .preRemaining(parsePreRemaining(response))
@@ -563,6 +588,29 @@ public class RedisReservationRepository {
 
     private static Long parseNullableLong(Object value) {
         return value == null ? null : parseLong(value);
+    }
+
+    /**
+     * Recompute {@code remaining_ttl_ms} on a replayed reserve body (spec
+     * v0.1.25.16): {@code max(0, original expires_at_ms − server now)} while
+     * the reservation is ACTIVE, 0 once it is not. The Lua replay branch
+     * supplies {@code server_now_ms} (same Redis TIME frame that stamped
+     * {@code expires_at}) and {@code reservation_state}; when either input is
+     * unavailable (rolling upgrade against an older script) the field is
+     * omitted rather than replayed stale — emission is a SHOULD.
+     */
+    private static void overrideReplayRemaining(
+            ReservationCreateResponse body, Map<String, Object> luaResponse) {
+        Long serverNow = parseNullableLong(luaResponse.get("server_now_ms"));
+        Object state = luaResponse.get("reservation_state");
+        if (serverNow == null || state == null || body.getExpiresAtMs() == null) {
+            body.setRemainingTtlMs(null);
+            return;
+        }
+        long remaining = "ACTIVE".equals(state)
+            ? Math.max(0L, body.getExpiresAtMs() - serverNow)
+            : 0L;
+        body.setRemainingTtlMs(remaining);
     }
 
     private static long replayCacheTtl(Object value) {
@@ -1496,6 +1544,7 @@ public class RedisReservationRepository {
             return ReservationExtendResponse.builder()
                 .status(Enums.ExtendStatus.ACTIVE)
                 .expiresAtMs(((Number) response.get("expires_at_ms")).longValue())
+                .remainingTtlMs(parseNullableLong(response.get("remaining_ttl_ms")))
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e){

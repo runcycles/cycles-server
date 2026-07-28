@@ -51,7 +51,22 @@ class RollingUpgradeCompatibilityIntegrationTest extends BaseIntegrationTest {
         ResponseEntity<String> replay = postRaw(call.path(), call.request());
 
         assertThat(replay.getStatusCode()).isEqualTo(call.original().getStatusCode());
-        assertThat(replay.getBody()).isEqualTo(call.original().getBody());
+        // Replays are verbatim EXCEPT remaining_ttl_ms (spec v0.1.25.16):
+        // volatile transport metadata, recomputed at replay time — compare
+        // JSON trees modulo the carved-out field (only reserve carries it).
+        com.fasterxml.jackson.databind.node.ObjectNode originalTree =
+                (com.fasterxml.jackson.databind.node.ObjectNode)
+                        objectMapper.readTree(call.original().getBody());
+        com.fasterxml.jackson.databind.node.ObjectNode replayTree =
+                (com.fasterxml.jackson.databind.node.ObjectNode)
+                        objectMapper.readTree(replay.getBody());
+        if (originalTree.has("remaining_ttl_ms")) {
+            assertThat(replayTree.path("remaining_ttl_ms").asLong())
+                    .isLessThanOrEqualTo(originalTree.path("remaining_ttl_ms").asLong());
+            originalTree.remove("remaining_ttl_ms");
+            replayTree.remove("remaining_ttl_ms");
+        }
+        assertThat(replayTree).isEqualTo(originalTree);
         assertThat(getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS"))
                 .isEqualTo(budgetAfterMutation);
     }
