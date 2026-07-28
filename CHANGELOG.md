@@ -26,12 +26,16 @@ called out but are not breaking to API clients.
   no portable, safe, extension-efficient heartbeat can be built from
   `expires_at_ms` alone when tenant policy may cap the initial TTL or clamp
   the maximum lead. On reserve it equals the granted (possibly
-  tenant-capped) TTL; on extend it is the new lease remaining. **Extend
-  idempotent replays recompute it fresh** (a heartbeat retrying a lost
-  extend with the same key schedules its next beat from the replayed body; a
-  stale value would overshoot the real lease). Reserve replays return the
-  original body verbatim (evidence-envelope integrity), so there it reflects
-  the original evaluation. Absent on dry-run and DENY.
+  tenant-capped) TTL; on extend it is the new lease remaining. The field is
+  **volatile transport metadata** (evidence spec v0.2.2): it is excluded from
+  the attested CyclesEvidence payload (like `cycles_evidence`, stripped
+  before `evidence_id` computation), and **idempotent replays of BOTH
+  reserve and extend recompute it fresh** against current Redis `TIME` from
+  the original `expires_at` — never copied from the stored body — reporting
+  0 once the reservation is no longer ACTIVE (a heartbeat retrying a lost
+  request with the same key schedules its next beat from the replayed body;
+  a stale value would overshoot the real lease). All other replay fields
+  stay byte-verbatim. Absent on dry-run and DENY.
 
 ### Compatibility
 

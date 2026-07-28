@@ -12,16 +12,22 @@ external review rounds on the client heartbeat design proved regime detection
 from `(grant, elapsed)` observables undecidable under policy clamping, so the
 server now emits the authoritative remaining lease. `reserve.lua` returns
 `remaining_ttl_ms = ttl_ms` (the granted, possibly tenant-capped TTL — same
-TIME snapshot as `expires_at`); `extend.lua` returns `new_expires_at − now`,
-and its idempotent-replay branch decodes the cached result and recomputes the
-field against fresh TIME (a same-key heartbeat retry schedules from the
-replayed body; the cached value is stale by the retry delay). Reserve replays
-stay byte-verbatim (evidence integrity) and carry the original value, per the
-spec field description. Absent on dry-run/DENY. Integration tests cover
-granted-TTL equality, tenant-cap exposure (24h request → 10s cap), dry-run
-absence, verbatim reserve replay, fresh extend remaining, and the
-replay-freshness invariant (replay ≤ original − sleep, extension_count still 1)
-under the contract validator pinned to the PR-branch spec.
+TIME snapshot as `expires_at`); `extend.lua` returns `new_expires_at − now`.
+Spec-conformance round (the field is volatile transport metadata per the
+final #148 text + evidence spec v0.2.2): BOTH replay paths recompute it
+fresh — `extend.lua`'s replay branch decodes the cached result and recomputes
+against fresh TIME with a state check (0 unless ACTIVE); `reserve.lua`'s
+replay branch returns `server_now_ms` + `reservation_state` so the Java layer
+recomputes over the cached original body (omitted, not stale-replayed, when
+an older script provides no inputs). The attested CyclesEvidence payload
+excludes the field (stripped around evidence preparation, like
+`cycles_evidence`; evidence mirrors are `additionalProperties: false`).
+Absent on dry-run/DENY. Integration tests: granted-TTL equality, tenant-cap
+exposure (24h → 10s), dry-run absence, fresh recompute on reserve AND extend
+replays, 0-remaining on replays of finalized reservations, evidence-payload
+exclusion (wire body carries the field; queued record does not), and
+canonical-replay equality modulo the carved-out field — all under the
+contract validator pinned to the PR-branch spec.
 
 Dependabot PRs #253, #254, and #258 update the Maven flatten plugin from 1.7.3
 to 1.8.0, the full-SHA `actions/setup-python` pin from 6.3.0 to 7.0.0, and the

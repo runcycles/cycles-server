@@ -65,6 +65,13 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
                 .isEqualTo(amount);
             assertThat(((Number) ((Map<?, ?>) balance.get("remaining")).get("amount")).longValue())
                 .isEqualTo(10L);
+            // Replays are verbatim EXCEPT remaining_ttl_ms (spec v0.1.25.16):
+            // volatile transport metadata, recomputed at replay time.
+            long originalReserveRemaining =
+                ((Number) original.getBody().remove("remaining_ttl_ms")).longValue();
+            long replayReserveRemaining =
+                ((Number) replay.getBody().remove("remaining_ttl_ms")).longValue();
+            assertThat(replayReserveRemaining).isLessThanOrEqualTo(originalReserveRemaining);
             assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 

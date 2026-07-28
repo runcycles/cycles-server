@@ -71,7 +71,7 @@ class RemainingTtlIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void idempotentReplayReturnsOriginalRemainingVerbatim() throws Exception {
+        void idempotentReplayRecomputesRemainingFresh() throws Exception {
             Map<String, Object> body = reservationBody(TENANT_A, 1000);
             ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, body);
             assertThat(first.getStatusCode().value()).isEqualTo(200);
@@ -83,11 +83,34 @@ class RemainingTtlIntegrationTest extends BaseIntegrationTest {
             assertThat(replay.getStatusCode().value()).isEqualTo(200);
             assertThat(replay.getBody().get("reservation_id"))
                     .isEqualTo(first.getBody().get("reservation_id"));
-            // Reserve replays are the ORIGINAL body verbatim (the evidence
-            // envelope references it), so remaining reflects the original
-            // evaluation — documented in the spec field description.
+            // remaining_ttl_ms is volatile transport metadata (spec
+            // v0.1.25.16): create replays MUST recompute it — never copy the
+            // stored value. All other fields replay verbatim (covered by the
+            // lost-response canonical-replay suite).
+            long replayed = ((Number) replay.getBody().get("remaining_ttl_ms")).longValue();
+            assertThat(replayed).isLessThanOrEqualTo(original - 1_000L);
+            assertThat(replayed).isGreaterThan(0L);
+        }
+
+        @Test
+        void replayOfFinalizedReservationReportsZeroRemaining() throws Exception {
+            Map<String, Object> body = reservationBody(TENANT_A, 1000);
+            ResponseEntity<Map> first = post("/v1/reservations", API_KEY_SECRET_A, body);
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            String reservationId = (String) first.getBody().get("reservation_id");
+
+            ResponseEntity<Map> commit = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(500));
+            assertThat(commit.getStatusCode().value()).isEqualTo(200);
+
+            ResponseEntity<Map> replay = post("/v1/reservations", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            // Spec: MUST be 0 once the reservation is no longer ACTIVE, even
+            // though the original expiry is still in the future.
             assertThat(((Number) replay.getBody().get("remaining_ttl_ms")).longValue())
-                    .isEqualTo(original);
+                    .isEqualTo(0L);
         }
     }
 
@@ -141,6 +164,35 @@ class RemainingTtlIntegrationTest extends BaseIntegrationTest {
             long remaining2 = ((Number) replay.getBody().get("remaining_ttl_ms")).longValue();
             assertThat(remaining2).isLessThanOrEqualTo(remaining1 - 1_000L);
             assertThat(remaining2).isGreaterThan(0L);
+        }
+
+        @Test
+        void extendReplayAfterFinalizeReportsZeroRemaining() throws Exception {
+            String reservationId = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 1000);
+            Map<String, Object> body = new HashMap<>();
+            body.put("idempotency_key", UUID.randomUUID().toString());
+            body.put("extend_by_ms", 30_000L);
+
+            ResponseEntity<Map> first = post(
+                    "/v1/reservations/" + reservationId + "/extend", API_KEY_SECRET_A, body);
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            long expiresAt = ((Number) first.getBody().get("expires_at_ms")).longValue();
+
+            ResponseEntity<Map> commit = post(
+                    "/v1/reservations/" + reservationId + "/commit",
+                    API_KEY_SECRET_A, commitBody(500));
+            assertThat(commit.getStatusCode().value()).isEqualTo(200);
+
+            ResponseEntity<Map> replay = post(
+                    "/v1/reservations/" + reservationId + "/extend", API_KEY_SECRET_A, body);
+
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(((Number) replay.getBody().get("expires_at_ms")).longValue())
+                    .isEqualTo(expiresAt);
+            // Spec: MUST be 0 once the reservation is no longer ACTIVE, even
+            // though the extended expiry is still in the future.
+            assertThat(((Number) replay.getBody().get("remaining_ttl_ms")).longValue())
+                    .isEqualTo(0L);
         }
     }
 }

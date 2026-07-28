@@ -1,6 +1,7 @@
 package io.runcycles.protocol.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.runcycles.protocol.data.service.EventEmitterService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -56,7 +57,7 @@ class LostResponseRecoveryIntegrationTest extends BaseIntegrationTest {
 
         ResponseEntity<String> replay = postRaw("/v1/reservations", request);
 
-        assertCanonicalReplay(lost, replay, 200);
+        assertCanonicalReplayExceptRemaining(lost, replay, 200);
         assertThat(body.path("cycles_evidence").path("evidence_id").asText()).isNotBlank();
         assertBudget(999_000, 1_000, 0);
         assertThat(scanReservationKeys()).containsExactly("reservation:res_" + reservationId);
@@ -211,6 +212,48 @@ class LostResponseRecoveryIntegrationTest extends BaseIntegrationTest {
         assertThat(original.getStatusCode().value()).isEqualTo(expectedStatus);
         assertThat(replay.getStatusCode().value()).isEqualTo(expectedStatus);
         assertThat(replay.getBody()).isEqualTo(original.getBody());
+    }
+
+    /**
+     * Reserve replays are canonical EXCEPT remaining_ttl_ms (spec v0.1.25.16):
+     * the field is volatile transport metadata, excluded from the attested
+     * evidence payload, and recomputed at replay time — so it may only shrink.
+     */
+    private void assertCanonicalReplayExceptRemaining(ResponseEntity<String> original,
+                                                      ResponseEntity<String> replay,
+                                                      int expectedStatus) throws Exception {
+        assertThat(original.getStatusCode().value()).isEqualTo(expectedStatus);
+        assertThat(replay.getStatusCode().value()).isEqualTo(expectedStatus);
+        ObjectNode o = (ObjectNode) json(original);
+        ObjectNode r = (ObjectNode) json(replay);
+        assertThat(r.path("remaining_ttl_ms").asLong())
+                .isLessThanOrEqualTo(o.path("remaining_ttl_ms").asLong());
+        o.remove("remaining_ttl_ms");
+        r.remove("remaining_ttl_ms");
+        assertThat(r).isEqualTo(o);
+    }
+
+    @Test
+    @DisplayName("reserve evidence payload excludes transport-only fields")
+    void reserveEvidenceExcludesTransportOnlyFields() throws Exception {
+        ResponseEntity<String> resp = postRaw("/v1/reservations", reservationBody(TENANT_A, 1_000));
+        assertThat(resp.getStatusCode().value()).isEqualTo(200);
+        JsonNode wire = json(resp);
+        // The wire response carries both transport-only fields...
+        assertThat(wire.path("remaining_ttl_ms").asLong()).isEqualTo(60_000L);
+        assertThat(wire.path("cycles_evidence").path("evidence_id").asText()).isNotBlank();
+        // ...but the attested evidence payload (evidence spec v0.2.2,
+        // additionalProperties: false on the response mirror) carries neither.
+        String record;
+        try (Jedis jedis = jedisPool.getResource()) {
+            record = jedis.lindex("evidence:pending", 0);
+        }
+        assertThat(record).isNotNull();
+        JsonNode attested = objectMapper.readTree(record)
+                .path("payload").path("response");
+        assertThat(attested.path("expires_at_ms").isMissingNode()).isFalse();
+        assertThat(attested.has("remaining_ttl_ms")).isFalse();
+        assertThat(attested.has("cycles_evidence")).isFalse();
     }
 
     private void assertBudget(long remaining, long reserved, long spent) {
