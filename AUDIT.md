@@ -5,7 +5,23 @@
 
 ---
 
-### 2026-07-27 — build and release dependency maintenance
+### 2026-07-28 — remaining_ttl_ms on reserve/extend responses (v0.1.25.59)
+
+Implements the spec v0.1.25.16 wire addition (cycles-protocol#148): five
+external review rounds on the client heartbeat design proved regime detection
+from `(grant, elapsed)` observables undecidable under policy clamping, so the
+server now emits the authoritative remaining lease. `reserve.lua` returns
+`remaining_ttl_ms = ttl_ms` (the granted, possibly tenant-capped TTL — same
+TIME snapshot as `expires_at`); `extend.lua` returns `new_expires_at − now`,
+and its idempotent-replay branch decodes the cached result and recomputes the
+field against fresh TIME (a same-key heartbeat retry schedules from the
+replayed body; the cached value is stale by the retry delay). Reserve replays
+stay byte-verbatim (evidence integrity) and carry the original value, per the
+spec field description. Absent on dry-run/DENY. Integration tests cover
+granted-TTL equality, tenant-cap exposure (24h request → 10s cap), dry-run
+absence, verbatim reserve replay, fresh extend remaining, and the
+replay-freshness invariant (replay ≤ original − sleep, extension_count still 1)
+under the contract validator pinned to the PR-branch spec.
 
 Dependabot PRs #253, #254, and #258 update the Maven flatten plugin from 1.7.3
 to 1.8.0, the full-SHA `actions/setup-python` pin from 6.3.0 to 7.0.0, and the

@@ -14,6 +14,32 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.59] — 2026-07-28
+
+### Added
+
+- **`remaining_ttl_ms` on reserve and extend responses** (spec v0.1.25.16,
+  [runcycles/cycles-protocol#148](https://github.com/runcycles/cycles-protocol/pull/148)):
+  server-authoritative remaining reservation lifetime in milliseconds,
+  measured on the same Redis `TIME` snapshot that computes `expires_at`.
+  Clients schedule heartbeat extensions from this value — spec review proved
+  no portable, safe, extension-efficient heartbeat can be built from
+  `expires_at_ms` alone when tenant policy may cap the initial TTL or clamp
+  the maximum lead. On reserve it equals the granted (possibly
+  tenant-capped) TTL; on extend it is the new lease remaining. **Extend
+  idempotent replays recompute it fresh** (a heartbeat retrying a lost
+  extend with the same key schedules its next beat from the replayed body; a
+  stale value would overshoot the real lease). Reserve replays return the
+  original body verbatim (evidence-envelope integrity), so there it reflects
+  the original evaluation. Absent on dry-run and DENY.
+
+### Compatibility
+
+- Purely additive response field; no request changes, no Lua key-shape
+  changes. Pre-upgrade cached extend-idempotency entries lack the field in
+  their stored JSON; the replay path derives it fresh from the cached
+  `expires_at_ms`, so mixed-version replay windows still emit it.
+
 ## [0.1.25.58] — 2026-07-14
 
 ### Changed

@@ -547,6 +547,7 @@ public class RedisReservationRepository {
             .scopePath(response.get("scope_path").toString())
             .reserved(new Amount(unit, parseLong(response.get("estimate_amount"))))
             .expiresAtMs(parseLong(response.get("expires_at")))
+            .remainingTtlMs(parseNullableLong(response.get("remaining_ttl_ms")))
             .caps(caps)
             .balances(parseLuaBalances(response, unit))
             .preRemaining(parsePreRemaining(response))
@@ -1496,6 +1497,7 @@ public class RedisReservationRepository {
             return ReservationExtendResponse.builder()
                 .status(Enums.ExtendStatus.ACTIVE)
                 .expiresAtMs(((Number) response.get("expires_at_ms")).longValue())
+                .remainingTtlMs(parseNullableLong(response.get("remaining_ttl_ms")))
                 .balances(balances)
                 .build();
         } catch (CyclesProtocolException e){

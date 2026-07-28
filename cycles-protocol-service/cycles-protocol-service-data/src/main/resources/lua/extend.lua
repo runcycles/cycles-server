@@ -20,6 +20,19 @@ if idempotency_key ~= "" and idempotency_key ~= nil and tenant ~= "" and tenant 
                 return cjson.encode({error = "IDEMPOTENCY_MISMATCH"})
             end
         end
+        -- remaining_ttl_ms MUST be fresh even on replay: a heartbeat retrying
+        -- a lost extend with the same key schedules its next beat from this
+        -- value, and the cached one is stale by the retry delay. Recompute
+        -- against the same Redis clock that stamped expires_at.
+        local ok_cached, cached_obj = pcall(cjson.decode, cached)
+        if ok_cached and type(cached_obj) == 'table' and tonumber(cached_obj['expires_at_ms']) then
+            local rt = redis.call('TIME')
+            local rnow = tonumber(rt[1]) * 1000 + math.floor(tonumber(rt[2]) / 1000)
+            local rem = tonumber(cached_obj['expires_at_ms']) - rnow
+            if rem < 0 then rem = 0 end
+            cached_obj['remaining_ttl_ms'] = rem
+            return cjson.encode(cached_obj)
+        end
         return cached
     end
 end
@@ -134,6 +147,8 @@ end
 local result = cjson.encode({
     reservation_id = reservation_id,
     expires_at_ms = new_expires_at,
+    -- Same clock snapshot as expires_at: the authoritative remaining lease.
+    remaining_ttl_ms = new_expires_at - now,
     extended_at = now,
     estimate_unit = estimate_unit,
     balances = balances

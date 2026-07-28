@@ -280,6 +280,9 @@ local response = cjson.encode({
     reservation_id = reservation_id,
     state = "ACTIVE",
     expires_at = tostring(expires_at),
+    -- Remaining lease at evaluation = the granted (possibly tenant-capped)
+    -- ttl, measured on the same Redis TIME snapshot that set expires_at.
+    remaining_ttl_ms = ttl_ms,
     affected_scopes = affected_scopes,
     balances = balances,
     -- Redis cjson emits numbers with only 14 significant digits. Preserve the
