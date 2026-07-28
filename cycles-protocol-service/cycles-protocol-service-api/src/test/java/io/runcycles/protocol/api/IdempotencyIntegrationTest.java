@@ -90,6 +90,16 @@ class IdempotencyIntegrationTest extends BaseIntegrationTest {
                 .isEqualTo(amount);
             assertThat(((Number) ((Map<?, ?>) balance.get("allocated")).get("amount")).longValue())
                 .isEqualTo(amount + 10);
+            // Extend replays are verbatim EXCEPT remaining_ttl_ms, which is
+            // recomputed against fresh Redis TIME (a same-key heartbeat retry
+            // schedules from the replayed body — a stale value would overshoot
+            // the real lease). Compare everything else byte-for-byte, and pin
+            // the freshness direction: replay remaining <= original remaining.
+            long originalRemaining =
+                ((Number) original.getBody().remove("remaining_ttl_ms")).longValue();
+            long replayRemaining =
+                ((Number) replay.getBody().remove("remaining_ttl_ms")).longValue();
+            assertThat(replayRemaining).isLessThanOrEqualTo(originalRemaining);
             assertThat(replay.getBody()).isEqualTo(original.getBody());
         }
 
