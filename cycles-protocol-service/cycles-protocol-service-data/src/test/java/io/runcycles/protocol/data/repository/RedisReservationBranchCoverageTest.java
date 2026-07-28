@@ -585,6 +585,46 @@ class RedisReservationBranchCoverageTest extends BaseRedisReservationRepositoryT
             new EvidenceEmitter.EvidenceRef("evidence-id", "https://example/evidence"), "{}");
     }
 
+    @Test
+    void overrideReplayRemainingCoversEveryInputBranch() throws Throwable {
+        Method override = method("overrideReplayRemaining",
+                ReservationCreateResponse.class, Map.class);
+
+        // Missing server_now_ms / reservation_state / expires: field OMITTED
+        // (never stale-replayed) — the rolling-upgrade arm.
+        ReservationCreateResponse body = ReservationCreateResponse.builder()
+                .decision(Enums.DecisionEnum.ALLOW)
+                .expiresAtMs(10_000L)
+                .remainingTtlMs(9_999L)
+                .build();
+        invoke(override, null, body, Map.of("reservation_state", "ACTIVE"));
+        assertThat(body.getRemainingTtlMs()).isNull();
+
+        body.setRemainingTtlMs(9_999L);
+        invoke(override, null, body, Map.of("server_now_ms", 4_000L));
+        assertThat(body.getRemainingTtlMs()).isNull();
+
+        body.setRemainingTtlMs(9_999L);
+        body.setExpiresAtMs(null);
+        invoke(override, null, body,
+                Map.of("server_now_ms", 4_000L, "reservation_state", "ACTIVE"));
+        assertThat(body.getRemainingTtlMs()).isNull();
+
+        // ACTIVE: max(0, original expires − server now) — fresh and floored.
+        body.setExpiresAtMs(10_000L);
+        invoke(override, null, body,
+                Map.of("server_now_ms", 4_000L, "reservation_state", "ACTIVE"));
+        assertThat(body.getRemainingTtlMs()).isEqualTo(6_000L);
+        invoke(override, null, body,
+                Map.of("server_now_ms", 25_000L, "reservation_state", "ACTIVE"));
+        assertThat(body.getRemainingTtlMs()).isEqualTo(0L);
+
+        // No longer ACTIVE: MUST be 0 even with future expiry (spec).
+        invoke(override, null, body,
+                Map.of("server_now_ms", 4_000L, "reservation_state", "COMMITTED"));
+        assertThat(body.getRemainingTtlMs()).isEqualTo(0L);
+    }
+
     private static Class<?> replayStateClass() throws ClassNotFoundException {
         return Class.forName(RedisReservationRepository.class.getName() + "$ReplayState");
     }
