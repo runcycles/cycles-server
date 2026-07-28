@@ -15,10 +15,12 @@ public class ReservationCreateResponse {
     @NotNull @JsonProperty("decision") private Enums.DecisionEnum decision;
     @JsonProperty("reservation_id") private String reservationId;
     @NotNull @JsonProperty("affected_scopes") private List<String> affectedScopes;
-    @JsonProperty("expires_at_ms") private Long expiresAtMs;
+    @Min(0) @JsonProperty("expires_at_ms") private Long expiresAtMs;
     /** Remaining reservation lifetime (ms) at response evaluation, same clock
      *  snapshot as expires_at_ms. Absent on dry-run and DENY. On an idempotent
-     *  replay the body is the original, so this reflects the ORIGINAL evaluation. */
+     *  replay this volatile field is recomputed from the original expires_at_ms
+     *  and current authoritative server time; every other response field remains
+     *  the original outcome. */
     @Min(0) @JsonProperty("remaining_ttl_ms") private Long remainingTtlMs;
     @JsonProperty("scope_path") private String scopePath;
     @Valid @JsonProperty("reserved") private Amount reserved;
