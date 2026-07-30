@@ -5,6 +5,23 @@
 
 ---
 
+### 2026-07-30 — 200-client reserve fan-out benchmark (no version bump)
+
+Benchmark-only change. The concurrent suite now measures the synchronous
+reserve hop under 200 simultaneous clients in two explicit shapes: all clients
+contending on one tenant budget, and clients sharded across 200 independent
+agent budgets with no shared parent budget. Each five-second measured window
+reports reserve p99, throughput, error rate, and ledger mismatches after 50
+warmups. The test fails above a 1% error rate or when successful requests do
+not reconcile exactly to Redis `reserved` totals. Parser, median, history, and
+regression tooling retain all eight evidence fields; p99 remains non-gating
+while throughput joins the gate once history provides a baseline. A
+three-fresh-process reference run on the documented Threadripper host measured
+531.7ms shared-budget p99 at 1,328.6 reserves/s and 446.8ms independent-leaf
+p99 at 1,683.4 reserves/s (medians), with 45,022 total successes, zero request
+errors, and zero ledger mismatches. Production Java, Lua, Redis behavior, wire
+formats, and release version are unchanged. `[benchmark-skip]`
+
 ### 2026-07-28 — remaining_ttl_ms on reserve/extend responses (v0.1.25.59)
 
 Implements the spec v0.1.25.16 wire addition (cycles-protocol#148): five

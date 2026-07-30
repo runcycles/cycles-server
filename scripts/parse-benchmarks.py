@@ -6,8 +6,9 @@ for the perf-regression pipeline.
 Usage:
     python scripts/parse-benchmarks.py <surefire-reports-dir> [--trial-of N]
 
-Emits one JSON object on stdout with the nine headline metrics defined
-in `benchmarks/README.md`. Values are in ms except throughput (ops/s).
+Emits one JSON object on stdout with the regression metrics and 200-client
+fan-out evidence fields defined in `benchmarks/README.md`. Values are in ms
+except throughput (reserves/s), error rate (percent), and ledger mismatches.
 
 When called with `--trial-of N` (for N=1..3), emits an object tagged with
 that trial index; callers median-aggregate across trials.
@@ -71,6 +72,14 @@ CONCURRENT_32T_RE = re.compile(
     re.IGNORECASE,
 )
 
+FANOUT_RE = re.compile(
+    r"\[Fanout\]\s*(shared|isolated)\s*200\s*clients:\s*"
+    r"(\d+)\s*reserves\s*in\s*\d+s\s*=\s*([0-9.]+)\s*reserves/s\s+"
+    r"p50=([0-9.]+)ms\s+p95=([0-9.]+)ms\s+p99=([0-9.]+)ms\s+"
+    r"errors=(\d+)\s+error_rate=([0-9.]+)%\s+ledger_mismatches=(\d+)",
+    re.IGNORECASE,
+)
+
 
 def read_all_xml(directory: str) -> str:
     """Concatenate every surefire XML that matches a benchmark class."""
@@ -111,6 +120,19 @@ def extract_concurrent_throughput(text: str) -> Optional[float]:
         return float(m.group(1))
     except ValueError:
         return None
+
+
+def extract_fanout(text: str, shape: str) -> Optional[dict[str, float]]:
+    for match in FANOUT_RE.finditer(text):
+        if match.group(1).lower() != shape:
+            continue
+        return {
+            "p99_ms": float(match.group(6)),
+            "throughput": float(match.group(3)),
+            "error_rate_pct": float(match.group(8)),
+            "ledger_mismatches": float(match.group(9)),
+        }
+    return None
 
 
 def git_short_sha() -> str:
@@ -162,6 +184,22 @@ def main() -> int:
     if throughput is None:
         missing.append("concurrent_throughput_32t")
     record["concurrent_throughput_32t"] = throughput
+
+    for shape in ("shared", "isolated"):
+        fanout = extract_fanout(text, shape)
+        if fanout is None:
+            for suffix in (
+                "p99_ms",
+                "throughput",
+                "error_rate_pct",
+                "ledger_mismatches",
+            ):
+                name = f"reserve_{shape}_200_{suffix}"
+                missing.append(name)
+                record[name] = None
+            continue
+        for suffix, value in fanout.items():
+            record[f"reserve_{shape}_200_{suffix}"] = value
 
     if args.trial_of is not None:
         record["trial"] = args.trial_of

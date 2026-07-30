@@ -8,6 +8,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLongArray;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,9 +18,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Measures throughput (ops/sec) and latency under concurrent load by running
  * multiple threads executing Reserve→Commit lifecycles simultaneously.
  *
- * Tests ramp from 8 → 16 → 32 concurrent threads to reveal contention
- * at the Redis connection pool (max 50), Lua script execution, and
- * Spring Boot request processing layers.
+ * Lifecycle tests ramp from 8 → 16 → 32 concurrent threads. Reserve-only
+ * tests add a 200-client fan-out in two shapes: one shared budget (the
+ * contention case) and 200 independent leaf budgets (the sharded case).
  *
  * Results are CI-environment sensitive — latency and throughput depend on
  * container resources, Redis container networking, and JVM warm-up.
@@ -34,31 +35,56 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_OPS = 50;
     private static final long MEASURE_DURATION_MS = 5_000;
+    private static final int FANOUT_CLIENTS = 200;
+    private static final long FANOUT_ALLOCATION = 1_000_000_000_000L;
+    private static final long FANOUT_RESERVE_AMOUNT = 100L;
     /** Max acceptable error rate (%) before failing the test */
     private static final double MAX_ERROR_RATE_PERCENT = 1.0;
 
     private static final List<ConcurrencyResult> ALL_RESULTS = new ArrayList<>();
+    private static final List<FanoutResult> FANOUT_RESULTS = new ArrayList<>();
 
     record ConcurrencyResult(int threads, long totalOps, double opsPerSec,
                              long p50, long p95, long p99, long min, long max, int errors) {}
 
+    record FanoutResult(String shape, int clients, long totalOps, double opsPerSec,
+                        long p50, long p95, long p99, long min, long max,
+                        int errors, double errorRatePercent, long ledgerMismatches) {}
+
     @AfterAll
     static void printSummary() {
-        if (ALL_RESULTS.isEmpty()) return;
-
-        System.out.println();
-        System.out.println("+----------+----------+-----------+--------+--------+--------+--------+--------+--------+");
-        System.out.println("| Threads  | Total Ops| Ops/sec   |  p50   |  p95   |  p99   |  min   |  max   | Errors |");
-        System.out.println("+----------+----------+-----------+--------+--------+--------+--------+--------+--------+");
-        for (ConcurrencyResult r : ALL_RESULTS) {
-            System.out.printf("| %8d | %8d | %9.1f | %5.1fms| %5.1fms| %5.1fms| %5.1fms| %5.1fms| %6d |%n",
-                    r.threads, r.totalOps, r.opsPerSec,
-                    r.p50 / 1_000_000.0, r.p95 / 1_000_000.0, r.p99 / 1_000_000.0,
-                    r.min / 1_000_000.0, r.max / 1_000_000.0, r.errors);
+        if (!ALL_RESULTS.isEmpty()) {
+            System.out.println();
+            System.out.println("+----------+----------+-----------+--------+--------+--------+--------+--------+--------+");
+            System.out.println("| Threads  | Total Ops| Ops/sec   |  p50   |  p95   |  p99   |  min   |  max   | Errors |");
+            System.out.println("+----------+----------+-----------+--------+--------+--------+--------+--------+--------+");
+            for (ConcurrencyResult r : ALL_RESULTS) {
+                System.out.printf("| %8d | %8d | %9.1f | %5.1fms| %5.1fms| %5.1fms| %5.1fms| %5.1fms| %6d |%n",
+                        r.threads, r.totalOps, r.opsPerSec,
+                        r.p50 / 1_000_000.0, r.p95 / 1_000_000.0,
+                        r.p99 / 1_000_000.0, r.min / 1_000_000.0,
+                        r.max / 1_000_000.0, r.errors);
+            }
+            System.out.println("+----------+----------+-----------+--------+--------+--------+--------+--------+--------+");
+            System.out.printf("  Duration per level: %ds (after %d warmup ops)%n",
+                    MEASURE_DURATION_MS / 1000, WARMUP_OPS);
+            System.out.println();
         }
-        System.out.println("+----------+----------+-----------+--------+--------+--------+--------+--------+--------+");
-        System.out.printf("  Duration per level: %ds (after %d warmup ops)%n",
-                MEASURE_DURATION_MS / 1000, WARMUP_OPS);
+
+        if (FANOUT_RESULTS.isEmpty()) return;
+        System.out.println("+-----------+---------+----------+-----------+--------+--------+--------+--------+--------+--------+----------+");
+        System.out.println("| Shape     | Clients | Reserves | Reserves/s|  p50   |  p95   |  p99   |  min   |  max   | Errors | Ledger   |");
+        System.out.println("+-----------+---------+----------+-----------+--------+--------+--------+--------+--------+--------+----------+");
+        for (FanoutResult r : FANOUT_RESULTS) {
+            System.out.printf(
+                    "| %-9s | %7d | %8d | %9.1f | %5.1fms| %5.1fms| %5.1fms| %5.1fms| %5.1fms| %6d | %8d |%n",
+                    r.shape, r.clients, r.totalOps, r.opsPerSec,
+                    r.p50 / 1_000_000.0, r.p95 / 1_000_000.0,
+                    r.p99 / 1_000_000.0, r.min / 1_000_000.0,
+                    r.max / 1_000_000.0, r.errors, r.ledgerMismatches);
+        }
+        System.out.println("+-----------+---------+----------+-----------+--------+--------+--------+--------+--------+--------+----------+");
+        System.out.println("  Reserve latency only; every successful reserve is reconciled against Redis ledger state.");
         System.out.println();
     }
 
@@ -81,6 +107,20 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
     @DisplayName("Reserve→Commit lifecycle at 32 threads")
     void concurrentLifecycle_32threads() throws Exception {
         runConcurrentLifecycle(32);
+    }
+
+    @Test
+    @Order(4)
+    @DisplayName("Reserve fan-out at 200 clients on one shared budget")
+    void concurrentReserve_200clients_sharedBudget() throws Exception {
+        runConcurrentReserveFanout(false);
+    }
+
+    @Test
+    @Order(5)
+    @DisplayName("Reserve fan-out at 200 clients on independent leaf budgets")
+    void concurrentReserve_200clients_independentBudgets() throws Exception {
+        runConcurrentReserveFanout(true);
     }
 
     private void runConcurrentLifecycle(int threadCount) throws Exception {
@@ -185,6 +225,201 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    private void runConcurrentReserveFanout(boolean isolated) throws Exception {
+        prepareFanoutBudgets(isolated);
+
+        // Prime JIT, auth cache, HTTP connection management, and EVALSHA before
+        // resetting the measured ledger state.
+        for (int i = 0; i < WARMUP_OPS; i++) {
+            ResponseEntity<Map> response = post(
+                    "/v1/reservations",
+                    API_KEY_SECRET_A,
+                    fanoutReservationBody(isolated, i % FANOUT_CLIENTS));
+            assertThat(response.getStatusCode().value()).isEqualTo(200);
+            assertThat(response.getBody()).containsKey("reservation_id");
+        }
+        prepareFanoutBudgets(isolated);
+
+        ExecutorService executor = Executors.newFixedThreadPool(FANOUT_CLIENTS);
+        try {
+            ConcurrentLinkedQueue<Long> timings = new ConcurrentLinkedQueue<>();
+            AtomicInteger errorCount = new AtomicInteger();
+            AtomicLongArray successesByClient = new AtomicLongArray(FANOUT_CLIENTS);
+            CountDownLatch startLatch = new CountDownLatch(1);
+            AtomicBoolean running = new AtomicBoolean(true);
+
+            for (int client = 0; client < FANOUT_CLIENTS; client++) {
+                int clientIndex = client;
+                executor.submit(() -> {
+                    try {
+                        startLatch.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+
+                    while (running.get()) {
+                        long start = System.nanoTime();
+                        try {
+                            ResponseEntity<Map> response = post(
+                                    "/v1/reservations",
+                                    API_KEY_SECRET_A,
+                                    fanoutReservationBody(isolated, clientIndex));
+                            Map body = response.getBody();
+                            if (response.getStatusCode().value() != 200
+                                    || body == null
+                                    || body.get("reservation_id") == null
+                                    || !Set.of("ALLOW", "ALLOW_WITH_CAPS")
+                                    .contains(body.get("decision"))) {
+                                errorCount.incrementAndGet();
+                                continue;
+                            }
+                            timings.add(System.nanoTime() - start);
+                            successesByClient.incrementAndGet(clientIndex);
+                        } catch (Exception e) {
+                            errorCount.incrementAndGet();
+                        }
+                    }
+                });
+            }
+
+            startLatch.countDown();
+            Thread.sleep(MEASURE_DURATION_MS);
+            running.set(false);
+            executor.shutdown();
+            boolean terminated = executor.awaitTermination(60, TimeUnit.SECONDS);
+            if (!terminated) {
+                executor.shutdownNow();
+                terminated = executor.awaitTermination(10, TimeUnit.SECONDS);
+            }
+            assertThat(terminated)
+                    .as("All fan-out workers terminated before ledger reconciliation")
+                    .isTrue();
+
+            long[] sorted = timings.stream().mapToLong(Long::longValue).sorted().toArray();
+            int totalOps = sorted.length;
+            int errors = errorCount.get();
+            int totalAttempts = totalOps + errors;
+            double errorRate = totalAttempts > 0
+                    ? errors * 100.0 / totalAttempts
+                    : 0.0;
+            double opsPerSec = totalOps / (MEASURE_DURATION_MS / 1000.0);
+            long ledgerMismatches = countFanoutLedgerMismatches(
+                    isolated, successesByClient, totalOps);
+
+            FanoutResult result;
+            if (totalOps > 0) {
+                result = new FanoutResult(
+                        isolated ? "isolated" : "shared",
+                        FANOUT_CLIENTS,
+                        totalOps,
+                        opsPerSec,
+                        p(sorted, 50),
+                        p(sorted, 95),
+                        p(sorted, 99),
+                        sorted[0],
+                        sorted[sorted.length - 1],
+                        errors,
+                        errorRate,
+                        ledgerMismatches);
+            } else {
+                result = new FanoutResult(
+                        isolated ? "isolated" : "shared",
+                        FANOUT_CLIENTS,
+                        0, 0, 0, 0, 0, 0, 0,
+                        errors, errorRate, ledgerMismatches);
+            }
+            synchronized (FANOUT_RESULTS) {
+                FANOUT_RESULTS.add(result);
+            }
+
+            System.out.printf(
+                    "[Fanout] %s %d clients: %d reserves in %ds = %.1f reserves/s  "
+                            + "p50=%.1fms  p95=%.1fms  p99=%.1fms  "
+                            + "errors=%d  error_rate=%.3f%%  ledger_mismatches=%d%n",
+                    result.shape, result.clients, result.totalOps,
+                    MEASURE_DURATION_MS / 1000, result.opsPerSec,
+                    result.p50 / 1_000_000.0, result.p95 / 1_000_000.0,
+                    result.p99 / 1_000_000.0, result.errors,
+                    result.errorRatePercent, result.ledgerMismatches);
+
+            assertThat(errorRate)
+                    .as("Reserve error rate for %s 200-client fan-out", result.shape)
+                    .isLessThan(MAX_ERROR_RATE_PERCENT);
+            assertThat(totalOps)
+                    .as("Successful reserves for %s 200-client fan-out", result.shape)
+                    .isGreaterThan(0);
+            assertThat(ledgerMismatches)
+                    .as("Ledger mismatches for %s 200-client fan-out", result.shape)
+                    .isZero();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private void prepareFanoutBudgets(boolean isolated) {
+        try (var jedis = jedisPool.getResource()) {
+            if (!isolated) {
+                seedBudget(jedis, TENANT_A, "TOKENS", FANOUT_ALLOCATION);
+                return;
+            }
+            jedis.del("budget:tenant:" + TENANT_A + ":TOKENS");
+            for (int client = 0; client < FANOUT_CLIENTS; client++) {
+                seedScopeBudget(
+                        jedis,
+                        fanoutScope(client),
+                        "TOKENS",
+                        FANOUT_ALLOCATION,
+                        0);
+            }
+        }
+    }
+
+    private Map<String, Object> fanoutReservationBody(boolean isolated, int client) {
+        Map<String, Object> body = reservationBody(
+                TENANT_A, FANOUT_RESERVE_AMOUNT);
+        if (isolated) {
+            body.put("subject", Map.of(
+                    "tenant", TENANT_A,
+                    "agent", fanoutAgent(client)));
+        }
+        return body;
+    }
+
+    private long countFanoutLedgerMismatches(
+            boolean isolated,
+            AtomicLongArray successesByClient,
+            int totalOps) {
+        try (var jedis = jedisPool.getResource()) {
+            if (!isolated) {
+                long actual = Long.parseLong(jedis.hget(
+                        "budget:tenant:" + TENANT_A + ":TOKENS",
+                        "reserved"));
+                return actual == totalOps * FANOUT_RESERVE_AMOUNT ? 0 : 1;
+            }
+            long mismatches = 0;
+            for (int client = 0; client < FANOUT_CLIENTS; client++) {
+                long actual = Long.parseLong(jedis.hget(
+                        "budget:" + fanoutScope(client) + ":TOKENS",
+                        "reserved"));
+                long expected = successesByClient.get(client)
+                        * FANOUT_RESERVE_AMOUNT;
+                if (actual != expected) {
+                    mismatches++;
+                }
+            }
+            return mismatches;
+        }
+    }
+
+    private static String fanoutAgent(int client) {
+        return "fanout-" + client;
+    }
+
+    private static String fanoutScope(int client) {
+        return "tenant:" + TENANT_A + "/agent:" + fanoutAgent(client);
     }
 
     private static long p(long[] sorted, int percentile) {

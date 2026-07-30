@@ -5,6 +5,30 @@ Performance benchmark history across versions. All benchmarks use `CyclesProtoco
 
 Results are environment-dependent. Use for relative comparison across versions on the same hardware, not as absolute SLA targets. Latencies include the full HTTP round-trip: Spring Boot request handling, auth filter, JSON serialization, Redis EVALSHA, Lua execution, and response building.
 
+The concurrent suite also runs two sustained 200-client reserve fan-outs after
+50 warmups: one contending on a shared tenant budget and one sharded across
+independent agent-level leaf budgets. It records reserve p99, throughput, and
+error rate, and fails on any mismatch between successful reservations and the
+resulting Redis `reserved` totals.
+
+### 200-client reserve fan-out — v0.1.25.59 (2026-07-30)
+
+Reference environment: AMD Ryzen Threadripper 3990X (64 cores), Java 21,
+Spring Boot 3.5.16, Redis 7 Alpine in Testcontainers, Docker Desktop 29.6.1,
+and localhost networking. The table reports the median of three fresh-process
+trials. Each trial performed 50 warmups, then measured one five-second window
+per shape.
+
+| Budget shape | Reserve p99 median (range) | Throughput median (range) | Errors | Ledger mismatches |
+|---|---:|---:|---:|---:|
+| Shared tenant budget | 531.7ms (524.8–532.3ms) | 1,328.6 reserves/s (1,295.0–1,354.6) | 0 | 0 |
+| Independent agent leaf budgets | 446.8ms (438.8–455.7ms) | 1,683.4 reserves/s (1,655.8–1,687.0) | 0 | 0 |
+
+Across all six measured windows, 45,022 successful reservations completed
+with zero request errors and zero Redis ledger mismatches. These localhost
+results are reference evidence, not an SLO; network topology, server sizing,
+Redis placement, and client connection pools affect tail latency.
+
 Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
 
 ### Release coverage
