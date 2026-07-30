@@ -54,7 +54,11 @@ a consistent full-suite regression signal and can inherit warm state from
 earlier tests; it is not interchangeable with the independently launched
 fresh-process reference cells. The Java benchmark itself fails above a 1%
 request error rate or on any Redis ledger mismatch; p99 remains informational
-in the cross-run regression gate because shared-runner tails are noisy.
+in the cross-run regression gate because shared-runner tails are noisy. Public
+wide-fan-out latency evidence must report the multi-trial p99 distribution,
+not promote one 200-client p99 value as a stable headline; use throughput,
+error rate, and ledger mismatches alongside low-concurrency p99 for compact
+summaries.
 
 | Metric | Source test | Why |
 |---|---|---|

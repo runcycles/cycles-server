@@ -36,16 +36,57 @@ startup and warmup treatment without opening 200 cold connections at once.
 Across all 24 measured windows, 70,046 successful reservations completed with
 zero request errors and zero Redis ledger mismatches. Shared and isolated
 shapes are close through 50 clients. At 200 clients both shapes saturate the
-single application instance and its HTTP/Redis capacity, while the shared
-atomic ledger adds tail latency. These localhost results are reference
-evidence, not an SLO; network topology, server sizing, Redis placement, and
-client connection pools affect latency.
+single application instance and its HTTP/Redis capacity. In this three-trial
+sample, shared-ledger p99 was higher at 200 clients; the stability rerun below
+shows that the ordering reverses and neither 200-client p99 is stable enough
+for a comparative claim. These localhost results are reference evidence, not
+an SLO; network topology, server sizing, Redis placement, and client
+connection pools affect latency.
 
 This matrix supersedes the earlier same-day 200-only figures of 531.7ms shared
 and 446.8ms isolated. Review showed those cells inherited warmup from preceding
 suite tests, while their 50 sequential warmups did not control wide-fan-out
 connection state. They are retained in Git history but are not used as current
 evidence.
+
+### 200-client stability rerun — v0.1.25.59 (2026-07-30)
+
+We reran the exact merged server commit
+`c74f510b1699704a0b7b3739143c3804710aa060` after the three-trial shared
+200-client p99 above appeared unusually high. Each trial again started a fresh
+Maven, Spring, and Testcontainers process and used the same controlled warmup
+and five-second measured window. Seven shared-ledger 200-client trials were
+supplemented by three isolated-ledger 200-client trials and three shared-ledger
+one-client trials. Three pre-existing dashboard-stack containers were left
+running but untouched; baseline host CPU was approximately 6%.
+
+| Scenario | Trials | Reserve p95 median (range) | Reserve p99 median (range) | Throughput median (range) | Successes | Errors | Ledger mismatches |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 client, shared tenant budget | 3 | 24.6ms (23.8–27.6ms) | 34.4ms (32.7–35.4ms) | 50.6 reserves/s (46.4–51.8) | 744 | 0 | 0 |
+| 200 clients, shared tenant budget | 7 | 376.5ms (364.5–404.0ms) | 831.1ms (467.7–2,558.0ms) | 890.8 reserves/s (879.6–979.2) | 31,786 | 0 | 0 |
+| 200 clients, independent agent leaf budgets | 3 | 394.4ms (393.7–406.7ms) | 962.9ms (602.2–1,848.5ms) | 898.6 reserves/s (838.6–925.2) | 13,312 | 0 | 0 |
+
+The seven shared-ledger 200-client trials were:
+
+| Trial | Successes | Throughput | p50 | p95 | p99 |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 4,443 | 888.6 reserves/s | 222.2ms | 372.7ms | 467.7ms |
+| 2 | 4,616 | 923.2 reserves/s | 198.1ms | 395.2ms | 640.5ms |
+| 3 | 4,454 | 890.8 reserves/s | 188.3ms | 404.0ms | 1,157.0ms |
+| 4 | 4,407 | 881.4 reserves/s | 175.2ms | 376.5ms | 2,558.0ms |
+| 5 | 4,398 | 879.6 reserves/s | 201.4ms | 390.4ms | 831.1ms |
+| 6 | 4,896 | 979.2 reserves/s | 167.2ms | 364.5ms | 1,607.9ms |
+| 7 | 4,572 | 914.4 reserves/s | 197.5ms | 367.9ms | 717.3ms |
+
+The rerun completed 45,842 measured reservations with zero request errors and
+zero Redis ledger mismatches. Its shared 200-client median p99 was 37.3% below
+the original three-trial median, but the per-trial p99 range still spanned
+5.47×. By comparison, shared p95 and throughput each spanned only 1.11×.
+The isolated trials also contained a 1,848.5ms p99 spike. The evidence
+therefore supports publishing one-client p99 and 200-client throughput,
+error rate, and ledger correctness as stable summaries; the complete
+wide-fan-out p99 distribution remains visible here rather than being reduced
+to one homepage number.
 
 Run all benchmark levels with `mvn test -Pbenchmark` (requires Docker). For a
 reproducible single cell, set `-Dbenchmark.fanout.clients=<level>` and select

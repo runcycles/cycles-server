@@ -5,6 +5,22 @@
 
 ---
 
+### 2026-07-30 — 200-client p99 stability rerun (no version bump)
+
+Benchmark-evidence follow-up only. The exact merged v0.1.25.59 server commit
+was rerun in fresh Maven, Spring, and Testcontainers processes after the
+three-trial 1,325.9ms shared-ledger 200-client median p99 appeared unusually
+high. Seven shared-ledger 200-client trials, three isolated-ledger 200-client
+trials, and three shared-ledger one-client trials completed 45,842 measured
+reservations with zero request errors and zero Redis ledger mismatches. Shared
+200-client p99 had an 831.1ms median but a 467.7–2,558.0ms range (5.47×);
+shared p95 and throughput were materially steadier at 376.5ms
+(364.5–404.0ms) and 890.8 reserves/s (879.6–979.2). One-client shared p99
+was 34.4ms (32.7–35.4ms). `BENCHMARKS.md` now retains the full seven-trial
+distribution and corrects the earlier causal reading of shared-versus-isolated
+200-client tails. Production Java, Lua, Redis behavior, wire formats,
+dependencies, and release version remain unchanged. `[benchmark-skip]`
+
 ### 2026-07-30 — controlled 1/10/50/200-client reserve evidence (no version bump)
 
 Benchmark-only correction and expansion. External review correctly noted that
