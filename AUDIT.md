@@ -5,6 +5,29 @@
 
 ---
 
+### 2026-07-30 — controlled 1/10/50/200-client reserve evidence (no version bump)
+
+Benchmark-only correction and expansion. External review correctly noted that
+the 200-client homepage number lacked a same-harness low-concurrency
+denominator. The reserve fan-out now runs at 1, 10, 50, and 200 clients for
+both a shared tenant ledger and independent agent leaf ledgers. A system
+property can select one client level so every published cell is measured in a
+fresh Maven, Spring, and Testcontainers process. Warmup now performs at least
+50 requests, reaches every logical client, and uses a controlled ramp capped
+at 50 concurrent requests before resetting ledger state and starting the
+five-second measured window.
+
+Three fresh-process trials per shape and level completed 70,046 reservations
+with zero request errors and zero Redis ledger mismatches. Shared-ledger p99
+medians were 32.4ms at 1 client, 40.6ms at 10, 113.8ms at 50, and 1,325.9ms
+at 200-client saturation. Independent-ledger medians were 32.8ms, 42.6ms,
+117.0ms, and 929.1ms respectively. The earlier same-day 531.7ms shared and
+446.8ms isolated 200-client figures are superseded: review found they inherited
+warm state from preceding suite tests and their sequential warmups did not
+control wide-fan-out connection state. Production Java, Lua, Redis behavior,
+wire formats, dependencies, and release version remain unchanged.
+`[benchmark-skip]`
+
 ### 2026-07-30 — 200-client reserve fan-out benchmark (no version bump)
 
 Benchmark-only change. The concurrent suite now measures the synchronous
