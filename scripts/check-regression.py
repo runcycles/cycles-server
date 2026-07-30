@@ -51,6 +51,10 @@ HEADLINE_METRICS = [
     ("list_sorted_1k_p50_ms",     True,  True),
     ("list_sorted_10k_p50_ms",    True,  True),
     ("concurrent_throughput_32t", False, True),
+    ("reserve_shared_200_p99_ms",        True,  False),
+    ("reserve_shared_200_throughput",    False, True),
+    ("reserve_isolated_200_p99_ms",      True,  False),
+    ("reserve_isolated_200_throughput",  False, True),
 ]
 
 

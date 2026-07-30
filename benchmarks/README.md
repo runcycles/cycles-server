@@ -42,10 +42,12 @@ https://raw.githubusercontent.com/runcycles/cycles-server/benchmark-data/benchma
 https://raw.githubusercontent.com/runcycles/cycles-server/benchmark-data/benchmarks/baseline.json
 ```
 
-## Headline metrics tracked
+## Metrics tracked
 
-Nine numbers chosen for signal density, not exhaustiveness. More metrics
-means more noise and a higher false-positive rate on the gate.
+Nine established regression signals are supplemented by eight fields from the
+200-client reserve fan-out. The Java benchmark itself fails above a 1% request
+error rate or on any Redis ledger mismatch; p99 remains informational in the
+cross-run regression gate because shared-runner tails are noisy.
 
 | Metric | Source test | Why |
 |---|---|---|
@@ -56,19 +58,33 @@ means more noise and a higher false-positive rate on the gate.
 | `list_sorted_1k_p50_ms` | `CyclesProtocolReadBenchmarkTest` | Sorted-list scaling at moderate population |
 | `list_sorted_10k_p50_ms` | `CyclesProtocolReadBenchmarkTest` | Sorted-list scaling trigger / indexed-path payoff |
 | `concurrent_throughput_32t` | `CyclesProtocolConcurrentBenchmarkTest` | Scaling signal |
+| `reserve_shared_200_p99_ms` | `CyclesProtocolConcurrentBenchmarkTest` | Reserve tail under contention on one shared budget |
+| `reserve_shared_200_throughput` | `CyclesProtocolConcurrentBenchmarkTest` | Shared-budget reserve capacity |
+| `reserve_shared_200_error_rate_pct` | `CyclesProtocolConcurrentBenchmarkTest` | Availability under shared-budget fan-out |
+| `reserve_shared_200_ledger_mismatches` | `CyclesProtocolConcurrentBenchmarkTest` | Atomic shared-ledger correctness |
+| `reserve_isolated_200_p99_ms` | `CyclesProtocolConcurrentBenchmarkTest` | Reserve tail across independent leaf budgets |
+| `reserve_isolated_200_throughput` | `CyclesProtocolConcurrentBenchmarkTest` | Sharded reserve capacity |
+| `reserve_isolated_200_error_rate_pct` | `CyclesProtocolConcurrentBenchmarkTest` | Availability under sharded fan-out |
+| `reserve_isolated_200_ledger_mismatches` | `CyclesProtocolConcurrentBenchmarkTest` | Per-leaf ledger correctness |
 
 ## Entry format (`history.jsonl`)
 
 Each line is a standalone JSON object:
 
 ```json
-{"timestamp":"2026-07-15T07:00:00Z","commit":"abc1234","tag":null,"reserve_p50_ms":5.3,"reserve_p99_ms":18.2,"commit_p50_ms":4.6,"commit_p99_ms":15.1,"release_p50_ms":4.8,"event_p50_ms":4.3,"list_sorted_1k_p50_ms":22.5,"list_sorted_10k_p50_ms":164.9,"concurrent_throughput_32t":2632}
+{"timestamp":"2026-07-30T07:00:00Z","commit":"abc1234","tag":null,"reserve_p50_ms":5.3,"reserve_p99_ms":18.2,"commit_p50_ms":4.6,"commit_p99_ms":15.1,"release_p50_ms":4.8,"event_p50_ms":4.3,"list_sorted_1k_p50_ms":22.5,"list_sorted_10k_p50_ms":164.9,"concurrent_throughput_32t":2632,"reserve_shared_200_p99_ms":210.4,"reserve_shared_200_throughput":920.2,"reserve_shared_200_error_rate_pct":0.0,"reserve_shared_200_ledger_mismatches":0,"reserve_isolated_200_p99_ms":180.7,"reserve_isolated_200_throughput":1040.6,"reserve_isolated_200_error_rate_pct":0.0,"reserve_isolated_200_ledger_mismatches":0}
 ```
 
 - `timestamp` — UTC, ISO 8601
 - `commit` — short SHA of the benchmarked code
 - `tag` — release tag if the run happened as part of a release (non-null);
   `null` for nightly runs on main
+
+The example fan-out values illustrate the record shape; they are not a
+published measurement. Each fan-out result measures reserve HTTP latency for
+five sustained seconds after 50 warmups. `shared` sends every client through
+one tenant budget; `isolated` removes that parent budget and assigns each
+client its own agent-level leaf budget.
 
 ## Baseline format (`baseline.json`)
 

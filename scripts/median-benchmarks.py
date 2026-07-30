@@ -34,6 +34,14 @@ NUMERIC_FIELDS = [
     "list_sorted_1k_p50_ms",
     "list_sorted_10k_p50_ms",
     "concurrent_throughput_32t",
+    "reserve_shared_200_p99_ms",
+    "reserve_shared_200_throughput",
+    "reserve_shared_200_error_rate_pct",
+    "reserve_shared_200_ledger_mismatches",
+    "reserve_isolated_200_p99_ms",
+    "reserve_isolated_200_throughput",
+    "reserve_isolated_200_error_rate_pct",
+    "reserve_isolated_200_ledger_mismatches",
 ]
 
 
