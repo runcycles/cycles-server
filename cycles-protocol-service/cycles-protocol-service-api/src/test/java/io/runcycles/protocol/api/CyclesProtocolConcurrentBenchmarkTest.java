@@ -289,9 +289,14 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
             Thread.sleep(MEASURE_DURATION_MS);
             running.set(false);
             executor.shutdown();
-            if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+            boolean terminated = executor.awaitTermination(60, TimeUnit.SECONDS);
+            if (!terminated) {
                 executor.shutdownNow();
+                terminated = executor.awaitTermination(10, TimeUnit.SECONDS);
             }
+            assertThat(terminated)
+                    .as("All fan-out workers terminated before ledger reconciliation")
+                    .isTrue();
 
             long[] sorted = timings.stream().mapToLong(Long::longValue).sorted().toArray();
             int totalOps = sorted.length;
