@@ -19,13 +19,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * multiple threads executing Reserve→Commit lifecycles simultaneously.
  *
  * Lifecycle tests ramp from 8 → 16 → 32 concurrent threads. Reserve-only
- * tests add a 200-client fan-out in two shapes: one shared budget (the
- * contention case) and 200 independent leaf budgets (the sharded case).
+ * tests ramp from 1 → 10 → 50 → 200 clients in two shapes: one shared
+ * budget (the contention case) and independent leaf budgets (the sharded
+ * case).
  *
  * Results are CI-environment sensitive — latency and throughput depend on
  * container resources, Redis container networking, and JVM warm-up.
  *
  * Run separately: mvn test -Pbenchmark
+ * Select fan-out levels for isolated fresh-process trials with
+ * -Dbenchmark.fanout.clients=1,10,50,200.
  */
 @DisplayName("Concurrent Load Benchmarks")
 @Tag("benchmark")
@@ -34,8 +37,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     private static final int WARMUP_OPS = 50;
+    private static final int MAX_WARMUP_CONCURRENCY = 50;
     private static final long MEASURE_DURATION_MS = 5_000;
-    private static final int FANOUT_CLIENTS = 200;
+    private static final List<Integer> DEFAULT_FANOUT_CLIENT_LEVELS =
+            List.of(1, 10, 50, 200);
+    private static final List<Integer> FANOUT_CLIENT_LEVELS =
+            configuredFanoutClientLevels();
     private static final long FANOUT_ALLOCATION = 1_000_000_000_000L;
     private static final long FANOUT_RESERVE_AMOUNT = 100L;
     /** Max acceptable error rate (%) before failing the test */
@@ -111,16 +118,20 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     @Test
     @Order(4)
-    @DisplayName("Reserve fan-out at 200 clients on one shared budget")
-    void concurrentReserve_200clients_sharedBudget() throws Exception {
-        runConcurrentReserveFanout(false);
+    @DisplayName("Reserve fan-out from 1 to 200 clients on one shared budget")
+    void concurrentReserve_sharedBudget() throws Exception {
+        for (int clients : FANOUT_CLIENT_LEVELS) {
+            runConcurrentReserveFanout(false, clients);
+        }
     }
 
     @Test
     @Order(5)
-    @DisplayName("Reserve fan-out at 200 clients on independent leaf budgets")
-    void concurrentReserve_200clients_independentBudgets() throws Exception {
-        runConcurrentReserveFanout(true);
+    @DisplayName("Reserve fan-out from 1 to 200 clients on independent leaf budgets")
+    void concurrentReserve_independentBudgets() throws Exception {
+        for (int clients : FANOUT_CLIENT_LEVELS) {
+            runConcurrentReserveFanout(true, clients);
+        }
     }
 
     private void runConcurrentLifecycle(int threadCount) throws Exception {
@@ -227,30 +238,27 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
         }
     }
 
-    private void runConcurrentReserveFanout(boolean isolated) throws Exception {
-        prepareFanoutBudgets(isolated);
+    private void runConcurrentReserveFanout(
+            boolean isolated,
+            int clientCount) throws Exception {
+        prepareFanoutBudgets(isolated, clientCount);
 
-        // Prime JIT, auth cache, HTTP connection management, and EVALSHA before
-        // resetting the measured ledger state.
-        for (int i = 0; i < WARMUP_OPS; i++) {
-            ResponseEntity<Map> response = post(
-                    "/v1/reservations",
-                    API_KEY_SECRET_A,
-                    fanoutReservationBody(isolated, i % FANOUT_CLIENTS));
-            assertThat(response.getStatusCode().value()).isEqualTo(200);
-            assertThat(response.getBody()).containsKey("reservation_id");
-        }
-        prepareFanoutBudgets(isolated);
+        // Prime JIT, auth cache, HTTP connection management, and EVALSHA
+        // before resetting the ledger. The bounded ramp exercises every
+        // logical client without turning 200 simultaneous cold connections
+        // into a warmup-only transport failure.
+        warmUpFanout(isolated, clientCount);
+        prepareFanoutBudgets(isolated, clientCount);
 
-        ExecutorService executor = Executors.newFixedThreadPool(FANOUT_CLIENTS);
+        ExecutorService executor = Executors.newFixedThreadPool(clientCount);
         try {
             ConcurrentLinkedQueue<Long> timings = new ConcurrentLinkedQueue<>();
             AtomicInteger errorCount = new AtomicInteger();
-            AtomicLongArray successesByClient = new AtomicLongArray(FANOUT_CLIENTS);
+            AtomicLongArray successesByClient = new AtomicLongArray(clientCount);
             CountDownLatch startLatch = new CountDownLatch(1);
             AtomicBoolean running = new AtomicBoolean(true);
 
-            for (int client = 0; client < FANOUT_CLIENTS; client++) {
+            for (int client = 0; client < clientCount; client++) {
                 int clientIndex = client;
                 executor.submit(() -> {
                     try {
@@ -307,13 +315,13 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
                     : 0.0;
             double opsPerSec = totalOps / (MEASURE_DURATION_MS / 1000.0);
             long ledgerMismatches = countFanoutLedgerMismatches(
-                    isolated, successesByClient, totalOps);
+                    isolated, successesByClient, totalOps, clientCount);
 
             FanoutResult result;
             if (totalOps > 0) {
                 result = new FanoutResult(
                         isolated ? "isolated" : "shared",
-                        FANOUT_CLIENTS,
+                        clientCount,
                         totalOps,
                         opsPerSec,
                         p(sorted, 50),
@@ -327,7 +335,7 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
             } else {
                 result = new FanoutResult(
                         isolated ? "isolated" : "shared",
-                        FANOUT_CLIENTS,
+                        clientCount,
                         0, 0, 0, 0, 0, 0, 0,
                         errors, errorRate, ledgerMismatches);
             }
@@ -346,27 +354,61 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
                     result.errorRatePercent, result.ledgerMismatches);
 
             assertThat(errorRate)
-                    .as("Reserve error rate for %s 200-client fan-out", result.shape)
+                    .as("Reserve error rate for %s %d-client fan-out",
+                            result.shape, result.clients)
                     .isLessThan(MAX_ERROR_RATE_PERCENT);
             assertThat(totalOps)
-                    .as("Successful reserves for %s 200-client fan-out", result.shape)
+                    .as("Successful reserves for %s %d-client fan-out",
+                            result.shape, result.clients)
                     .isGreaterThan(0);
             assertThat(ledgerMismatches)
-                    .as("Ledger mismatches for %s 200-client fan-out", result.shape)
+                    .as("Ledger mismatches for %s %d-client fan-out",
+                            result.shape, result.clients)
                     .isZero();
         } finally {
             executor.shutdownNow();
         }
     }
 
-    private void prepareFanoutBudgets(boolean isolated) {
+    private void warmUpFanout(boolean isolated, int clientCount)
+            throws Exception {
+        int warmupOps = Math.max(WARMUP_OPS, clientCount);
+        int warmupConcurrency =
+                Math.min(clientCount, MAX_WARMUP_CONCURRENCY);
+        ExecutorService executor =
+                Executors.newFixedThreadPool(warmupConcurrency);
+        try {
+            List<Future<ResponseEntity<Map>>> responses =
+                    new ArrayList<>(warmupOps);
+            for (int operation = 0; operation < warmupOps; operation++) {
+                int clientIndex = operation % clientCount;
+                responses.add(executor.submit(() -> post(
+                        "/v1/reservations",
+                        API_KEY_SECRET_A,
+                        fanoutReservationBody(isolated, clientIndex))));
+            }
+            executor.shutdown();
+            for (Future<ResponseEntity<Map>> future : responses) {
+                ResponseEntity<Map> response = future.get(30, TimeUnit.SECONDS);
+                assertThat(response.getStatusCode().value()).isEqualTo(200);
+                assertThat(response.getBody()).containsKey("reservation_id");
+            }
+            assertThat(executor.awaitTermination(30, TimeUnit.SECONDS))
+                    .as("Fan-out warmup workers terminated")
+                    .isTrue();
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private void prepareFanoutBudgets(boolean isolated, int clientCount) {
         try (var jedis = jedisPool.getResource()) {
             if (!isolated) {
                 seedBudget(jedis, TENANT_A, "TOKENS", FANOUT_ALLOCATION);
                 return;
             }
             jedis.del("budget:tenant:" + TENANT_A + ":TOKENS");
-            for (int client = 0; client < FANOUT_CLIENTS; client++) {
+            for (int client = 0; client < clientCount; client++) {
                 seedScopeBudget(
                         jedis,
                         fanoutScope(client),
@@ -391,7 +433,8 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
     private long countFanoutLedgerMismatches(
             boolean isolated,
             AtomicLongArray successesByClient,
-            int totalOps) {
+            int totalOps,
+            int clientCount) {
         try (var jedis = jedisPool.getResource()) {
             if (!isolated) {
                 long actual = Long.parseLong(jedis.hget(
@@ -400,7 +443,7 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
                 return actual == totalOps * FANOUT_RESERVE_AMOUNT ? 0 : 1;
             }
             long mismatches = 0;
-            for (int client = 0; client < FANOUT_CLIENTS; client++) {
+            for (int client = 0; client < clientCount; client++) {
                 long actual = Long.parseLong(jedis.hget(
                         "budget:" + fanoutScope(client) + ":TOKENS",
                         "reserved"));
@@ -420,6 +463,28 @@ class CyclesProtocolConcurrentBenchmarkTest extends BaseIntegrationTest {
 
     private static String fanoutScope(int client) {
         return "tenant:" + TENANT_A + "/agent:" + fanoutAgent(client);
+    }
+
+    private static List<Integer> configuredFanoutClientLevels() {
+        String configured = System.getProperty("benchmark.fanout.clients");
+        if (configured == null || configured.isBlank()) {
+            return DEFAULT_FANOUT_CLIENT_LEVELS;
+        }
+        try {
+            List<Integer> levels = Arrays.stream(configured.split(","))
+                    .map(String::trim)
+                    .map(Integer::parseInt)
+                    .toList();
+            if (levels.isEmpty() || levels.stream().anyMatch(level -> level <= 0)) {
+                throw new IllegalArgumentException(
+                        "benchmark.fanout.clients values must be positive");
+            }
+            return levels;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    "benchmark.fanout.clients must be a comma-separated list of integers",
+                    e);
+        }
     }
 
     private static long p(long[] sorted, int percentile) {

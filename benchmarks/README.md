@@ -44,10 +44,17 @@ https://raw.githubusercontent.com/runcycles/cycles-server/benchmark-data/benchma
 
 ## Metrics tracked
 
-Nine established regression signals are supplemented by eight fields from the
-200-client reserve fan-out. The Java benchmark itself fails above a 1% request
-error rate or on any Redis ledger mismatch; p99 remains informational in the
-cross-run regression gate because shared-runner tails are noisy.
+The Java suite measures reserve fan-out at 1, 10, 50, and 200 clients for both
+shared and isolated ledger shapes. Nine established regression signals are
+supplemented by eight machine-history fields from the 200-client saturation
+level. Lower-concurrency reference medians and ranges are curated in
+[`../BENCHMARKS.md`](../BENCHMARKS.md); the history pipeline keeps the widest
+level to avoid a breaking expansion of existing baseline records. History is
+a consistent full-suite regression signal and can inherit warm state from
+earlier tests; it is not interchangeable with the independently launched
+fresh-process reference cells. The Java benchmark itself fails above a 1%
+request error rate or on any Redis ledger mismatch; p99 remains informational
+in the cross-run regression gate because shared-runner tails are noisy.
 
 | Metric | Source test | Why |
 |---|---|---|
@@ -82,9 +89,12 @@ Each line is a standalone JSON object:
 
 The example fan-out values illustrate the record shape; they are not a
 published measurement. Each fan-out result measures reserve HTTP latency for
-five sustained seconds after 50 warmups. `shared` sends every client through
-one tenant budget; `isolated` removes that parent budget and assigns each
-client its own agent-level leaf budget.
+five sustained seconds after a controlled warmup of at least 50 requests that
+reaches every logical client, with warmup concurrency capped at 50. The ledger
+is reset before timing starts. `shared` sends every client through one tenant
+budget; `isolated` removes that parent budget and assigns each client its own
+agent-level leaf budget. Use `-Dbenchmark.fanout.clients=<level>` plus one
+fan-out test method to reproduce an individual fresh-process cell.
 
 ## Baseline format (`baseline.json`)
 

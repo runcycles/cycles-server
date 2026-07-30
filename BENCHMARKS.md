@@ -5,31 +5,57 @@ Performance benchmark history across versions. All benchmarks use `CyclesProtoco
 
 Results are environment-dependent. Use for relative comparison across versions on the same hardware, not as absolute SLA targets. Latencies include the full HTTP round-trip: Spring Boot request handling, auth filter, JSON serialization, Redis EVALSHA, Lua execution, and response building.
 
-The concurrent suite also runs two sustained 200-client reserve fan-outs after
-50 warmups: one contending on a shared tenant budget and one sharded across
-independent agent-level leaf budgets. It records reserve p99, throughput, and
-error rate, and fails on any mismatch between successful reservations and the
-resulting Redis `reserved` totals.
+The concurrent suite also runs sustained reserve fan-outs at 1, 10, 50, and
+200 clients in two shapes: one contending on a shared tenant budget and one
+sharded across independent agent-level leaf budgets. It records reserve p99,
+throughput, and error rate, and fails on any mismatch between successful
+reservations and the resulting Redis `reserved` totals.
 
-### 200-client reserve fan-out — v0.1.25.59 (2026-07-30)
+### Fresh-process reserve fan-out — v0.1.25.59 (2026-07-30)
 
 Reference environment: AMD Ryzen Threadripper 3990X (64 cores), Java 21,
 Spring Boot 3.5.16, Redis 7 Alpine in Testcontainers, Docker Desktop 29.6.1,
-and localhost networking. The table reports the median of three fresh-process
-trials. Each trial performed 50 warmups, then measured one five-second window
-per shape.
+and localhost networking. Every table cell reports the median and range of
+three trials that each started a fresh Maven, Spring, and Testcontainers
+process. A controlled warmup performs at least 50 requests and reaches every
+logical client, with warmup concurrency capped at 50. The ledger is then reset
+before one five-second measured window. This gives every client level the same
+startup and warmup treatment without opening 200 cold connections at once.
 
-| Budget shape | Reserve p99 median (range) | Throughput median (range) | Errors | Ledger mismatches |
-|---|---:|---:|---:|---:|
-| Shared tenant budget | 531.7ms (524.8–532.3ms) | 1,328.6 reserves/s (1,295.0–1,354.6) | 0 | 0 |
-| Independent agent leaf budgets | 446.8ms (438.8–455.7ms) | 1,683.4 reserves/s (1,655.8–1,687.0) | 0 | 0 |
+| Clients | Budget shape | Reserve p99 median (range) | Throughput median (range) | Errors | Ledger mismatches |
+|---:|---|---:|---:|---:|---:|
+| 1 | Shared tenant budget | 32.4ms (30.8–34.5ms) | 49.6 reserves/s (46.6–58.0) | 0 | 0 |
+| 1 | Independent agent leaf budgets | 32.8ms (26.4–40.7ms) | 56.2 reserves/s (52.0–60.4) | 0 | 0 |
+| 10 | Shared tenant budget | 40.6ms (40.1–46.4ms) | 430.0 reserves/s (424.8–435.8) | 0 | 0 |
+| 10 | Independent agent leaf budgets | 42.6ms (37.9–43.2ms) | 426.0 reserves/s (426.0–434.6) | 0 | 0 |
+| 50 | Shared tenant budget | 113.8ms (100.1–126.5ms) | 998.8 reserves/s (994.8–1,022.4) | 0 | 0 |
+| 50 | Independent agent leaf budgets | 117.0ms (115.4–165.6ms) | 986.0 reserves/s (817.6–990.6) | 0 | 0 |
+| 200 | Shared tenant budget | 1,325.9ms (1,131.0–1,738.1ms) | 927.8 reserves/s (886.8–954.2) | 0 | 0 |
+| 200 | Independent agent leaf budgets | 929.1ms (651.8–1,040.6ms) | 833.0 reserves/s (832.6–864.6) | 0 | 0 |
 
-Across all six measured windows, 45,022 successful reservations completed
-with zero request errors and zero Redis ledger mismatches. These localhost
-results are reference evidence, not an SLO; network topology, server sizing,
-Redis placement, and client connection pools affect tail latency.
+Across all 24 measured windows, 70,046 successful reservations completed with
+zero request errors and zero Redis ledger mismatches. Shared and isolated
+shapes are close through 50 clients. At 200 clients both shapes saturate the
+single application instance and its HTTP/Redis capacity, while the shared
+atomic ledger adds tail latency. These localhost results are reference
+evidence, not an SLO; network topology, server sizing, Redis placement, and
+client connection pools affect latency.
 
-Run benchmarks: `mvn test -Pbenchmark` (requires Docker).
+This matrix supersedes the earlier same-day 200-only figures of 531.7ms shared
+and 446.8ms isolated. Review showed those cells inherited warmup from preceding
+suite tests, while their 50 sequential warmups did not control wide-fan-out
+connection state. They are retained in Git history but are not used as current
+evidence.
+
+Run all benchmark levels with `mvn test -Pbenchmark` (requires Docker). For a
+reproducible single cell, set `-Dbenchmark.fanout.clients=<level>` and select
+one fan-out test method, for example:
+
+```bash
+mvn -pl cycles-protocol-service-api -am test -Pbenchmark \
+  -Dtest='CyclesProtocolConcurrentBenchmarkTest#concurrentReserve_sharedBudget' \
+  -Dbenchmark.fanout.clients=10
+```
 
 ### Release coverage
 
