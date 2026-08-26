@@ -5,6 +5,15 @@
 
 ---
 
+### 2026-08-26 — Buildx workflow maintenance (no version bump)
+
+Dependabot PR #271 updated `docker/setup-buildx-action` from 4.2.0 to 4.3.0
+in the pull-request container scan and release workflows. CI, CodeQL, the
+container scan, and the supply-chain scorecard passed on the merged commit.
+Production Java and Lua code, runtime dependencies, container contents,
+protocol YAML, public APIs, and release behavior are unchanged.
+`[benchmark-skip]`
+
 ### 2026-07-30 — 200-client p99 stability rerun (no version bump)
 
 Benchmark-evidence follow-up only. The exact merged v0.1.25.59 server commit
