@@ -62,7 +62,7 @@ jobs:
 
       - name: Set up JDK 21
         if: steps.decide.outputs.skipped == 'false'
-        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: 21
@@ -192,7 +192,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       # Two-phase build: load image locally for Trivy first, then push only
       # if scan passes. Second build-push-action call is a cache hit (~5-10s
@@ -228,7 +228,7 @@ jobs:
 
       - name: Upload Trivy SARIF to Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           sarif_file: 'trivy-results.sarif'
           category: trivy-container
