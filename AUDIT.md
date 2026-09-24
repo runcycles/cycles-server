@@ -1,7 +1,21 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-09-24 — Dependency and container security maintenance
+
+Consolidates Dependabot PRs #280, #279, #278, #277. Docker Buildx,
+Docker build/push, and CodeQL upload actions remain pinned to commit SHAs. The Java setup action is also updated to 6.0.1.
+
+Pins all embedded Tomcat modules to 10.1.60. The previous 10.1.55
+container failed Trivy on CVE-2026-68525, CVE-2026-65905, and
+CVE-2026-65182; 10.1.60 also includes the September 23 security fixes.
+Reference: https://tomcat.apache.org/security-10.html
+
+The protocol YAML, application logic, and public interfaces are unchanged.
+The existing unit, integration, 95% coverage, and container scan gates remain
+enabled; the consolidated PR must pass them before merging.
+
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
-**Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 / Redis (Lua scripts) · commons-lang3 3.18.0 and Tomcat 10.1.55 pins
+**Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 / Redis (Lua scripts) · commons-lang3 3.18.0 and Tomcat 10.1.60 pins
 
 ---
 
