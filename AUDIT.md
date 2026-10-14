@@ -1,5 +1,9 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-10-14 — Dependency maintenance
+
+Consolidates Dependabot PRs #284 and #282: SHA-pinned CodeQL SARIF uploader 4.38.3 and upload-artifact 7.0.2. The branch includes current main. Service source and YAML protocol contracts are unchanged. Unit, contract, integration, coverage, and container-security checks must pass before merge. The previous container scan reported Spring MVC and Jackson vulnerabilities; this action-only update does not claim to remediate those findings or relax the scanner.
+
 ## 2026-09-24 — Dependency and container security maintenance
 
 Consolidates Dependabot PRs #280, #279, #278, #277. Docker Buildx,
