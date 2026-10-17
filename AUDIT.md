@@ -1,5 +1,53 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-10-17 — PR #284 container security remediation
+
+Upgrades to Spring Boot 4.0.8, which manages Spring Framework 7.0.9 and
+Tomcat 11.0.24. Pins Tomcat to 11.0.27 to include its August/September
+security fixes (including CVE-2026-65182, CVE-2026-65905 and CVE-2026-68525).
+This removes Spring MVC 6.2.19, affected by CVE-2026-47884
+and CVE-2026-47890. The upstream 6.2.20 fixes are enterprise-only; the
+supported OSS fix is Spring 7.0.9. Removes the obsolete Tomcat 10 and
+commons-lang3 overrides; Boot manages commons-lang3 3.19.0.
+
+Pins the Jackson 2 BOM to 2.21.7 and Jackson 3 BOM to 3.1.7 to include the
+reported Jackson fixes (CVE-2026-68497, CVE-2026-89407, CVE-2026-89425,
+CVE-2026-91776, CVE-2026-91777). SpringDoc moves to 3.0.3 for Boot 4.0.
+The service retains Jackson 2 for HTTP and persisted Redis data through
+Boot's `spring-boot-jackson2` compatibility module and explicit HTTP mapper
+selection. Date serialization, rejection of unknown JSON properties, and
+null omission keep their existing settings under `spring.jackson2`.
+The compatibility module is deprecated upstream; a future Jackson 3
+migration must separately verify the protocol and persisted-data formats.
+
+Updates the relocated Boot health, security, MVC-test and TestRestTemplate
+APIs; enables TestRestTemplate explicitly for integration tests and replaces
+removed Spring test APIs. The sorted-query regression test uses one keyed
+HMGET answer instead of 2,010 separate Mockito stubs, retaining the same
+rows, field projections and assertions without quadratic stub lookup.
+The authoritative YAML specifications, DTOs,
+business logic, Redis schema and Lua scripts are unchanged. Existing
+contract/integration tests and 95% line/branch coverage gates must pass.
+The HIGH/CRITICAL container scan remains unchanged, with no exclusions or
+vulnerability suppressions added. Historical benchmark results still
+describe their recorded Boot 3.5 environment, not this upgrade.
+
+Validation: full Maven `verify -Pintegration-tests` (excluding benchmarks)
+passed all 1,321 tests with no failures, errors or skips, including runtime
+YAML contract validation and the generated OpenAPI structural diff. JaCoCo
+reports API 97.40% line / 95.53% branch and data 97.18% line / 95.07% branch;
+both existing 95% gates passed. A fresh no-cache Docker build passed Trivy
+0.70.0 with zero fixable HIGH/CRITICAL findings. Container smoke checks
+passed readiness, liveness, authenticated `/api-docs`, and rejection of an
+unauthenticated `/v1/balances` request.
+The separate `property-tests` profile also passed all five concurrency/audit
+properties with 20 generated trials each on the upgraded JUnit platform.
+
+References: [Spring XsltView advisory](https://spring.io/security/cve-2026-47884/),
+[Spring SSE advisory](https://spring.io/security/cve-2026-47890/),
+[Boot 4 migration guide](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide),
+[Tomcat 11 security advisories](https://tomcat.apache.org/security-11.html).
+
 ## 2026-10-14 — Dependency maintenance
 
 Consolidates Dependabot PRs #284 and #282: SHA-pinned CodeQL SARIF uploader 4.38.3 and upload-artifact 7.0.2. The branch includes current main. Service source and YAML protocol contracts are unchanged. Unit, contract, integration, coverage, and container-security checks must pass before merge. The previous container scan reported Spring MVC and Jackson vulnerabilities; this action-only update does not claim to remediate those findings or relax the scanner.
@@ -19,7 +67,7 @@ The existing unit, integration, 95% coverage, and container scan gates remain
 enabled; the consolidated PR must pass them before merging.
 
 **Spec:** `cycles-protocol-v0.yaml` (OpenAPI 3.1.0, v0.1.25) + `complete-budget-governance-v0.1.25.yaml` (events/webhooks)
-**Server:** Spring Boot 3.5.16 / Java 21 / Jedis 7.5.2 / Redis (Lua scripts) · commons-lang3 3.18.0 and Tomcat 10.1.60 pins
+**Server:** Spring Boot 4.0.8 / Java 21 / Jedis 8.0.2 / Redis (Lua scripts) · Spring 7.0.9, Tomcat 11.0.27, Jackson 2.21.7 / 3.1.7
 
 ---
 

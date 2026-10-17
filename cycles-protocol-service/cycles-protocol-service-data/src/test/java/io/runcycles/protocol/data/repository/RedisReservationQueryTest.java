@@ -1064,14 +1064,23 @@ class RedisReservationQueryTest extends BaseRedisReservationRepositoryTest {
             when(jedis.scan(eq("0"), any(ScanParams.class))).thenReturn(scanResult);
             when(jedis.pipelined()).thenReturn(pipeline);
 
+            // One keyed answer avoids quadratic lookup across thousands of
+            // Mockito stubs while retaining every row and the requested HMGET fields.
+            Map<String, Map<String, String>> hashes = new HashMap<>();
             for (int i = 0; i < total; i++) {
                 String id = String.format("r%05d", i);
                 Map<String, String> f = reservationFields(id, "ACTIVE");
                 f.put("created_at", String.valueOf(1_700_000_000_000L + i));
-                Response<Map<String, String>> resp = mock(Response.class);
-                lenient().when(resp.get()).thenReturn(f);
-                mockReservationHash("reservation:res_" + id, resp);
+                hashes.put("reservation:res_" + id, f);
             }
+            when(pipeline.hmget(anyString(), any(String[].class))).thenAnswer(invocation -> {
+                Map<String, String> fields = hashes.get(invocation.getArgument(0, String.class));
+                assertThat(fields).isNotNull();
+                String[] names = (String[]) invocation.getRawArguments()[1];
+                Response<List<String>> projected = mock(Response.class);
+                when(projected.get()).thenReturn(Arrays.stream(names).map(fields::get).toList());
+                return projected;
+            });
 
             ReservationListResponse response = repository.listReservations(
                 "acme", null, null, null, null, null, null, null, total, null,
