@@ -4,7 +4,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.16</version>
+        <version>4.0.8</version>
     </parent>
     <groupId>io.runcycles</groupId>
     <artifactId>cycles-protocol-service</artifactId>
@@ -22,23 +22,15 @@
         <java.version>21</java.version>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
-        <!-- Override Spring Boot 3.5.14's managed commons-lang3 3.17.0 to pick
-             up CVE-2025-48924 (Trivy HIGH) fix in 3.18.0. commons-lang3 enters
-             the image transitively via swagger-core-jakarta (OpenAPI UI).
-             Remove once Spring Boot ships with 3.18.0+ as its managed version. -->
-        <commons-lang3.version>3.18.0</commons-lang3.version>
-        <!-- Override the Spring Boot BOM to include the Tomcat security fixes
-             through 10.1.60, including CVE-2026-68525, CVE-2026-65905,
-             CVE-2026-65182 and the September 23 advisories. Remove once the
-             managed Tomcat version is at least 10.1.60. -->
-        <tomcat.version>10.1.60</tomcat.version>
-        <!-- NOTE: jackson-databind (SB-managed, currently 2.21.4) carries
-             CVE-2026-54515 (MEDIUM). The fix lands in jackson 2.21.5, which is
-             not yet published to Maven Central (jackson 2.x ships bom/core/
-             databind together; jackson-bom:2.21.5 is absent). No override is
-             possible until 2.21.5 ships; the release/PR Trivy gates are scoped
-             to HIGH,CRITICAL so this fixable MEDIUM does not block. Bump
-             jackson here once Spring Boot's BOM manages 2.21.5+. -->
+        <!-- Boot 4.0.8 supplies Spring 7.0.9, including
+             the Spring MVC security fixes unavailable in OSS Spring 6.2.
+             Keep both Jackson generations on patched BOM releases while
+             retaining Jackson 2 for the existing protocol serialization. -->
+        <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+        <jackson-bom.version>3.1.7</jackson-bom.version>
+        <!-- Boot's Tomcat 11.0.24 lacks the August/September security fixes.
+             Keep all embedded Tomcat modules aligned on the patched 11.x line. -->
+        <tomcat.version>11.0.27</tomcat.version>
     </properties>
     <dependencyManagement>
         <dependencies>
@@ -50,7 +42,7 @@
             <dependency>
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-                <version>2.9.1</version>
+                <version>3.0.3</version>
             </dependency>
             <dependency>
                 <groupId>org.mindrot</groupId>

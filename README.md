@@ -85,7 +85,7 @@ enabled and require `X-Admin-API-Key`.
 HTTP client
     │  X-Cycles-API-Key
     ▼
-Spring Boot 3.5 (port 7878)
+Spring Boot 4.0 (port 7878)
     │  ApiKeyAuthenticationFilter
     │  Controllers → Repository → Lua scripts (atomic)
     ▼

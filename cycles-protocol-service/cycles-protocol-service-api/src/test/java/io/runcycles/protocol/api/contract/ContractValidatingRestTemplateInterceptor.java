@@ -94,7 +94,7 @@ public class ContractValidatingRestTemplateInterceptor implements ClientHttpRequ
                 else builder.withQueryParam(pair, "");
             }
         }
-        for (Map.Entry<String, List<String>> h : request.getHeaders().entrySet()) {
+        for (Map.Entry<String, List<String>> h : request.getHeaders().headerSet()) {
             for (String v : h.getValue()) builder.withHeader(h.getKey(), v);
         }
         if (body != null && body.length > 0) {

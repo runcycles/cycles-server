@@ -214,7 +214,7 @@ class GlobalExceptionHandlerTest {
                 .getBody().getTraceId()).isEqualTo(TRACE_ID);
         // MalformedJson
         assertThat(handler.handleMessageNotReadable(
-                new org.springframework.http.converter.HttpMessageNotReadableException("bad"), request)
+                new org.springframework.http.converter.HttpMessageNotReadableException("bad", new org.springframework.mock.http.MockHttpInputMessage(new byte[0])), request)
                 .getBody().getTraceId()).isEqualTo(TRACE_ID);
         // Generic 500
         assertThat(handler.handleGenericException(new RuntimeException("boom"), request)
@@ -343,7 +343,7 @@ class GlobalExceptionHandlerTest {
     @Test
     void shouldHandleMalformedJson() {
         org.springframework.http.converter.HttpMessageNotReadableException ex =
-                new org.springframework.http.converter.HttpMessageNotReadableException("bad json");
+                new org.springframework.http.converter.HttpMessageNotReadableException("bad json", new org.springframework.mock.http.MockHttpInputMessage(new byte[0]));
 
         ResponseEntity<ErrorResponse> response = handler.handleMessageNotReadable(ex, request);
 
