@@ -1,5 +1,19 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-11-03 — PR #293 SpringDoc dependency review
+
+Updates springdoc-openapi-starter-webmvc-ui from 3.1.1 to 3.2.0.
+The upstream release is built against Boot 4.1.2; this service retains its
+existing Boot 4.0.8 parent and managed dependency overrides. Compatibility
+is checked against this application's actual configuration: the original
+PR head passed OpenApiContractDiffTest with zero skips in both unit and
+integration jobs, exercising generated API documentation against the
+authoritative pinned YAML. Redis integration, coverage, and container
+security checks also passed. This is application-specific evidence, not
+a claim that upstream's build matrix includes Boot 4.0 for SpringDoc 3.2.
+No DTOs, application behavior, or protocol YAML are changed. The same
+checks must pass on the audited head before merge, with coverage gates intact.
+
 ## 2026-11-03 — PR #292 Docker login action review
 
 Updates both release-workflow GHCR login steps from docker/login-action
