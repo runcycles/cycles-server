@@ -14,6 +14,19 @@ a claim that upstream's build matrix includes Boot 4.0 for SpringDoc 3.2.
 No DTOs, application behavior, or protocol YAML are changed. The same
 checks must pass on the audited head before merge, with coverage gates intact.
 
+## 2026-11-03 — PR #292 Docker login action review
+
+Updates both release-workflow GHCR login steps from docker/login-action
+4.6.0 to 4.7.0, pinned to the verified upstream release commit
+`81c6f93d4bc991e510b342a00b419b3bb4efc5c6`. Registry, actor, token inputs,
+workflow permissions, and the action's Node 24 runtime are unchanged.
+Reviewed the upstream release and source changes, including scoped registry
+path normalization and ECR input normalization. Both calls use `ghcr.io`
+without a scope override. No application code or YAML contract changes.
+Refreshes the branch with current main, including JaCoCo 0.8.16. Unit,
+contract, Redis integration, coverage, and required security checks must
+pass on the audited head before merge; no coverage threshold is lowered.
+
 ## 2026-10-19 — Dependabot dependency review
 
 Consolidates the following reviewed updates on current main:
