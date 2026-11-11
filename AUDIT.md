@@ -1,5 +1,11 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-11-11 - Dependabot dependency review
+
+Combines PRs #296 (setup-java 6.2.0) and #295 (docker/login-action 4.8.0). Both pins match upstream release commits. Temurin Java 21, GHCR inputs, workflow permissions, and nightly test selections are preserved.
+
+Includes current main. Application source and authoritative YAML contracts are unchanged. Existing test, coverage (at least 95% lines), conformance, and security gates remain enabled and must pass before merge.
+
 ## 2026-11-03 — PR #293 SpringDoc dependency review
 
 Updates springdoc-openapi-starter-webmvc-ui from 3.1.1 to 3.2.0.
