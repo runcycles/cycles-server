@@ -58,7 +58,7 @@ This pulls the latest image from `ghcr.io/runcycles/cycles-server`.
 
 ### Manual build
 
-**Prerequisites:** Java 21+, Maven, Docker (for Redis)
+**Prerequisites:** Java 21+, Maven 3.9+, Docker (for Redis)
 
 ```bash
 # 1. Start Redis
