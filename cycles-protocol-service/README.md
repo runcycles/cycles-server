@@ -64,7 +64,7 @@ endpoints require `X-Admin-API-Key`.
 
 ### Manual build
 
-**Prerequisites:** Java 21+, Maven, Docker (for Redis)
+**Prerequisites:** Java 21+, Maven 3.9+, Docker (for Redis)
 
 ```bash
 # 1. Start Redis

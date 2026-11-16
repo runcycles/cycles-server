@@ -1,5 +1,14 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-11-16 — Flatten plugin maintenance (PR #298)
+
+Updates flatten-maven-plugin from 1.8.0 to 1.9.0, retaining
+`resolveCiFriendliesOnly` and the existing lifecycle bindings. Local builds
+now require Maven 3.9+ as declared by the plugin; the setup documentation
+records that requirement. Runtime code and authoritative YAML contracts are
+unchanged. Unit/contract tests, real Redis integration, the existing 95%
+coverage gates, and container security checks must pass before merge.
+
 ## 2026-11-11 - Dependabot dependency review
 
 Combines PRs #296 (setup-java 6.2.0) and #295 (docker/login-action 4.8.0). Both pins match upstream release commits. Temurin Java 21, GHCR inputs, workflow permissions, and nightly test selections are preserved.
