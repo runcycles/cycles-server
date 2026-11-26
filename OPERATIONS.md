@@ -311,6 +311,8 @@ sum(rate(cycles_reservations_release_total{actor_type="admin_on_behalf_of"}[5m])
 sum by (tenant) (rate(cycles_reservations_expired_total[5m]))
 ```
 
+After a tenant closes, admin GET can show an `ACTIVE` reservation until its stored expiry plus grace and the next sweep that reaches it. Each tick scans up to 20,000 candidates by default, advancing past rows still in grace. The sweeper records `RELEASED` with reason `tenant_closed`, keeps closed budget snapshots intact and refunds outstanding holds. These releases do not increment the expiry or quarantine counters.
+
 **Row 5 — Latency (from Spring Boot auto-metrics):**
 ```promql
 histogram_quantile(0.99, sum by (le, uri) (rate(http_server_requests_seconds_bucket[1m])))
@@ -458,6 +460,8 @@ don't fit.
 | `cycles.events.emit.queue-capacity` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, the API drops only the event side effect and logs a structured warning instead of growing heap without limit. |
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
+| `cycles.expiry.max-batches-per-sweep` | `20` | Maximum batches of 1,000 candidates per tick. Raise to clear larger backlogs when Redis has capacity. |
+| `cycles.decisions.emit-tenant-suspended-reason` | `false` | Enable after every replica sharing Redis runs v0.1.25.60 or later. This adds `TENANT_SUSPENDED` to suspended dry-run and decision denials. Before rolling back to v0.1.25.59, disable on every replica and allow 24 hours for earlier idempotency responses to expire. |
 | `cycles.balances.use-governance-index` | `false` | Enable when every existing budget is in its tenant's `budgets:<tenant>` set and every writer maintains it. Leave disabled for mixed or externally seeded deployments. |
 | `spring.task.scheduling.pool.size` | `4` | Bounded workers for expiry plus audit, event, and index maintenance. Keep at least `2`; production can override with `CYCLES_SCHEDULER_POOL_SIZE`. |
 | `cycles.maintenance.lease-ttl-ms` | `30000` | Per-job Redis coordination lease. Raise only when Redis/client pauses can approach 30 seconds; override with `CYCLES_MAINTENANCE_LEASE_TTL_MS`. |

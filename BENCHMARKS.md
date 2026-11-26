@@ -233,7 +233,9 @@ These fan-out cells ran inside one warmed suite process per trial. They are not
 comparable with the fresh-process v0.1.25.59 matrix above, which started a new
 Maven, Spring, and Testcontainers process for every cell.
 
-**Assessment:** no metric approaches the 25% release threshold. Reserve and
+The nine workstation deltas shown against v0.1.25.55 are below 25% in
+magnitude. The release workflow compares CI results, including 200-client
+throughput, against the rolling median of prior CI runs. Reserve and
 commit p50 are 9–13% above the v0.1.25.55 record, but the comparison is
 unpaired and the per-trial spread is of similar size (commit p50 ranged
 12.0–14.8ms, reserve p50 14.6–16.0ms), so this run cannot attribute the

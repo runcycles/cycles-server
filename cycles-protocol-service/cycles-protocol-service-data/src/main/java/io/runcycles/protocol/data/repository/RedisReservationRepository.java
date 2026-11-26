@@ -322,6 +322,17 @@ public class RedisReservationRepository {
         return null;
     }
 
+    @Value("${cycles.decisions.emit-tenant-suspended-reason:false}")
+    private boolean emitTenantSuspendedReason;
+
+    /** Older replicas deserialize the shared replay body using a closed Java enum. */
+    private Enums.ReasonCode wireTenantReason(Enums.ReasonCode reason) {
+        if (reason == Enums.ReasonCode.TENANT_SUSPENDED && !emitTenantSuspendedReason) {
+            return null;
+        }
+        return reason;
+    }
+
     private static String idempotencyCacheKey(String kind, String tenant, String idempotencyKey) {
         return "idem:" + tenant + ":" + kind + ":" + idempotencyKey;
     }
@@ -911,7 +922,7 @@ public class RedisReservationRepository {
             if (tenantGate != null) {
                 return DryRunResult.fresh(ReservationCreateResponse.builder()
                     .decision(Enums.DecisionEnum.DENY)
-                    .reasonCode(tenantGate)
+                    .reasonCode(wireTenantReason(tenantGate))
                     .affectedScopes(affectedScopes)
                     .scopePath(scopePath)
                     .build(), dryRunClaimKey, dryRunClaimMarker);
@@ -1936,7 +1947,7 @@ public class RedisReservationRepository {
         if (tenantGate != null) {
             return DecisionResponse.builder()
                 .decision(Enums.DecisionEnum.DENY)
-                .reasonCode(tenantGate)
+                .reasonCode(wireTenantReason(tenantGate))
                 .affectedScopes(affectedScopes)
                 .build();
         }

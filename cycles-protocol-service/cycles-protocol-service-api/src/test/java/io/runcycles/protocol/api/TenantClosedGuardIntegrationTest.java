@@ -2,6 +2,7 @@ package io.runcycles.protocol.api;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
+import io.runcycles.protocol.data.service.ReservationExpiryService;
 import io.runcycles.protocol.model.Action;
 import io.runcycles.protocol.model.Amount;
 import io.runcycles.protocol.model.CommitRequest;
@@ -85,6 +86,9 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private RedisReservationRepository reservationRepository;
+
+    @Autowired
+    private ReservationExpiryService expiryService;
 
     /** Plain client without the contract-validating interceptor — see class javadoc. */
     private final TestRestTemplate rawClient = new TestRestTemplate();
@@ -410,6 +414,26 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
     @Nested
     @DisplayName("HTTP surface on a CLOSED tenant")
     class HttpSurface {
+
+        @Test
+        void adminCanReadCascadeReleasedReservationAfterSweep() {
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            String id = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
+            seedTenantWithStatus(TENANT_A, "CLOSED");
+            try (Jedis jedis = jedisPool.getResource()) {
+                String ledger = "budget:tenant:" + TENANT_A + ":TOKENS";
+                jedis.hincrBy(ledger, "remaining", 100);
+                jedis.hset(ledger, Map.of("reserved", "0", "status", "CLOSED"));
+            }
+            expireReservationInRedis(id, System.currentTimeMillis() - 10_000);
+            expiryService.expireReservations();
+
+            ResponseEntity<Map> response = restTemplate.exchange(baseUrl() + "/v1/reservations/" + id,
+                    HttpMethod.GET, new HttpEntity<>(adminHeaders()), Map.class);
+            assertThat(response.getStatusCode().value()).isEqualTo(200);
+            assertThat(response.getBody()).containsEntry("status", "RELEASED");
+            assertThat(((Number) response.getBody().get("finalized_at_ms")).longValue()).isPositive();
+        }
 
         @Test
         void adminRelease_onClosedTenant_now409TenantClosed() {
@@ -979,17 +1003,20 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
             assertThat(reservationRepository.createReservation(dryRunRequest(100), TENANT_A)
                     .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
 
-            // A live reserve is refused for a SUSPENDED tenant, so the as-if-live
-            // evaluations answer DENY / TENANT_SUSPENDED (reason_code is an open string).
+            Map<String, Object> dryRun = reservationBody(TENANT_A, 100);
+            dryRun.put("dry_run", true);
+            Map<String, Object> decision = decisionBody(TENANT_A, 100);
             seedTenantWithStatus(TENANT_A, "SUSPENDED");
-            ReservationCreateResponse dryRun =
-                    reservationRepository.createReservation(dryRunRequest(100), TENANT_A);
-            assertThat(dryRun.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(dryRun.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
-            io.runcycles.protocol.model.DecisionResponse decision =
-                    reservationRepository.decide(decisionRequest(100), TENANT_A);
-            assertThat(decision.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
-            assertThat(decision.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
+            Map dryRunBody = post("/v1/reservations", API_KEY_SECRET_A, dryRun).getBody();
+            Map decisionResult = post("/v1/decide", API_KEY_SECRET_A, decision).getBody();
+            for (Map body : java.util.List.of(dryRunBody, decisionResult)) {
+                assertThat(body).containsEntry("decision", "DENY").containsKey("cycles_evidence")
+                        .doesNotContainKey("reason_code");
+            }
+
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            assertThat(post("/v1/reservations", API_KEY_SECRET_A, dryRun).getBody()).isEqualTo(dryRunBody);
+            assertThat(post("/v1/decide", API_KEY_SECRET_A, decision).getBody()).isEqualTo(decisionResult);
         }
     }
 

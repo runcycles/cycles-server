@@ -30,7 +30,8 @@ import java.util.Map;
  * is in the past, then invokes expire.lua per reservation, which:
  *   1. Checks the reservation is still ACTIVE and past expires_at + grace_ms.
  *   2. Releases reserved budget back to all affected scopes.
- *   3. Sets state = EXPIRED and removes the entry from reservation:ttl.
+ *   3. Marks the reservation RELEASED for a CLOSED tenant or EXPIRED otherwise,
+ *      then removes the entry from reservation:ttl.
  */
 @Service
 public class ReservationExpiryService {
@@ -85,6 +86,7 @@ public class ReservationExpiryService {
             // trace context defaults to not-inbound-W3C with trace-flags=01.
             TraceContext batchTrace = null;
             int batches = Math.max(1, maxBatchesPerSweep);
+            int retained = 0;
             for (int batch = 0; batch < batches; batch++) {
                 // Use Redis TIME (not System.currentTimeMillis) so the candidate query is
                 // consistent with the Lua scripts, which all use Redis TIME internally.
@@ -94,7 +96,7 @@ public class ReservationExpiryService {
 
                 // Fetch up to SWEEP_BATCH_SIZE reservation IDs whose score (expires_at_ms) <= now.
                 // Any that are still in their grace period will be skipped by the Lua script.
-                List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now, 0, SWEEP_BATCH_SIZE);
+                List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now, retained, SWEEP_BATCH_SIZE);
                 if (candidates.isEmpty()) return;
 
                 LOG.debug("Expiry sweep: {} candidate(s)", candidates.size());
@@ -103,10 +105,11 @@ public class ReservationExpiryService {
                 }
 
                 int removed = sweepBatch(jedis, candidates, batchTrace);
-                // Keep draining only while the batch was full AND made progress. Candidates
-                // that stay in reservation:ttl (still in grace, or a script failure) would
-                // otherwise be re-fetched in a tight loop.
-                if (candidates.size() < SWEEP_BATCH_SIZE || removed == 0) return;
+                if (candidates.size() < SWEEP_BATCH_SIZE) return;
+                // Removed entries no longer occupy a rank. Skip the entries still in
+                // grace or awaiting retry. Each new sweep starts at rank zero, including
+                // after concurrent commits or extensions change ranks between batches.
+                retained += candidates.size() - removed;
             }
         }
     }

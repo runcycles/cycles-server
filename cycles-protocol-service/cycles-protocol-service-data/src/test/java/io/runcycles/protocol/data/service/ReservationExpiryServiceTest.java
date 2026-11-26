@@ -337,9 +337,7 @@ class ReservationExpiryServiceTest {
     }
 
     @Test
-    void shouldStopDrainingWhenFullBatchMakesNoProgress() {
-        // Every candidate is still in its grace period: nothing leaves reservation:ttl,
-        // so re-querying would return the same 1000 ids in a tight loop.
+    void shouldAdvancePastFullBatchStillInGrace() {
         when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
                 .thenReturn(fullBatch("g"));
         when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
@@ -347,7 +345,28 @@ class ReservationExpiryServiceTest {
 
         service.expireReservations();
 
-        verify(jedis, times(1)).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000));
+        verify(jedis).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(1000), eq(1000));
+        verify(luaScripts, times(1000)).eval(eq(jedis), eq("expire"), anyString(), anyString());
+    }
+
+    @Test
+    void shouldReachTailAfterMixedBatchWithoutRecheckingGraceEntries() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(fullBatch("id"));
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(999), eq(1000)))
+                .thenReturn(List.of("tail"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
+                .thenReturn("{\"status\":\"SKIP\",\"reason\":\"in_grace_period\"}");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("id999")))
+                .thenReturn("{\"status\":\"RELEASED\"}");
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), eq("tail")))
+                .thenReturn("{\"status\":\"NOT_FOUND\"}");
+
+        service.expireReservations();
+
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("tail"));
+        verify(luaScripts, times(1001)).eval(eq(jedis), eq("expire"), anyString(), anyString());
+        verifyNoInteractions(eventEmitter, metrics);
     }
 
     @Test

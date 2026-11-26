@@ -1,5 +1,5 @@
 -- Cycles Protocol v0.1.24 - Expire Reservation Lua Script
--- Atomically marks an ACTIVE reservation as EXPIRED and releases its reserved budget.
+-- Finalizes a due ACTIVE reservation and refunds any outstanding budget holds.
 -- Only fires if the reservation is past expires_at + grace_ms.
 -- Called by the background expiry job per reservation_id.
 
@@ -55,7 +55,7 @@ end
 
 -- Past grace period: release reserved budget back to all scopes.
 -- Fetch remaining fields in one round-trip
-local detail = redis.call('HMGET', key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
+local detail = redis.call('HMGET', key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes', 'tenant')
 local estimate_amount      = normalize_int(detail[1])
 local estimate_unit        = detail[2]
 local affected_scopes_json = detail[3]
@@ -115,16 +115,39 @@ for _, scope in ipairs(affected_scopes) do
         table.insert(refund_keys, budget_key)
     end
 end
+-- Determine the terminal state before mutating any ledger. A budget can close
+-- independently; only the owning tenant's CLOSED status identifies a cascade.
+local terminal_state = "EXPIRED"
+local owner = detail[5]
+if owner and owner ~= "" then
+    local tenant_json = redis.call('GET', 'tenant:' .. owner)
+    if tenant_json then
+        local tenant = cjson.decode(tenant_json)
+        if type(tenant) ~= "table" then
+            return redis.error_reply("Malformed tenant record during settlement")
+        end
+        if tenant.status == "CLOSED" then
+            terminal_state = "RELEASED"
+        elseif tenant.status ~= "ACTIVE" and tenant.status ~= "SUSPENDED" then
+            return redis.error_reply("Malformed tenant status during settlement")
+        end
+    end
+end
+
 for _, budget_key in ipairs(refund_keys) do
     redis.call('HINCRBY', budget_key, 'reserved',  negate_int(estimate_amount))
     redis.call('HINCRBY', budget_key, 'remaining',  estimate_amount)
 end
 
 -- Reuse `now` from earlier TIME call (Redis is single-threaded during script execution)
-redis.call('HMSET', key, 'state', 'EXPIRED', 'expired_at', now)
+if terminal_state == "RELEASED" then
+    redis.call('HSET', key, 'state', terminal_state, 'released_at', now, 'release_reason', 'tenant_closed')
+else
+    redis.call('HSET', key, 'state', terminal_state, 'expired_at', now)
+end
 redis.call('ZREM', 'reservation:ttl', reservation_id)
 
--- Set 30-day TTL on expired reservation hash (audit trail, then auto-cleanup)
+-- Retain the terminal reservation hash for the 30-day audit window.
 redis.call('PEXPIRE', key, 2592000000)
 
-return cjson.encode({status = "EXPIRED"})
+return cjson.encode({status = terminal_state})

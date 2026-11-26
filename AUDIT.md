@@ -2,13 +2,13 @@
 
 ## 2026-11-26 — Server review fixes (bugs, spec compliance, performance)
 
-**Suspended tenants.** A suspended tenant can read, commit and release. Fresh reserve, extend and event requests return 403 `FORBIDDEN`. A prior successful extension remains replayable. Dry runs and decisions return DENY with `TENANT_SUSPENDED`. Authentication returns 500 for a present record with an invalid status.
+**Suspended tenants.** A suspended tenant can read, commit and release. Fresh reserve, extend and event requests return 403 `FORBIDDEN`. A prior successful extension remains replayable. Dry runs and decisions return `DENY`. The optional `TENANT_SUSPENDED` reason is disabled by default so v0.1.25.59 replicas can deserialize shared idempotency responses. Authentication returns 500 for a present record with an invalid status.
 
 **API-key permissions.** Controllers enforce the governance `Permission` values (`reservations:create|commit|release|extend|list`, `balances:read`; `admin:read` satisfies `*:read`) with 403; `/decide` needs `reservations:create`, `/events` needs create + commit. Kill switch: `cycles.auth.enforce-permissions=false`. `scope_filter` is still not enforced.
 
 **Error mapping.** Spring MVC client errors (unknown path, 405, 415, missing/mistyped parameter) return their 4xx instead of 500; a key-store outage during auth returns 500 `INTERNAL_ERROR` instead of 401.
 
-**Expiry.** The admin tenant-close cascade credits each budget's outstanding holds when it marks that ledger CLOSED. At expiry, the runtime preserves those snapshots and refunds the reservation's estimate only at scopes that still hold it. The script validates all ledgers before applying any credit, including when the cascade has closed only some scopes. Insufficient reserved funds on an open budget still trigger `CORRUPT_BUDGET`. The sweeper drains up to `cycles.expiry.max-batches-per-sweep` (default 20) full batches per tick.
+**Expiry.** The admin tenant-close cascade credits each budget's outstanding holds when it marks that ledger CLOSED. After expiry plus grace, the runtime validates every scope, preserves closed ledger snapshots and refunds scopes still holding funds. An open ledger with insufficient reserved funds triggers `CORRUPT_BUDGET` before any credit. If the owning tenant is CLOSED, the reservation transitions to `RELEASED` with `release_reason=tenant_closed` and a release timestamp. Admin GET can read the finalized row. Ordinary expiry still records `EXPIRED`. Within a tick the sweeper advances past retained candidates, up to `cycles.expiry.max-batches-per-sweep` batches (default 20).
 
 **Events.** `reservation.denied` is emitted for live 409 reserve denials and uses the deepest scope on `/decide`; `budget.exhausted` fires when remaining crosses below zero; event balance events carry the resolved overage policy.
 
