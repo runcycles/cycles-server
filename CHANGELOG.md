@@ -18,7 +18,7 @@ called out but are not breaking to API clients.
 
 - Suspended tenants can read and settle existing reservations. Fresh reserves, extensions and direct-debit events return 403. A retry of a successful extension retains its original expiry.
 - Runtime endpoints now enforce API-key permissions. Deployments migrating older keys can temporarily set `cycles.auth.enforce-permissions=false`. Malformed tenant records and unavailable key storage return 500.
-- Expiry validates all held amounts before refunding any scope and can drain multiple batches per sweep.
+- Reservations expire normally after tenant close. Expiry preserves balances already settled by the close cascade, validates outstanding holds before refunding them, and can drain multiple batches per sweep.
 - Balance queries retain externally seeded budgets and skip unreadable rows. Deployments where governance indexes every budget can enable faster tenant-scoped reads with `cycles.balances.use-governance-index=true`.
 - Live budget denials emit `reservation.denied`. Overdraft crossings emit `budget.exhausted`, and direct-debit balance events report the applied overage policy. Framework client errors now carry their HTTP 4xx status.
 

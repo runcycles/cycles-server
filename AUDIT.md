@@ -8,7 +8,7 @@
 
 **Error mapping.** Spring MVC client errors (unknown path, 405, 415, missing/mistyped parameter) return their 4xx instead of 500; a key-store outage during auth returns 500 `INTERNAL_ERROR` instead of 401.
 
-**Expiry.** Before any refund, `expire.lua` checks each distinct scope for a ledger with canonical int64 counters, enough reserved funds and room for the credit. Invalid ledgers are quarantined as `CORRUPT_BUDGET`. The sweeper drains up to `cycles.expiry.max-batches-per-sweep` (default 20) full batches per tick.
+**Expiry.** The admin tenant-close cascade credits each budget's outstanding holds when it marks that ledger CLOSED. At expiry, the runtime preserves those snapshots and refunds the reservation's estimate only at scopes that still hold it. The script validates all ledgers before applying any credit, including when the cascade has closed only some scopes. Insufficient reserved funds on an open budget still trigger `CORRUPT_BUDGET`. The sweeper drains up to `cycles.expiry.max-batches-per-sweep` (default 20) full batches per tick.
 
 **Events.** `reservation.denied` is emitted for live 409 reserve denials and uses the deepest scope on `/decide`; `budget.exhausted` fires when remaining crosses below zero; event balance events carry the resolved overage policy.
 

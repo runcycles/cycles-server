@@ -62,7 +62,10 @@ local affected_scopes_json = detail[3]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
 local budgeted_scopes_json = detail[4]
 
+local MAX_INT64 = "9223372036854775807"
+local MIN_INT64 = "-9223372036854775808"
 if not estimate_amount or compare_int(estimate_amount, "0") < 0
+   or compare_int(estimate_amount, MAX_INT64) > 0
    or not estimate_unit or estimate_unit == "" then
     return quarantine("INVALID_ESTIMATE", "Reservation has invalid estimate data")
 end
@@ -87,28 +90,32 @@ end
 -- (wrong key type, non-integer field, int64 overflow) would leave scopes
 -- 1..N-1 released while the reservation stays ACTIVE in reservation:ttl —
 -- and the sweeper would re-apply that partial release on every pass.
-local MAX_INT64 = "9223372036854775807"
-local MIN_INT64 = "-9223372036854775808"
+local refund_keys = {}
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
-    local bvals = redis.pcall('HMGET', budget_key, 'reserved', 'remaining')
+    local bvals = redis.pcall('HMGET', budget_key, 'reserved', 'remaining', 'status')
     if type(bvals) ~= "table" or bvals.err then
         return quarantine("CORRUPT_BUDGET", "Reservation budget row is not a hash")
     end
     local b_reserved, b_remaining = bvals[1], bvals[2]
+    -- The tenant-close cascade already credited every hold on a CLOSED budget.
+    -- Other scopes in the same reservation may still need their refund.
+    local refund = bvals[3] == "CLOSED" and "0" or estimate_amount
     -- HINCRBY parses the stored bytes strictly (including leading zeros and -0).
     -- Require both counters so a refund cannot create a missing ledger.
     if not b_reserved or not b_remaining
        or normalize_int(b_reserved) ~= b_reserved or normalize_int(b_remaining) ~= b_remaining
        or compare_int(b_reserved, MAX_INT64) > 0
-       or compare_int(b_reserved, estimate_amount) < 0
+       or compare_int(b_reserved, refund) < 0
        or compare_int(b_remaining, MIN_INT64) < 0
-       or compare_int(add_int(b_remaining, estimate_amount), MAX_INT64) > 0 then
+       or compare_int(add_int(b_remaining, refund), MAX_INT64) > 0 then
         return quarantine("CORRUPT_BUDGET", "Reservation budget row has invalid amounts")
     end
+    if refund ~= "0" then
+        table.insert(refund_keys, budget_key)
+    end
 end
-for _, scope in ipairs(affected_scopes) do
-    local budget_key = "budget:" .. scope .. ":" .. estimate_unit
+for _, budget_key in ipairs(refund_keys) do
     redis.call('HINCRBY', budget_key, 'reserved',  negate_int(estimate_amount))
     redis.call('HINCRBY', budget_key, 'remaining',  estimate_amount)
 end
