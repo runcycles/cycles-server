@@ -139,7 +139,107 @@ running them would only measure environmental noise. Skipped releases:
   counter increment. Fresh event, Redis, Lua, controller, and wire paths are
   unchanged. [benchmark-skip]
 
-Last benchmarked release: **v0.1.25.55**.
+Last benchmarked release: **v0.1.25.60**.
+
+---
+
+## v0.1.25.60 — Suspended-tenant guards, permissions, in-script ownership, expiry validation
+
+**Date:** 2026-11-26
+
+**Tag:** `v0.1.25.60` *(PR #301; tag after merge)*
+
+**Commit measured:** `2399262`
+
+**Environment:** Windows 11 Pro for Workstations, AMD Ryzen Threadripper 3990X
+64-Core, Java 21, Docker + Redis 7 (Testcontainers)
+
+**Method:** Median of three complete `mvn test -Pbenchmark` trials of the PR
+head. Every trial completed all 19 write, read, and concurrency cases with zero
+errors and zero ledger mismatches. The protocol YAML was provided through the
+validator's local-file override. The v0.1.25.55 column is that release's
+recorded median, not a same-day paired run, so deltas include four months of
+host and dependency drift.
+
+**Hot-path changes:** reserve and event Lua add one suspended-status comparison
+on the tenant record they already read. Commit, release and extend check
+reservation ownership inside the script, which removes the separate
+owner-lookup round-trip for tenant keys; `release.lua` reads its fields with
+one `HMGET`. Authentication uses one pooled connection instead of two.
+Controllers check API-key permissions in memory. `GET /v1/balances` was
+measured on its default SCAN path (`cycles.balances.use-governance-index` off);
+the index path has no benchmark here.
+
+### Comparison with the last benchmarked release
+
+| Metric | v0.1.25.55 median | v0.1.25.60 median | Delta |
+|---|---:|---:|---:|
+| Sorted list, 1k p50 | 17.0ms | 16.0ms | -5.9% |
+| Sorted list, 10k p50 | 17.6ms | 16.1ms | -8.5% |
+| Reserve p50 | 14.0ms | 15.3ms | +9.3% |
+| Reserve p99 | 18.6ms | 20.4ms | +9.7% |
+| Commit p50 | 12.6ms | 14.2ms | +12.7% |
+| Commit p99 | 20.3ms | 17.6ms | -13.3% |
+| Release p50 | 14.0ms | 14.5ms | +3.6% |
+| Event p50 | 13.6ms | 13.0ms | -4.4% |
+| 32-thread throughput | 794.2 ops/s | 780.2 ops/s | -1.8% |
+
+### Single-Threaded Write-Path Latency (three-run medians)
+
+| Operation | p50 | p95 | p99 |
+|---|---:|---:|---:|
+| Reserve | 15.3ms | 18.1ms | 20.4ms |
+| Commit | 14.2ms | 16.3ms | 17.6ms |
+| Release | 14.5ms | 16.9ms | 17.8ms |
+| Extend | 14.5ms | 16.8ms | 20.4ms |
+| Decide | 15.6ms | 19.0ms | 20.1ms |
+| Event | 13.0ms | 15.0ms | 16.8ms |
+| Reserve→Commit | 29.1ms | 33.1ms | 36.7ms |
+| Reserve→Release | 27.9ms | 34.2ms | 38.5ms |
+
+### Single-Threaded Read-Path Latency (three-run medians)
+
+| Operation | p50 | p95 | p99 |
+|---|---:|---:|---:|
+| GET reservation | 10.9ms | 13.4ms | 13.9ms |
+| GET balances | 13.3ms | 14.6ms | 16.5ms |
+| LIST reservations | 14.0ms | 15.7ms | 16.1ms |
+| LIST sorted @1k | 16.0ms | 18.5ms | 18.9ms |
+| LIST sorted @10k | 16.1ms | 19.4ms | 20.4ms |
+| Decide (pipelined) | 14.0ms | 17.5ms | 18.6ms |
+
+### Concurrent Throughput (Reserve + Commit lifecycle; three-run medians)
+
+| Threads | Throughput | p50 | p95 | p99 | Errors |
+|---:|---:|---:|---:|---:|---:|
+| 8 | 240.0 ops/s | 33.2ms | 37.0ms | 41.2ms | 0 |
+| 16 | 500.2 ops/s | 31.8ms | 36.6ms | 40.5ms | 0 |
+| 32 | 780.2 ops/s | 39.8ms | 47.5ms | 71.3ms | 0 |
+
+### Reserve fan-out, in-suite (three-run medians)
+
+| Clients | Budget shape | Throughput | p50 | p99 | Errors | Ledger mismatches |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | Shared tenant budget | 80.4 reserves/s | 12.3ms | 16.4ms | 0 | 0 |
+| 1 | Independent agent leaf budgets | 85.0 reserves/s | 11.6ms | 16.1ms | 0 | 0 |
+| 10 | Shared tenant budget | 667.8 reserves/s | 14.8ms | 18.7ms | 0 | 0 |
+| 10 | Independent agent leaf budgets | 661.8 reserves/s | 15.0ms | 19.1ms | 0 | 0 |
+| 50 | Shared tenant budget | 1,790.0 reserves/s | 27.9ms | 38.9ms | 0 | 0 |
+| 50 | Independent agent leaf budgets | 1,746.8 reserves/s | 27.9ms | 57.7ms | 0 | 0 |
+| 200 | Shared tenant budget | 1,624.2 reserves/s | 111.0ms | 360.9ms | 0 | 0 |
+| 200 | Independent agent leaf budgets | 1,687.8 reserves/s | 105.4ms | 351.8ms | 0 | 0 |
+
+These fan-out cells ran inside one warmed suite process per trial. They are not
+comparable with the fresh-process v0.1.25.59 matrix above, which started a new
+Maven, Spring, and Testcontainers process for every cell.
+
+**Assessment:** no metric approaches the 25% release threshold. Reserve and
+commit p50 are 9–13% above the v0.1.25.55 record, but the comparison is
+unpaired and the per-trial spread is of similar size (commit p50 ranged
+12.0–14.8ms, reserve p50 14.6–16.0ms), so this run cannot attribute the
+difference to the change. The removed owner-lookup round-trip does not show up
+as a measurable single-threaded gain on localhost Redis. A paired run against
+the v0.1.25.59 commit would be needed to make a directional claim.
 
 ---
 
