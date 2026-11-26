@@ -287,8 +287,7 @@ public class RedisReservationRepository {
      * INTERNAL_ERROR before any evidence is stamped: the server cannot attest
      * against corrupt governance state. Same whitelist as the Lua guards.
      *
-     * @return {@link Enums.ReasonCode#TENANT_CLOSED} when the owning tenant is
-     *         CLOSED (caller builds the 200-DENY), else {@code null} (proceed)
+     * @return the denial reason for a CLOSED or SUSPENDED tenant, or {@code null} to proceed
      */
     private Enums.ReasonCode evaluateTenantStatusGate(Jedis jedis, String tenant) {
         if (tenant == null || tenant.isBlank()) {
@@ -1681,14 +1680,11 @@ public class RedisReservationRepository {
         if (toolset != null) requiredSegments.add("toolset:" + toolset.toLowerCase());
 
         try (Jedis jedis = jedisPool.getResource()) {
-            // Preferred path: the governance plane maintains a per-tenant SET of budget keys
-            // ("budgets:<tenant>", SADD'ed atomically with budget creation). Reading it bounds
-            // the cost to THIS tenant's budgets instead of SCANning every tenant's keyspace.
-            // Fall back to the keyspace SCAN when the index is absent (runtime-only
-            // deployments) or when the caller is mid-pagination on a legacy SCAN cursor.
+            // Only governance writes the index. Deployments with external ledger writers
+            // need SCAN to see every budget. Keep in-flight cursors on their original path.
             String indexResumeKey = BudgetIndexCursor.decode(startCursor);
             boolean scanCursor = startCursor != null && !startCursor.isBlank() && indexResumeKey == null;
-            if (!scanCursor) {
+            if (indexResumeKey != null || (useGovernanceBudgetIndex && !scanCursor)) {
                 Set<String> indexed = jedis.smembers("budgets:" + tenant);
                 if (indexed != null && !indexed.isEmpty()) {
                     return getBalancesFromIndex(jedis, indexed, indexResumeKey, requiredSegments, limit);
@@ -1723,7 +1719,7 @@ public class RedisReservationRepository {
                     batchOffset = 0;
                     for (int i = startIndex; i < keys.size(); i++) {
                         String key = keys.get(i);
-                        Balance balance = toMatchingBalance(key, responses.get(key).get(), requiredSegments);
+                        Balance balance = toMatchingBalance(key, responses.get(key), requiredSegments);
                         if (balance == null) continue;
                         balances.add(balance);
 
@@ -1752,6 +1748,9 @@ public class RedisReservationRepository {
 
     private static final int BALANCE_INDEX_BATCH_SIZE = 100;
 
+    @Value("${cycles.balances.use-governance-index:false}")
+    private boolean useGovernanceBudgetIndex;
+
     /**
      * Page through one tenant's budgets using the governance-maintained key index. Keys are
      * ordered lexicographically and the cursor carries the last key returned (keyset
@@ -1777,7 +1776,7 @@ public class RedisReservationRepository {
 
             for (int i = 0; i < batch.size(); i++) {
                 String key = batch.get(i);
-                Balance balance = toMatchingBalance(key, responses.get(i).get(), requiredSegments);
+                Balance balance = toMatchingBalance(key, responses.get(i), requiredSegments);
                 if (balance == null) continue;
                 balances.add(balance);
                 if (balances.size() >= limit) {
@@ -1797,8 +1796,9 @@ public class RedisReservationRepository {
      * malformed, or does not carry every required scope segment. Segment checks are exact
      * (tenant "acme" must not match "tenant:acme-corp").
      */
-    private Balance toMatchingBalance(String key, Map<String, String> budget, List<String> requiredSegments) {
+    private Balance toMatchingBalance(String key, Response<Map<String, String>> row, List<String> requiredSegments) {
         try {
+            Map<String, String> budget = row.get();
             if (budget == null || budget.isEmpty()) return null;
 
             String trueScope = budget.get("scope");
@@ -2429,7 +2429,7 @@ public class RedisReservationRepository {
                 throw CyclesProtocolException.tenantClosed(closedTenant);
             case "TENANT_SUSPENDED":
                 // Governance tenant status SUSPENDED blocks NEW budget claims
-                // (reserve.lua / event.lua); commit/release/extend stay open.
+                // and extensions. Existing holds can still settle through commit or release.
                 String suspendedTenant = response.containsKey("tenant") ? response.get("tenant").toString() : "unknown";
                 throw CyclesProtocolException.tenantSuspended(suspendedTenant);
             case "FORBIDDEN":

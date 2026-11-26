@@ -75,13 +75,12 @@ public class CyclesProtocolException extends RuntimeException {
     }
     /**
      * Governance tenant status SUSPENDED ("Read-only, no new reservations"; existing
-     * active reservations can still commit/release). New budget claims - reserve and
-     * direct-debit events - are refused with 403 FORBIDDEN: the runtime ErrorCode enum
-     * has no dedicated suspended code, so the message carries the reason.
+     * reservations can still settle). New claims and fresh extensions return 403
+     * FORBIDDEN. The runtime ErrorCode enum has no dedicated suspended code.
      */
     public static CyclesProtocolException tenantSuspended(String tenantId) {
         return new CyclesProtocolException(Enums.ErrorCode.FORBIDDEN,
-            "Tenant " + tenantId + " is suspended; new reservations and events are blocked", 403);
+            "Tenant " + tenantId + " is suspended; new reservations, extensions and events are blocked", 403);
     }
     public static CyclesProtocolException reservationOwnedByAnotherTenant() {
         return new CyclesProtocolException(Enums.ErrorCode.FORBIDDEN,

@@ -89,13 +89,17 @@ public class ApiKeyRepository {
             // reservations", while "existing active reservations can still commit/release".
             // Rejecting the key would also block those commits/releases (and all reads), so
             // the suspended restriction is enforced where the operation is known:
-            // reserve.lua / event.lua refuse new budget claims, dry_run / decide answer DENY.
+            // reserve, event and extend refuse fresh mutations; dry_run and decide answer DENY.
             if (tenantData != null) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
                 Object tenantStatus = tenantMap.get("status");
                 if ("CLOSED".equals(tenantStatus)) {
                     return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_CLOSED").build();
+                }
+                if (!"ACTIVE".equals(tenantStatus) && !"SUSPENDED".equals(tenantStatus)) {
+                    LOG.error("API key validation failed: invalid tenant status");
+                    return internalError();
                 }
             }
             return ApiKeyValidationResponse.builder()

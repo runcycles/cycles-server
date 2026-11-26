@@ -35,7 +35,7 @@ auto-metrics (`http_server_requests_seconds`, `jvm_*`, `process_*`,
 | `cycles_reservations_release_total` | `tenant`, `actor_type`, `decision`, `reason` | Every release. `actor_type=tenant` vs `admin_on_behalf_of` (v0.1.25.8+). |
 | `cycles_reservations_extend_total` | `tenant`, `decision`, `reason` | Every extend attempt. `reason=RESERVATION_EXPIRED` when past `expires_at` (no grace honoured for extend). |
 | `cycles_reservations_expired_total` | `tenant` | Once per ACTIVE→EXPIRED transition. Grace-period skips and already-finalised candidates do **not** increment. |
-| `cycles_reservations_quarantined_total` | `tenant`, `reason` | Corrupt ACTIVE reservations removed from the bounded expiry queue without changing ledger state. Reasons are bounded: `INVALID_EXPIRY`, `INVALID_ESTIMATE`, `MISSING_SCOPES`, or `MALFORMED_SCOPES`. Any increase requires reconciliation of the reservation hash and its held budget. |
+| `cycles_reservations_quarantined_total` | `tenant`, `reason` | Counts corrupt ACTIVE reservations removed from the expiry queue. Reasons include `INVALID_EXPIRY`, `INVALID_ESTIMATE`, `MISSING_SCOPES`, `MALFORMED_SCOPES` and `CORRUPT_BUDGET`. Reconcile the reservation hash and its held budget when this increases. |
 
 ### Events
 
@@ -458,6 +458,7 @@ don't fit.
 | `cycles.events.emit.queue-capacity` | `10000` | Bounded in-process queue for non-blocking runtime event emission. When full, the API drops only the event side effect and logs a structured warning instead of growing heap without limit. |
 | `cycles.expiry.interval-ms` | `5000` | Lower for tighter sweep cadence on short-TTL reservations; raise if sweep work is measurable on Redis CPU. |
 | `cycles.expiry.initial-delay-ms` | `5000` | Mostly a test knob. Leave. |
+| `cycles.balances.use-governance-index` | `false` | Enable when every existing budget is in its tenant's `budgets:<tenant>` set and every writer maintains it. Leave disabled for mixed or externally seeded deployments. |
 | `spring.task.scheduling.pool.size` | `4` | Bounded workers for expiry plus audit, event, and index maintenance. Keep at least `2`; production can override with `CYCLES_SCHEDULER_POOL_SIZE`. |
 | `cycles.maintenance.lease-ttl-ms` | `30000` | Per-job Redis coordination lease. Raise only when Redis/client pauses can approach 30 seconds; override with `CYCLES_MAINTENANCE_LEASE_TTL_MS`. |
 | `cycles.maintenance.renew-interval-ms` | `10000` | Heartbeat for active maintenance leases. Must stay below the TTL; a value near one-third of the TTL leaves room for transient delay. Override with `CYCLES_MAINTENANCE_RENEW_INTERVAL_MS`. |

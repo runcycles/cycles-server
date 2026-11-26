@@ -14,6 +14,14 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.60] — 2026-11-26
+
+- Suspended tenants can read and settle existing reservations. Fresh reserves, extensions and direct-debit events return 403. A retry of a successful extension retains its original expiry.
+- Runtime endpoints now enforce API-key permissions. Deployments migrating older keys can temporarily set `cycles.auth.enforce-permissions=false`. Malformed tenant records and unavailable key storage return 500.
+- Expiry validates all held amounts before refunding any scope and can drain multiple batches per sweep.
+- Balance queries retain externally seeded budgets and skip unreadable rows. Deployments where governance indexes every budget can enable faster tenant-scoped reads with `cycles.balances.use-governance-index=true`.
+- Live budget denials emit `reservation.denied`. Overdraft crossings emit `budget.exhausted`, and direct-debit balance events report the applied overage policy. Framework client errors now carry their HTTP 4xx status.
+
 ## [0.1.25.59] — 2026-07-28
 
 ### Added

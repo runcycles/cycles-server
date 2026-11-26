@@ -332,7 +332,7 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"__missing__", "not-json", "{}", "[]", "[123]"})
+        @ValueSource(strings = {"__missing__", "not-json", "{}", "[]", "[123]", "[\"scope\",\"scope\"]"})
         void malformedScopesCannotFinalizeWithoutRefund(String corruptScopes)
                 throws Exception {
             try (Jedis jedis = jedisPool.getResource()) {
@@ -434,7 +434,9 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
     class CorruptBudgetRow {
 
         @ParameterizedTest
-        @ValueSource(strings = {"wrong-type", "non-integer-reserved", "non-integer-remaining"})
+        @ValueSource(strings = {"wrong-type", "non-integer-reserved", "non-integer-remaining",
+                "leading-zero", "negative-zero", "missing-ledger", "missing-remaining",
+                "insufficient-reserved", "refund-overflow"})
         void quarantinesWithoutTouchingAnyScope(String corruption) throws Exception {
             try (Jedis jedis = jedisPool.getResource()) {
                 long pastExpires = System.currentTimeMillis() - 10_000;
@@ -452,7 +454,14 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
                     case "wrong-type" -> jedis.set(childKey, "not-a-hash");
                     case "non-integer-reserved" ->
                             jedis.hset(childKey, Map.of("reserved", "abc", "remaining", "100"));
-                    default -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", "1.5e3"));
+                    case "non-integer-remaining" -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", "1.5e3"));
+                    case "leading-zero" -> jedis.hset(childKey, Map.of("reserved", "0500", "remaining", "100"));
+                    case "negative-zero" -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", "-0"));
+                    case "missing-ledger" -> assertThat(jedis.exists(childKey)).isFalse();
+                    case "missing-remaining" -> jedis.hset(childKey, "reserved", "500");
+                    case "insufficient-reserved" -> jedis.hset(childKey, Map.of("reserved", "499", "remaining", "100"));
+                    case "refund-overflow" -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", Long.toString(Long.MAX_VALUE)));
+                    default -> throw new AssertionError(corruption);
                 }
 
                 Map<String, Object> result = evalExpire(jedis, resId);
@@ -463,6 +472,9 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
                         .containsEntry("tenant", TENANT_A);
                 assertThat(jedis.hget(reservationKey, "state")).isEqualTo("ACTIVE");
                 assertThat(jedis.zscore("reservation:ttl", resId)).isNull();
+                if ("missing-ledger".equals(corruption)) {
+                    assertThat(jedis.exists(childKey)).isFalse();
+                }
                 assertThat(jedis.hgetAll("budget:" + parent + ":TOKENS"))
                         .as("healthy scope must not be partially released")
                         .containsEntry("reserved", "500")

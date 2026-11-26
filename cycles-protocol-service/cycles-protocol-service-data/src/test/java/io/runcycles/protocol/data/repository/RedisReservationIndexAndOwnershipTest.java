@@ -3,6 +3,7 @@ package io.runcycles.protocol.data.repository;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.support.BudgetIndexCursor;
 import io.runcycles.protocol.model.*;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -46,6 +47,11 @@ class RedisReservationIndexAndOwnershipTest extends BaseRedisReservationReposito
     @Nested
     @DisplayName("getBalances via budgets:<tenant> index")
     class IndexedBalances {
+
+        @BeforeEach
+        void enableGovernanceIndex() throws Exception {
+            setField("useGovernanceBudgetIndex", true);
+        }
 
         @Test
         void usesIndexInsteadOfKeyspaceScan() {

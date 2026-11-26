@@ -113,8 +113,7 @@ if tenant ~= nil and tenant ~= "" then
         -- Governance tenant status SUSPENDED: "Read-only, no new
         -- reservations ... existing active reservations can still
         -- commit/release". New budget claims (reserve, direct-debit event)
-        -- are rejected here; commit/release/extend scripts deliberately let
-        -- SUSPENDED through so in-flight work can still settle.
+        -- are rejected here. Existing reservations can still commit or release.
         if tenant_rec['status'] == 'SUSPENDED' then
             return cjson.encode({error = "TENANT_SUSPENDED", tenant = tenant})
         end

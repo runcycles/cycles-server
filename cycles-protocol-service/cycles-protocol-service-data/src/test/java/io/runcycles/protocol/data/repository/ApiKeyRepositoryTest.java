@@ -10,6 +10,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mindrot.jbcrypt.BCrypt;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -259,6 +261,23 @@ class ApiKeyRepositoryTest {
             // can still commit/release. The block is enforced per operation, not at auth.
             assertThat(result.isValid()).isTrue();
             assertThat(result.getTenantId()).isEqualTo("acme-corp");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "{}", "{\"status\":17}", "{\"status\":{}}", "{\"status\":\"UNKNOWN\"}"})
+        void unreadableTenantStatusReturnsInternalError(String tenantRecord) throws Exception {
+            stubJedis();
+            ApiKey key = ApiKey.builder().keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE).build();
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(key));
+            when(jedis.get("tenant:acme-corp")).thenReturn(tenantRecord);
+
+            ApiKeyValidationResponse result = repository.validate(secret);
+
+            assertThat(result.isValid()).isFalse();
+            assertThat(result.getReason()).isEqualTo(ApiKeyRepository.REASON_INTERNAL_ERROR);
         }
 
         @Test

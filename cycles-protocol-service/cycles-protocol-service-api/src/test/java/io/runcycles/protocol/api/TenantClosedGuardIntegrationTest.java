@@ -536,8 +536,20 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
             seedTenantWithStatus(TENANT_A, "ACTIVE");
             String toCommit = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
             String toRelease = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
+            String extendPath = "/v1/reservations/" + toCommit + "/extend";
+            Map<String, Object> originalExtend = extendBody(30000);
+            ResponseEntity<Map> first = postRaw(extendPath, API_KEY_SECRET_A, originalExtend);
+            assertThat(first.getStatusCode().value()).isEqualTo(200);
+            Map<String, String> extended = getReservationStateFromRedis(toCommit);
 
             seedTenantWithStatus(TENANT_A, "SUSPENDED");
+            ResponseEntity<Map> replay = postRaw(extendPath, API_KEY_SECRET_A, originalExtend);
+            assertThat(replay.getStatusCode().value()).isEqualTo(200);
+            assertThat(replay.getBody().get("expires_at_ms")).isEqualTo(first.getBody().get("expires_at_ms"));
+            ResponseEntity<Map> fresh = postRaw(extendPath, API_KEY_SECRET_A, extendBody(30000));
+            assertThat(fresh.getStatusCode().value()).isEqualTo(403);
+            assertThat(fresh.getBody().get("error")).isEqualTo("FORBIDDEN");
+            assertThat(getReservationStateFromRedis(toCommit)).isEqualTo(extended);
 
             // The key still authenticates (no 401): new reserve is refused with 403.
             ResponseEntity<Map> reserve = postRaw("/v1/reservations", API_KEY_SECRET_A,

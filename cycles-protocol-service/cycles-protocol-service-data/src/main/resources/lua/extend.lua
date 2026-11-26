@@ -88,7 +88,10 @@ if owner_tenant and owner_tenant ~= "" then
         if tenant_rec['status'] == 'CLOSED' then
             return cjson.encode({error = "TENANT_CLOSED", tenant = owner_tenant})
         end
-        if tenant_rec['status'] ~= 'ACTIVE' and tenant_rec['status'] ~= 'SUSPENDED' then
+        if tenant_rec['status'] == 'SUSPENDED' then
+            return cjson.encode({error = "TENANT_SUSPENDED", tenant = owner_tenant})
+        end
+        if tenant_rec['status'] ~= 'ACTIVE' then
             -- The governance TenantStatus enum is a closed set (ACTIVE|
             -- SUSPENDED|CLOSED) and the cascade revision explicitly
             -- introduces no new status values as a wire-compat guarantee,

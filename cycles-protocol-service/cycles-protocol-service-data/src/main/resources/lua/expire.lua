@@ -75,10 +75,12 @@ local scopes_ok, affected_scopes = pcall(cjson.decode, scopes_json)
 if not scopes_ok or type(affected_scopes) ~= "table" or #affected_scopes == 0 then
     return quarantine("MALFORMED_SCOPES", "Reservation has malformed scope data")
 end
+local seen_scopes = {}
 for _, scope in ipairs(affected_scopes) do
-    if type(scope) ~= "string" or scope == "" then
+    if type(scope) ~= "string" or scope == "" or seen_scopes[scope] then
         return quarantine("MALFORMED_SCOPES", "Reservation has malformed scope data")
     end
+    seen_scopes[scope] = true
 end
 -- Validate every budget row BEFORE the first mutation. Redis does not roll a
 -- script back when a later command errors, so a HINCRBY failure on scope N
@@ -93,11 +95,13 @@ for _, scope in ipairs(affected_scopes) do
     if type(bvals) ~= "table" or bvals.err then
         return quarantine("CORRUPT_BUDGET", "Reservation budget row is not a hash")
     end
-    local b_reserved = normalize_int(bvals[1] or "0")
-    local b_remaining = normalize_int(bvals[2] or "0")
+    local b_reserved, b_remaining = bvals[1], bvals[2]
+    -- HINCRBY parses the stored bytes strictly (including leading zeros and -0).
+    -- Require both counters so a refund cannot create a missing ledger.
     if not b_reserved or not b_remaining
+       or normalize_int(b_reserved) ~= b_reserved or normalize_int(b_remaining) ~= b_remaining
        or compare_int(b_reserved, MAX_INT64) > 0
-       or compare_int(subtract_int(b_reserved, estimate_amount), MIN_INT64) < 0
+       or compare_int(b_reserved, estimate_amount) < 0
        or compare_int(b_remaining, MIN_INT64) < 0
        or compare_int(add_int(b_remaining, estimate_amount), MAX_INT64) > 0 then
         return quarantine("CORRUPT_BUDGET", "Reservation budget row has invalid amounts")
