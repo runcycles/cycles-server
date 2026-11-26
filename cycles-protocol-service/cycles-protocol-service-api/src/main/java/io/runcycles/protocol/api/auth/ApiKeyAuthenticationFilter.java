@@ -3,6 +3,7 @@ package io.runcycles.protocol.api.auth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.api.filter.RequestIdFilter;
 import io.runcycles.protocol.api.filter.TraceContextFilter;
+import io.runcycles.protocol.data.repository.ApiKeyRepository;
 import io.runcycles.protocol.data.util.TraceIdGenerator;
 import io.runcycles.protocol.data.service.ApiKeyValidationService;
 import io.runcycles.protocol.model.Enums;
@@ -51,7 +52,8 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             String traceId = resolveTraceId(request);
             LOG.warn("API key authentication failed: reason=missing_api_key method={} path={} request_id={} trace_id={}",
                     safeLogValue(request.getMethod()), safeLogValue(request.getRequestURI()), requestId, traceId);
-            sendErrorResponse(response, "Missing API key", requestId, traceId);
+            sendErrorResponse(response, HttpServletResponse.SC_UNAUTHORIZED, Enums.ErrorCode.UNAUTHORIZED,
+                    "Missing API key", requestId, traceId);
             return;
         }
         ApiKeyValidationResponse result = apiKeyValidationService.isValid(apiKey);
@@ -62,7 +64,17 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
             LOG.warn("API key authentication failed: reason={} tenant={} key_id={} method={} path={} request_id={} trace_id={}",
                     safeLogValue(result.getReason()), safeLogValue(result.getTenantId()), safeLogValue(result.getKeyId()),
                     safeLogValue(request.getMethod()), safeLogValue(request.getRequestURI()), requestId, traceId);
-            sendErrorResponse(response, result.getReason(), requestId, traceId);
+            if (ApiKeyRepository.REASON_INTERNAL_ERROR.equals(result.getReason())) {
+                // The key could not be CHECKED (store unavailable / unreadable record) - that is
+                // a server fault, not a bad credential. 401 here would tell clients to stop
+                // retrying and to rotate a key that is in fact valid.
+                sendErrorResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                        Enums.ErrorCode.INTERNAL_ERROR, "Unable to validate API key; retry later",
+                        requestId, traceId);
+                return;
+            }
+            sendErrorResponse(response, HttpServletResponse.SC_UNAUTHORIZED, Enums.ErrorCode.UNAUTHORIZED,
+                    result.getReason(), requestId, traceId);
             return;
         }
 
@@ -119,9 +131,9 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         return value.toString().replace('\r', ' ').replace('\n', ' ');
     }
 
-    private void sendErrorResponse(HttpServletResponse response, String reason,
-                                   String requestId, String traceId) throws IOException {
-        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+    private void sendErrorResponse(HttpServletResponse response, int status, Enums.ErrorCode code,
+                                   String reason, String requestId, String traceId) throws IOException {
+        response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
 
@@ -133,7 +145,7 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
         }
 
         Map<String, Object> body = Map.of(
-                "error", Enums.ErrorCode.UNAUTHORIZED,
+                "error", code,
                 "message", reason,
                 "request_id", requestId,
                 "trace_id", traceId

@@ -428,4 +428,67 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
             }
         }
     }
+
+    @Nested
+    @DisplayName("C9 — a corrupt budget row never causes a partial release")
+    class CorruptBudgetRow {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"wrong-type", "non-integer-reserved", "non-integer-remaining"})
+        void quarantinesWithoutTouchingAnyScope(String corruption) throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String parent = "tenant:" + TENANT_A;
+                String child = parent + "/app:corrupt";
+                String resId = seedActiveReservation(jedis, 500, pastExpires, 0, parent, 500);
+                String reservationKey = "reservation:res_" + resId;
+                String scopes = "[\"" + parent + "\",\"" + child + "\"]";
+                jedis.hset(reservationKey, Map.of("affected_scopes", scopes, "budgeted_scopes", scopes));
+
+                // The SECOND scope is the broken one: without pre-validation the first
+                // scope would already have been released when the script failed.
+                String childKey = "budget:" + child + ":TOKENS";
+                switch (corruption) {
+                    case "wrong-type" -> jedis.set(childKey, "not-a-hash");
+                    case "non-integer-reserved" ->
+                            jedis.hset(childKey, Map.of("reserved", "abc", "remaining", "100"));
+                    default -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", "1.5e3"));
+                }
+
+                Map<String, Object> result = evalExpire(jedis, resId);
+
+                assertThat(result)
+                        .containsEntry("status", "ERROR")
+                        .containsEntry("quarantine_reason", "CORRUPT_BUDGET")
+                        .containsEntry("tenant", TENANT_A);
+                assertThat(jedis.hget(reservationKey, "state")).isEqualTo("ACTIVE");
+                assertThat(jedis.zscore("reservation:ttl", resId)).isNull();
+                assertThat(jedis.hgetAll("budget:" + parent + ":TOKENS"))
+                        .as("healthy scope must not be partially released")
+                        .containsEntry("reserved", "500")
+                        .containsEntry("remaining", "999500");
+            }
+        }
+
+        @Test
+        void healthyMultiScopeReservationStillReleasesEveryScope() throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String parent = "tenant:" + TENANT_A;
+                String child = parent + "/app:healthy";
+                String resId = seedActiveReservation(jedis, 500, pastExpires, 0, parent, 500);
+                String scopes = "[\"" + parent + "\",\"" + child + "\"]";
+                jedis.hset("reservation:res_" + resId,
+                        Map.of("affected_scopes", scopes, "budgeted_scopes", scopes));
+                jedis.hset("budget:" + child + ":TOKENS", Map.of("reserved", "500", "remaining", "1500"));
+
+                assertThat(evalExpire(jedis, resId)).containsEntry("status", "EXPIRED");
+
+                assertThat(jedis.hgetAll("budget:" + parent + ":TOKENS"))
+                        .containsEntry("reserved", "0").containsEntry("remaining", "1000000");
+                assertThat(jedis.hgetAll("budget:" + child + ":TOKENS"))
+                        .containsEntry("reserved", "0").containsEntry("remaining", "2000");
+            }
+        }
+    }
 }

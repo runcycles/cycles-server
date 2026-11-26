@@ -48,7 +48,7 @@ class RedisReservationBranchCoverageTest extends BaseRedisReservationRepositoryT
         when(jedis.get("tenant:suspended")).thenReturn("{\"status\":\"SUSPENDED\"}");
         when(jedis.get("tenant:closed")).thenReturn("{\"status\":\"CLOSED\"}");
         assertThat(invoke(gate, null, jedis, "active")).isNull();
-        assertThat(invoke(gate, null, jedis, "suspended")).isNull();
+        assertThat(invoke(gate, null, jedis, "suspended")).isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
         assertThat(invoke(gate, null, jedis, "closed")).isEqualTo(Enums.ReasonCode.TENANT_CLOSED);
     }
 

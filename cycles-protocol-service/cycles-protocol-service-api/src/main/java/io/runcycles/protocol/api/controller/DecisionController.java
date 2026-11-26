@@ -45,6 +45,8 @@ public class DecisionController extends BaseController {
         // Stash the parsed request so a budget-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
+        // /decide evaluates a would-be reservation, so it needs the same permission as reserve.
+        requirePermission(PERM_RESERVATIONS_CREATE);
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
@@ -56,8 +58,10 @@ public class DecisionController extends BaseController {
         try {
             // Idempotent replay: the original decision already emitted its event; don't re-emit.
             if (response.getDecision() == Enums.DecisionEnum.DENY && !response.isIdempotentReplay()) {
+                // Deepest derived scope (the canonical scope_path) - the same scope the
+                // reserve path reports, so one webhook scope_filter matches both.
                 String scope = response.getAffectedScopes() != null && !response.getAffectedScopes().isEmpty()
-                        ? response.getAffectedScopes().get(0) : null;
+                        ? response.getAffectedScopes().get(response.getAffectedScopes().size() - 1) : null;
                 Actor actor = buildActor(httpRequest);
                 Map<String, Object> actionMap = objectMapper.convertValue(request.getAction(),
                         new com.fasterxml.jackson.core.type.TypeReference<>() {});

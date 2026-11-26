@@ -196,4 +196,22 @@ class ApiKeyAuthenticationFilterTest {
         com.fasterxml.jackson.databind.JsonNode json = new ObjectMapper().readTree(body);
         assertThat(json.get("request_id").asText()).isEqualTo("req-from-filter");
     }
+
+    @Test
+    void shouldReturn500NotUnauthorizedWhenKeyStoreIsUnavailable() throws Exception {
+        // The key could not be checked - telling the client its (valid) key is bad would be wrong.
+        request.addHeader("X-Cycles-API-Key", "cyc_live_goodkey123456789");
+        when(apiKeyValidationService.isValid(anyString()))
+                .thenReturn(ApiKeyValidationResponse.builder()
+                        .valid(false).tenantId("").reason("INTERNAL_ERROR").build());
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(response.getStatus()).isEqualTo(500);
+        var body = new ObjectMapper().readTree(response.getContentAsString());
+        assertThat(body.get("error").asText()).isEqualTo("INTERNAL_ERROR");
+        assertThat(body.get("message").asText()).doesNotContain("INTERNAL_ERROR");
+        assertThat(body.get("request_id").asText()).isNotBlank();
+        verifyNoInteractions(filterChain);
+    }
 }

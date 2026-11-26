@@ -2,6 +2,7 @@ package io.runcycles.protocol.data.repository;
 
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.metrics.CyclesMetrics;
+import io.runcycles.protocol.data.repository.support.BudgetIndexCursor;
 import io.runcycles.protocol.data.repository.support.ReservationListQuery;
 import io.runcycles.protocol.data.repository.support.ScanPageCursor;
 import io.runcycles.protocol.data.service.EvidenceEmitter;
@@ -310,7 +311,12 @@ public class RedisReservationRepository {
         if ("CLOSED".equals(status)) {
             return Enums.ReasonCode.TENANT_CLOSED;
         }
-        if (!"ACTIVE".equals(status) && !"SUSPENDED".equals(status)) {
+        if ("SUSPENDED".equals(status)) {
+            // Governance: SUSPENDED = "no new reservations". The live reserve
+            // is rejected, so the as-if-live evaluation answers DENY.
+            return Enums.ReasonCode.TENANT_SUSPENDED;
+        }
+        if (!"ACTIVE".equals(status)) {
             throw new CyclesProtocolException(Enums.ErrorCode.INTERNAL_ERROR,
                 "Malformed tenant record: tenant:" + tenant, 500);
         }
@@ -1264,7 +1270,9 @@ public class RedisReservationRepository {
                 request.getIdempotencyKey() != null ? request.getIdempotencyKey() : "",
                 computePayloadHash(request),
                 request.getMetrics() != null ? objectMapper.writeValueAsString(request.getMetrics()) : "",
-                request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : ""
+                request.getMetadata() != null ? objectMapper.writeValueAsString(request.getMetadata()) : "",
+                // ARGV[8] = expected owner: commit.lua enforces reservation ownership (403)
+                tenant != null ? tenant : ""
             );
 
             Object result = luaScripts.eval(jedis, "commit", commitScript, args.toArray(new String[0]));
@@ -1414,7 +1422,9 @@ public class RedisReservationRepository {
                 preparedAudit != null ? preparedAudit.logId() : "",
                 preparedAudit != null ? preparedAudit.tenantId() : "",
                 preparedAudit != null ? String.valueOf(preparedAudit.ttlSeconds()) : "0",
-                preparedAudit != null ? String.valueOf(preparedAudit.score()) : "0"
+                preparedAudit != null ? String.valueOf(preparedAudit.score()) : "0",
+                // ARGV[9] = expected owner: release.lua enforces reservation ownership (403)
+                tenant != null ? tenant : ""
             );
 
             Object result = luaScripts.eval(jedis, "release", releaseScript, args.toArray(new String[0]));
@@ -1563,6 +1573,16 @@ public class RedisReservationRepository {
     }
 
     public ReservationDetail getReservationById(String reservationId) {
+        return getReservationById(reservationId, null);
+    }
+
+    /**
+     * @param expectedTenant the caller's effective tenant, or {@code null} to skip the
+     *                       ownership check (admin-on-behalf-of). A reservation owned by a
+     *                       different tenant is 403 FORBIDDEN, decided before the EXPIRED
+     *                       check so a foreign caller learns nothing about its state.
+     */
+    public ReservationDetail getReservationById(String reservationId, String expectedTenant) {
         try (Jedis jedis = jedisPool.getResource()) {
             String key = "reservation:res_" + reservationId;
             Map<String, String> fields = HashProjections.mapHashFields(
@@ -1570,6 +1590,9 @@ public class RedisReservationRepository {
                 jedis.hmget(key, reservationHashMapper.detailFieldArray()));
             if (fields == null || fields.isEmpty()) {
                 throw CyclesProtocolException.notFound(reservationId);
+            }
+            if (expectedTenant != null && !expectedTenant.equals(fields.get("tenant"))) {
+                throw CyclesProtocolException.reservationOwnedByAnotherTenant();
             }
             ReservationDetail detail = reservationHashMapper.buildDetail(fields);
             // Spec normative (line 52): "Expired reservations MUST return HTTP 410
@@ -1648,86 +1671,61 @@ public class RedisReservationRepository {
     public BalanceResponse getBalances(String tenant, String workspace, String app,
                                             String workflow, String agent, String toolset,
                                             boolean includeChildren, int limit, String startCursor) {
+        // Pre-lowercase filter params once (scope paths are already lowercased at creation)
+        List<String> requiredSegments = new ArrayList<>();
+        requiredSegments.add("tenant:" + tenant.toLowerCase());
+        if (workspace != null) requiredSegments.add("workspace:" + workspace.toLowerCase());
+        if (app != null) requiredSegments.add("app:" + app.toLowerCase());
+        if (workflow != null) requiredSegments.add("workflow:" + workflow.toLowerCase());
+        if (agent != null) requiredSegments.add("agent:" + agent.toLowerCase());
+        if (toolset != null) requiredSegments.add("toolset:" + toolset.toLowerCase());
+
         try (Jedis jedis = jedisPool.getResource()) {
+            // Preferred path: the governance plane maintains a per-tenant SET of budget keys
+            // ("budgets:<tenant>", SADD'ed atomically with budget creation). Reading it bounds
+            // the cost to THIS tenant's budgets instead of SCANning every tenant's keyspace.
+            // Fall back to the keyspace SCAN when the index is absent (runtime-only
+            // deployments) or when the caller is mid-pagination on a legacy SCAN cursor.
+            String indexResumeKey = BudgetIndexCursor.decode(startCursor);
+            boolean scanCursor = startCursor != null && !startCursor.isBlank() && indexResumeKey == null;
+            if (!scanCursor) {
+                Set<String> indexed = jedis.smembers("budgets:" + tenant);
+                if (indexed != null && !indexed.isEmpty()) {
+                    return getBalancesFromIndex(jedis, indexed, indexResumeKey, requiredSegments, limit);
+                }
+                if (indexResumeKey != null) {
+                    // Index vanished mid-pagination: nothing further to page through.
+                    return BalanceResponse.builder()
+                        .balances(new ArrayList<>()).hasMore(false).nextCursor(null).build();
+                }
+            }
+
             ScanParams params = new ScanParams().match("budget:*").count(100);
             List<Balance> balances = new ArrayList<>();
             ScanPageCursor pageCursor = ScanPageCursor.decode(startCursor);
             String cursor = pageCursor.redisCursor();
             int batchOffset = pageCursor.offset();
 
-            // Pre-lowercase filter params once (scope paths are already lowercased at creation)
-            String tenantSegment = "tenant:" + tenant.toLowerCase();
-            String workspaceSegment = workspace != null ? "workspace:" + workspace.toLowerCase() : null;
-            String appSegment = app != null ? "app:" + app.toLowerCase() : null;
-            String workflowSegment = workflow != null ? "workflow:" + workflow.toLowerCase() : null;
-            String agentSegment = agent != null ? "agent:" + agent.toLowerCase() : null;
-            String toolsetSegment = toolset != null ? "toolset:" + toolset.toLowerCase() : null;
-
             do {
                 ScanResult<String> scan = jedis.scan(cursor, params);
                 List<String> keys = scan.getResult();
 
                 if (!keys.isEmpty()) {
-                // Pipeline all hgetAll calls for this SCAN batch
-                Pipeline pipeline = jedis.pipelined();
-                Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
-                for (String key : keys) {
-                    responses.put(key, pipeline.hgetAll(key));
-                }
-                pipeline.sync();
+                    // Pipeline all hgetAll calls for this SCAN batch
+                    Pipeline pipeline = jedis.pipelined();
+                    Map<String, Response<Map<String, String>>> responses = new LinkedHashMap<>();
+                    for (String key : keys) {
+                        responses.put(key, pipeline.hgetAll(key));
+                    }
+                    pipeline.sync();
 
-                int startIndex = Math.min(batchOffset, keys.size());
-                batchOffset = 0;
-                for (int i = startIndex; i < keys.size(); i++) {
-                    String key = keys.get(i);
-                    try {
-                        Map<String, String> budget = responses.get(key).get();
-                        if (budget.isEmpty()) continue;
-
-                        String trueScope = budget.get("scope");
-                        if (trueScope == null) continue;
-                        // Normalize stored scope to lowercase for case-insensitive matching.
-                        // Admin API may have stored mixed-case values before normalization was added.
-                        trueScope = trueScope.toLowerCase();
-
-                        // Filter by tenant and optional subject fields.
-                        // Use exact segment boundary checks to avoid prefix false-positives
-                        // (e.g. tenant "acme" must not match "tenant:acme-corp").
-                        if (!ScopePathMatcher.hasExactSegment(trueScope, tenantSegment)) continue;
-                        if (workspaceSegment != null
-                                && !ScopePathMatcher.hasExactSegment(trueScope, workspaceSegment)) continue;
-                        if (appSegment != null
-                                && !ScopePathMatcher.hasExactSegment(trueScope, appSegment)) continue;
-                        if (workflowSegment != null
-                                && !ScopePathMatcher.hasExactSegment(trueScope, workflowSegment)) continue;
-                        if (agentSegment != null
-                                && !ScopePathMatcher.hasExactSegment(trueScope, agentSegment)) continue;
-                        if (toolsetSegment != null
-                                && !ScopePathMatcher.hasExactSegment(trueScope, toolsetSegment)) continue;
-
-                        String trueUnitsStr = budget.get("unit");
-                        Enums.UnitEnum unit = Enums.UnitEnum.valueOf(trueUnitsStr);
-
-                        long allocatedVal = Long.parseLong(budget.getOrDefault("allocated", "0"));
-                        long remainingVal = Long.parseLong(budget.getOrDefault("remaining", "0"));
-                        long reservedVal = Long.parseLong(budget.getOrDefault("reserved", "0"));
-                        long spentVal = Long.parseLong(budget.getOrDefault("spent", "0"));
-                        long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
-                        long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
-                        boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
-
-                        // spec: scope is the leaf identifier, scope_path is the full canonical path
-                        balances.add(Balance.builder()
-                            .scope(leafScope(trueScope))
-                            .scopePath(trueScope)
-                            .remaining(new SignedAmount(unit, remainingVal))
-                            .reserved(new Amount(unit, reservedVal))
-                            .spent(new Amount(unit, spentVal))
-                            .allocated(new Amount(unit, allocatedVal))
-                            .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
-                            .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
-                            .isOverLimit(isOverLimit ? true : null)
-                            .build());
+                    int startIndex = Math.min(batchOffset, keys.size());
+                    batchOffset = 0;
+                    for (int i = startIndex; i < keys.size(); i++) {
+                        String key = keys.get(i);
+                        Balance balance = toMatchingBalance(key, responses.get(key).get(), requiredSegments);
+                        if (balance == null) continue;
+                        balances.add(balance);
 
                         if (balances.size() >= limit) {
                             String nextCursor = ScanPageCursor.nextCursor(
@@ -1739,13 +1737,7 @@ public class RedisReservationRepository {
                                 .nextCursor(nextCursor)
                                 .build();
                         }
-
-                    } catch (IllegalArgumentException e) {
-                        LOG.warn("Invalid enum value in budget key: {}", LogSanitizer.sanitize(key), e);
-                    } catch (Exception e) {
-                        LOG.warn("Failed to parse budget: {}", LogSanitizer.sanitize(key), e);
                     }
-                }
                 }
                 cursor = scan.getCursor();
             } while (!"0".equals(cursor));
@@ -1756,6 +1748,96 @@ public class RedisReservationRepository {
                 .nextCursor(null)
                 .build();
         }
+    }
+
+    private static final int BALANCE_INDEX_BATCH_SIZE = 100;
+
+    /**
+     * Page through one tenant's budgets using the governance-maintained key index. Keys are
+     * ordered lexicographically and the cursor carries the last key returned (keyset
+     * pagination), so pages stay stable when budgets are added or removed between requests.
+     */
+    private BalanceResponse getBalancesFromIndex(Jedis jedis, Set<String> indexed, String resumeAfterKey,
+                                                 List<String> requiredSegments, int limit) {
+        List<String> keys = new ArrayList<>(indexed.size());
+        for (String key : indexed) {
+            if (resumeAfterKey == null || key.compareTo(resumeAfterKey) > 0) keys.add(key);
+        }
+        Collections.sort(keys);
+
+        List<Balance> balances = new ArrayList<>();
+        for (int from = 0; from < keys.size(); from += BALANCE_INDEX_BATCH_SIZE) {
+            List<String> batch = keys.subList(from, Math.min(from + BALANCE_INDEX_BATCH_SIZE, keys.size()));
+            Pipeline pipeline = jedis.pipelined();
+            List<Response<Map<String, String>>> responses = new ArrayList<>(batch.size());
+            for (String key : batch) {
+                responses.add(pipeline.hgetAll(key));
+            }
+            pipeline.sync();
+
+            for (int i = 0; i < batch.size(); i++) {
+                String key = batch.get(i);
+                Balance balance = toMatchingBalance(key, responses.get(i).get(), requiredSegments);
+                if (balance == null) continue;
+                balances.add(balance);
+                if (balances.size() >= limit) {
+                    boolean more = from + i + 1 < keys.size();
+                    String nextCursor = more ? BudgetIndexCursor.encode(key) : null;
+                    return BalanceResponse.builder()
+                        .balances(balances).hasMore(nextCursor != null).nextCursor(nextCursor).build();
+                }
+            }
+        }
+        return BalanceResponse.builder()
+            .balances(balances).hasMore(false).nextCursor(null).build();
+    }
+
+    /**
+     * Build the wire Balance for one budget hash, or {@code null} when the row is empty,
+     * malformed, or does not carry every required scope segment. Segment checks are exact
+     * (tenant "acme" must not match "tenant:acme-corp").
+     */
+    private Balance toMatchingBalance(String key, Map<String, String> budget, List<String> requiredSegments) {
+        try {
+            if (budget == null || budget.isEmpty()) return null;
+
+            String trueScope = budget.get("scope");
+            if (trueScope == null) return null;
+            // Normalize stored scope to lowercase for case-insensitive matching.
+            // Admin API may have stored mixed-case values before normalization was added.
+            trueScope = trueScope.toLowerCase();
+            for (String segment : requiredSegments) {
+                if (!ScopePathMatcher.hasExactSegment(trueScope, segment)) return null;
+            }
+
+            Enums.UnitEnum unit = Enums.UnitEnum.valueOf(budget.get("unit"));
+
+            long allocatedVal = Long.parseLong(budget.getOrDefault("allocated", "0"));
+            long remainingVal = Long.parseLong(budget.getOrDefault("remaining", "0"));
+            long reservedVal = Long.parseLong(budget.getOrDefault("reserved", "0"));
+            long spentVal = Long.parseLong(budget.getOrDefault("spent", "0"));
+            long debtVal = Long.parseLong(budget.getOrDefault("debt", "0"));
+            long overdraftLimitVal = Long.parseLong(budget.getOrDefault("overdraft_limit", "0"));
+            boolean isOverLimit = "true".equals(budget.getOrDefault("is_over_limit", "false"));
+
+            // spec: scope is the leaf identifier, scope_path is the full canonical path
+            return Balance.builder()
+                .scope(leafScope(trueScope))
+                .scopePath(trueScope)
+                .remaining(new SignedAmount(unit, remainingVal))
+                .reserved(new Amount(unit, reservedVal))
+                .spent(new Amount(unit, spentVal))
+                .allocated(new Amount(unit, allocatedVal))
+                .debt(debtVal > 0 ? new Amount(unit, debtVal) : null)
+                .overdraftLimit(overdraftLimitVal > 0 ? new Amount(unit, overdraftLimitVal) : null)
+                .isOverLimit(isOverLimit ? true : null)
+                .build();
+        } catch (IllegalArgumentException e) {
+            LOG.warn("Invalid enum value in budget key: {}", LogSanitizer.sanitize(key), e);
+        } catch (Exception e) {
+            LOG.warn("Failed to parse budget: {}", LogSanitizer.sanitize(key), e);
+        }
+        return null;
     }
 
     /** Back-compat overload (no trace context) — used by tests and any non-HTTP caller. */
@@ -2039,6 +2121,7 @@ public class RedisReservationRepository {
                 .charged(charged)
                 .balances(balances)
                 .idempotentReplay(idempotentReplay)
+                .overagePolicy(eventOveragePolicy)
                 .scopeDebtIncurred(scopeDebtIncurred)
                 .preRemaining(parsePreRemaining(response))
                 .preIsOverLimit(parsePreIsOverLimit(response))
@@ -2344,6 +2427,14 @@ public class RedisReservationRepository {
                 // (reserve/commit/release/extend .lua all return this token).
                 String closedTenant = response.containsKey("tenant") ? response.get("tenant").toString() : "unknown";
                 throw CyclesProtocolException.tenantClosed(closedTenant);
+            case "TENANT_SUSPENDED":
+                // Governance tenant status SUSPENDED blocks NEW budget claims
+                // (reserve.lua / event.lua); commit/release/extend stay open.
+                String suspendedTenant = response.containsKey("tenant") ? response.get("tenant").toString() : "unknown";
+                throw CyclesProtocolException.tenantSuspended(suspendedTenant);
+            case "FORBIDDEN":
+                // In-script reservation ownership check (commit/release/extend .lua).
+                throw CyclesProtocolException.reservationOwnedByAnotherTenant();
             case "IDEMPOTENCY_MISMATCH":
                 throw CyclesProtocolException.idempotencyMismatch();
             case "IDEMPOTENCY_PENDING":

@@ -29,6 +29,8 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 public class ApiKeyRepository {
     private static final Logger LOG = LoggerFactory.getLogger(ApiKeyRepository.class);
     private static final long BCRYPT_CACHE_TTL_MS = 60_000L; // 60 seconds
+    /** Validation could not be performed (store unavailable / unreadable record) - a server fault, not a bad key. */
+    public static final String REASON_INTERNAL_ERROR = "INTERNAL_ERROR";
     private static final ThreadLocal<MessageDigest> SHA256_DIGEST = ThreadLocal.withInitial(() -> {
         try {
             return MessageDigest.getInstance("SHA-256");
@@ -51,7 +53,10 @@ public class ApiKeyRepository {
         String prefix = null;
         try {
             prefix = extractPrefix(keySecret);
+            // One pooled connection for every read (lookup, key record, tenant status), and it
+            // is released BEFORE the BCrypt verification so a slow hash never pins the pool.
             ApiKey key;
+            String tenantData = null;
             try (Jedis jedis = jedisPool.getResource()) {
                 String keyId = jedis.get("apikey:lookup:" + prefix);
                 if (keyId == null) {
@@ -62,6 +67,9 @@ public class ApiKeyRepository {
                     return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_FOUND").build();
                 }
                 key = objectMapper.readValue(data, ApiKey.class);
+                if (key.getTenantId() != null && !key.getTenantId().isBlank()) {
+                    tenantData = jedis.get("tenant:" + key.getTenantId());
+                }
             }
 
             if (key.getStatus() != ApiKeyStatus.ACTIVE) {
@@ -76,18 +84,16 @@ public class ApiKeyRepository {
             if (key.getTenantId() == null || key.getTenantId().isBlank()){
                 return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("KEY_NOT_OWNED_BY_TENANT").build();
             }
-            // Check tenant status: reject if SUSPENDED or CLOSED
-            String tenantData;
-            try (Jedis jedis = jedisPool.getResource()) {
-                tenantData = jedis.get("tenant:" + key.getTenantId());
-            }
+            // Tenant status. CLOSED is terminal: reject at auth. SUSPENDED is NOT rejected
+            // here - the governance spec makes a suspended tenant read-only with "no new
+            // reservations", while "existing active reservations can still commit/release".
+            // Rejecting the key would also block those commits/releases (and all reads), so
+            // the suspended restriction is enforced where the operation is known:
+            // reserve.lua / event.lua refuse new budget claims, dry_run / decide answer DENY.
             if (tenantData != null) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> tenantMap = objectMapper.readValue(tenantData, Map.class);
-                String tenantStatus = (String) tenantMap.get("status");
-                if ("SUSPENDED".equals(tenantStatus)) {
-                    return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_SUSPENDED").build();
-                }
+                Object tenantStatus = tenantMap.get("status");
                 if ("CLOSED".equals(tenantStatus)) {
                     return ApiKeyValidationResponse.builder().valid(false).tenantId(key.getTenantId()).reason("TENANT_CLOSED").build();
                 }
@@ -160,7 +166,7 @@ public class ApiKeyRepository {
     }
 
     private static ApiKeyValidationResponse internalError() {
-        return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason("INTERNAL_ERROR").build();
+        return ApiKeyValidationResponse.builder().valid(false).tenantId("").reason(REASON_INTERNAL_ERROR).build();
     }
 
 }

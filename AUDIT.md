@@ -1,5 +1,21 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-11-26 — Server review fixes (bugs, spec compliance, performance)
+
+**Suspended tenants (governance spec).** SUSPENDED keys now authenticate; `reserve.lua`/`event.lua` refuse new budget claims (403 `FORBIDDEN` — the runtime `ErrorCode` enum has no suspended code), dry_run/decide answer DENY `TENANT_SUSPENDED`, and commit/release/extend plus reads keep working.
+
+**API-key permissions.** Controllers enforce the governance `Permission` values (`reservations:create|commit|release|extend|list`, `balances:read`; `admin:read` satisfies `*:read`) with 403; `/decide` needs `reservations:create`, `/events` needs create + commit. Kill switch: `cycles.auth.enforce-permissions=false`. `scope_filter` is still not enforced.
+
+**Error mapping.** Spring MVC client errors (unknown path, 405, 415, missing/mistyped parameter) return their 4xx instead of 500; a key-store outage during auth returns 500 `INTERNAL_ERROR` instead of 401.
+
+**Expiry.** `expire.lua` validates every budget row before mutating (quarantine `CORRUPT_BUDGET`), so a bad row can no longer cause a repeated partial release. The sweeper drains up to `cycles.expiry.max-batches-per-sweep` (default 20) full batches per tick.
+
+**Events.** `reservation.denied` is emitted for live 409 reserve denials and uses the deepest scope on `/decide`; `budget.exhausted` fires when remaining crosses below zero; event balance events carry the resolved overage policy.
+
+**Performance.** `GET /v1/balances` reads the governance `budgets:<tenant>` index (keyset cursor `bi1.*`, SCAN fallback when absent); reservation ownership is checked inside commit/release/extend Lua and the GET read (no owner-lookup round-trip); auth uses one pooled connection; `release.lua` uses a single HMGET.
+
+Runtime and governance YAML are unchanged. Full suite incl. Redis integration and contract tests passes with the 95% line/branch gates.
+
 ## 2026-11-23 — Dependency review
 
 PR #299 updates the Java setup action used by CI, nightly jobs, and releases to v6.3.0 (`d1374f8`). PR #300 updates the Scorecard action to v2.6.0 (`23f22cd`). Both pins match their upstream release tags.

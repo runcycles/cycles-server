@@ -80,6 +80,29 @@ for _, scope in ipairs(affected_scopes) do
         return quarantine("MALFORMED_SCOPES", "Reservation has malformed scope data")
     end
 end
+-- Validate every budget row BEFORE the first mutation. Redis does not roll a
+-- script back when a later command errors, so a HINCRBY failure on scope N
+-- (wrong key type, non-integer field, int64 overflow) would leave scopes
+-- 1..N-1 released while the reservation stays ACTIVE in reservation:ttl —
+-- and the sweeper would re-apply that partial release on every pass.
+local MAX_INT64 = "9223372036854775807"
+local MIN_INT64 = "-9223372036854775808"
+for _, scope in ipairs(affected_scopes) do
+    local budget_key = "budget:" .. scope .. ":" .. estimate_unit
+    local bvals = redis.pcall('HMGET', budget_key, 'reserved', 'remaining')
+    if type(bvals) ~= "table" or bvals.err then
+        return quarantine("CORRUPT_BUDGET", "Reservation budget row is not a hash")
+    end
+    local b_reserved = normalize_int(bvals[1] or "0")
+    local b_remaining = normalize_int(bvals[2] or "0")
+    if not b_reserved or not b_remaining
+       or compare_int(b_reserved, MAX_INT64) > 0
+       or compare_int(subtract_int(b_reserved, estimate_amount), MIN_INT64) < 0
+       or compare_int(b_remaining, MIN_INT64) < 0
+       or compare_int(add_int(b_remaining, estimate_amount), MAX_INT64) > 0 then
+        return quarantine("CORRUPT_BUDGET", "Reservation budget row has invalid amounts")
+    end
+end
 for _, scope in ipairs(affected_scopes) do
     local budget_key = "budget:" .. scope .. ":" .. estimate_unit
     redis.call('HINCRBY', budget_key, 'reserved',  negate_int(estimate_amount))

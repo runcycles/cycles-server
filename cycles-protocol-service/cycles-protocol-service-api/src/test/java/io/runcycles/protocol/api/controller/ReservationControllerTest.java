@@ -52,7 +52,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ReservationControllerTest {
 
     private static final String TENANT = "acme-corp";
-    private static final List<String> PERMISSIONS = List.of("reservations:create", "reservations:commit");
+    private static final List<String> PERMISSIONS = List.of("reservations:create", "reservations:commit",
+            "reservations:release", "reservations:extend", "reservations:list");
 
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
@@ -331,7 +332,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldGetReservationById() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             Subject subject = new Subject();
             subject.setTenant(TENANT);
             Action action = new Action();
@@ -350,7 +350,7 @@ class ReservationControllerTest {
             detail.setExpiresAtMs(1_700_000_060_000L);
             detail.setScopePath("tenant:" + TENANT);
             detail.setAffectedScopes(java.util.List.of("tenant:" + TENANT));
-            when(repository.getReservationById("res_123")).thenReturn(detail);
+            when(repository.getReservationById("res_123", TENANT)).thenReturn(detail);
 
             mockMvc.perform(get("/v1/reservations/res_123"))
                     .andExpect(status().isOk());
@@ -358,7 +358,9 @@ class ReservationControllerTest {
 
         @Test
         void shouldReturn403ForTenantMismatchOnGet() throws Exception {
-            when(repository.findReservationTenantById("res_other")).thenReturn("other-tenant");
+            // Ownership is enforced inside the single read, keyed by the caller's tenant.
+            when(repository.getReservationById("res_other", TENANT))
+                    .thenThrow(CyclesProtocolException.reservationOwnedByAnotherTenant());
 
             mockMvc.perform(get("/v1/reservations/res_other"))
                     .andExpect(status().isForbidden())
@@ -367,7 +369,7 @@ class ReservationControllerTest {
 
         @Test
         void shouldReturn404ForUnknownReservation() throws Exception {
-            when(repository.findReservationTenantById("res_unknown"))
+            when(repository.getReservationById("res_unknown", TENANT))
                     .thenThrow(CyclesProtocolException.notFound("res_unknown"));
 
             mockMvc.perform(get("/v1/reservations/res_unknown"))
@@ -379,7 +381,6 @@ class ReservationControllerTest {
         void shouldGetCommittedReservationWithFinalizedFields() throws Exception {
             // Exercises the spec's optional `committed` + `finalized_at_ms`
             // branches which don't appear on ACTIVE reservations.
-            when(repository.findReservationTenantById("res_committed")).thenReturn(TENANT);
             Subject subject = new Subject();
             subject.setTenant(TENANT);
             Action action = new Action();
@@ -403,7 +404,7 @@ class ReservationControllerTest {
             detail.setExpiresAtMs(1_700_000_060_000L);
             detail.setScopePath("tenant:" + TENANT);
             detail.setAffectedScopes(java.util.List.of("tenant:" + TENANT));
-            when(repository.getReservationById("res_committed")).thenReturn(detail);
+            when(repository.getReservationById("res_committed", TENANT)).thenReturn(detail);
 
             mockMvc.perform(get("/v1/reservations/res_committed"))
                     .andExpect(status().isOk())
@@ -414,7 +415,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldGetReleasedReservation() throws Exception {
-            when(repository.findReservationTenantById("res_released")).thenReturn(TENANT);
             Subject subject = new Subject();
             subject.setTenant(TENANT);
             Action action = new Action();
@@ -434,7 +434,7 @@ class ReservationControllerTest {
             detail.setExpiresAtMs(1_700_000_060_000L);
             detail.setScopePath("tenant:" + TENANT);
             detail.setAffectedScopes(java.util.List.of("tenant:" + TENANT));
-            when(repository.getReservationById("res_released")).thenReturn(detail);
+            when(repository.getReservationById("res_released", TENANT)).thenReturn(detail);
 
             mockMvc.perform(get("/v1/reservations/res_released"))
                     .andExpect(status().isOk())
@@ -443,8 +443,7 @@ class ReservationControllerTest {
 
         @Test
         void shouldReturn410ForExpiredReservation() throws Exception {
-            when(repository.findReservationTenantById("res_expired")).thenReturn(TENANT);
-            when(repository.getReservationById("res_expired"))
+            when(repository.getReservationById("res_expired", TENANT))
                     .thenThrow(CyclesProtocolException.reservationExpired());
 
             mockMvc.perform(get("/v1/reservations/res_expired"))
@@ -461,7 +460,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldCommitReservation() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             CommitResponse resp = CommitResponse.builder()
                     .status(Enums.CommitStatus.COMMITTED)
                     .charged(new Amount(Enums.UnitEnum.TOKENS, 500L))
@@ -481,7 +479,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldSurfaceCyclesEvidenceOnCommit() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             String evId = "a".repeat(64);
             CommitResponse resp = CommitResponse.builder()
                     .status(Enums.CommitStatus.COMMITTED)
@@ -504,7 +501,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldNotReemitOverageEventOnIdempotentCommitReplay() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             // a replay whose actual>estimate WOULD trigger overage — but replays must not re-emit
             CommitResponse resp = CommitResponse.builder()
                     .status(Enums.CommitStatus.COMMITTED)
@@ -529,7 +525,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldCommitWithOverageAndEmitEvent() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             CommitResponse resp = CommitResponse.builder()
                     .status(Enums.CommitStatus.COMMITTED)
                     .charged(new Amount(Enums.UnitEnum.TOKENS, 1500L))
@@ -550,7 +545,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldRejectCommitIdempotencyKeyMismatch() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
 
             CommitRequest req = new CommitRequest();
             req.setActual(new Amount(Enums.UnitEnum.TOKENS, 500L));
@@ -571,7 +565,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldReleaseReservation() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             ReleaseResponse resp = ReleaseResponse.builder()
                     .status(Enums.ReleaseStatus.RELEASED)
                     .released(new Amount(Enums.UnitEnum.TOKENS, 1000L))
@@ -590,7 +583,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldRejectReleaseIdempotencyKeyMismatch() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
 
             ReleaseRequest req = ReleaseRequest.builder()
                     .idempotencyKey("body-key").build();
@@ -610,7 +602,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldExtendReservation() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
             ReservationExtendResponse resp = ReservationExtendResponse.builder()
                     .status(Enums.ExtendStatus.ACTIVE)
                     .expiresAtMs(System.currentTimeMillis() + 120000)
@@ -630,7 +621,6 @@ class ReservationControllerTest {
 
         @Test
         void shouldRejectExtendIdempotencyKeyMismatch() throws Exception {
-            when(repository.findReservationTenantById("res_123")).thenReturn(TENANT);
 
             ReservationExtendRequest req = new ReservationExtendRequest();
             req.setExtendByMs(60000L);
@@ -1225,7 +1215,8 @@ class ReservationControllerTest {
             detail.setScopePath("tenant:other-tenant");
             detail.setAffectedScopes(List.of("tenant:other-tenant"));
             when(repository.findReservationTenantById("res-x")).thenReturn("other-tenant");
-            when(repository.getReservationById("res-x")).thenReturn(detail);
+            // admin: no expected owner (null) - may read any tenant's reservation
+            when(repository.getReservationById("res-x", null)).thenReturn(detail);
             mockMvc.perform(get("/v1/reservations/res-x"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.reservation_id").value("res-x"));
@@ -1318,7 +1309,6 @@ class ReservationControllerTest {
             ReleaseResponse resp = new ReleaseResponse();
             resp.setStatus(Enums.ReleaseStatus.RELEASED);
             resp.setReleased(released);
-            when(repository.findReservationTenantById("res-t")).thenReturn(TENANT);
             when(repository.releaseReservation(eq("res-t"), any(), any(), any(), any(), any())).thenReturn(resp);
             String body = "{\"idempotency_key\":\"" + UUID.randomUUID() + "\"}";
 
@@ -1387,5 +1377,107 @@ class ReservationControllerTest {
                             .contentType(MediaType.APPLICATION_JSON).content(maliciousBody))
                     .andExpect(status().isOk());
         }
+    }
+
+    // ---- live denial events / ownership round-trips / permissions ----
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "BUDGET_EXCEEDED", "BUDGET_FROZEN", "BUDGET_CLOSED",
+            "OVERDRAFT_LIMIT_EXCEEDED", "DEBT_OUTSTANDING", "TENANT_CLOSED"})
+    @DisplayName("live reserve denial (409) emits reservation.denied and still returns the error")
+    void liveDenialEmitsReservationDenied(String code) throws Exception {
+        Enums.ErrorCode errorCode = Enums.ErrorCode.valueOf(code);
+        when(repository.createReservation(any(), eq(TENANT), any()))
+                .thenThrow(new CyclesProtocolException(errorCode, "denied", 409));
+
+        mockMvc.perform(post("/v1/reservations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reservationJson(TENANT, 1000)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value(code));
+
+        org.mockito.ArgumentCaptor<Object> data = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(eventEmitter).emit(
+                eq(io.runcycles.protocol.model.event.EventType.RESERVATION_DENIED),
+                eq(TENANT), eq("tenant:" + TENANT), any(), data.capture(), any(), any(), any());
+        io.runcycles.protocol.model.event.EventDataReservationDenied denied =
+                (io.runcycles.protocol.model.event.EventDataReservationDenied) data.getValue();
+        org.assertj.core.api.Assertions.assertThat(denied.getReasonCode()).isEqualTo(code);
+        org.assertj.core.api.Assertions.assertThat(denied.getRequestedAmount()).isEqualTo(1000L);
+        org.assertj.core.api.Assertions.assertThat(denied.getUnit()).isEqualTo("TOKENS");
+    }
+
+    @Test
+    @DisplayName("non-denial reserve errors do not emit reservation.denied")
+    void nonDenialErrorDoesNotEmitReservationDenied() throws Exception {
+        when(repository.createReservation(any(), eq(TENANT), any()))
+                .thenThrow(CyclesProtocolException.idempotencyMismatch());
+
+        mockMvc.perform(post("/v1/reservations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reservationJson(TENANT, 1000)))
+                .andExpect(status().isConflict());
+
+        verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("a failing emitter never masks the original denial")
+    void liveDenialSurvivesEmitterFailure() throws Exception {
+        when(repository.createReservation(any(), eq(TENANT), any()))
+                .thenThrow(new CyclesProtocolException(Enums.ErrorCode.BUDGET_EXCEEDED, "denied", 409));
+        org.mockito.Mockito.doThrow(new RuntimeException("emitter down")).when(eventEmitter)
+                .emit(any(), any(), any(), any(), any(), any(), any(), any());
+
+        mockMvc.perform(post("/v1/reservations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reservationJson(TENANT, 1000)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("BUDGET_EXCEEDED"));
+    }
+
+    @Test
+    @DisplayName("tenant-key commit skips the owner lookup round-trip; the script enforces ownership")
+    void tenantKeyCommitDoesNotLookUpOwner() throws Exception {
+        when(repository.commitReservation(eq("res_own"), any(), eq(TENANT), any()))
+                .thenThrow(CyclesProtocolException.reservationOwnedByAnotherTenant());
+        when(repository.commitReservation(eq("res_own"), any(), eq(TENANT)))
+                .thenThrow(CyclesProtocolException.reservationOwnedByAnotherTenant());
+        String body = "{\"idempotency_key\":\"" + UUID.randomUUID()
+                + "\",\"actual\":{\"unit\":\"TOKENS\",\"amount\":10}}";
+
+        mockMvc.perform(post("/v1/reservations/res_own/commit")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+
+        verify(repository, never()).findReservationTenantById(any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "reservations:create,  POST, /v1/reservations/res_p/commit",
+            "reservations:commit,  POST, /v1/reservations/res_p/release",
+            "reservations:commit,  POST, /v1/reservations/res_p/extend",
+            "reservations:commit,  POST, /v1/reservations",
+            "reservations:create,  GET,  /v1/reservations/res_p",
+            "reservations:create,  GET,  /v1/reservations?tenant=acme-corp"})
+    @DisplayName("each reservation operation requires its own permission")
+    void operationsRequireTheirPermission(String held, String method, String path) throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of(held)));
+        String body = path.endsWith("/commit")
+                ? "{\"idempotency_key\":\"k-1\",\"actual\":{\"unit\":\"TOKENS\",\"amount\":10}}"
+                : path.endsWith("/extend") ? "{\"idempotency_key\":\"k-1\",\"extend_by_ms\":1000}"
+                : path.endsWith("/release") ? "{\"idempotency_key\":\"k-1\"}"
+                : reservationJson(TENANT, 10);
+
+        var request = "GET".equals(method)
+                ? get(path)
+                : post(path).contentType(MediaType.APPLICATION_JSON).content(body);
+        mockMvc.perform(request)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
     }
 }

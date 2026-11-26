@@ -230,4 +230,38 @@ class DecisionControllerTest {
         assertThat(target.decide(null, request, servletRequest).getBody().getAffectedScopes())
             .isEmpty();
     }
+
+    @Test
+    void denyEventUsesDeepestAffectedScope() throws Exception {
+        DecisionResponse resp = DecisionResponse.builder()
+                .decision(Enums.DecisionEnum.DENY)
+                .reasonCode(Enums.ReasonCode.BUDGET_EXCEEDED)
+                .affectedScopes(List.of("tenant:" + TENANT, "tenant:" + TENANT + "/app:billing"))
+                .build();
+        when(repository.decide(any(), eq(TENANT), any())).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isOk());
+
+        verify(eventEmitter, times(1)).emit(
+                eq(EventType.RESERVATION_DENIED), eq(TENANT),
+                eq("tenant:" + TENANT + "/app:billing"),
+                any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void decideRequiresReservationsCreatePermission() throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("balances:read")));
+
+        mockMvc.perform(post("/v1/decide")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decideJson(TENANT)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+
+        verify(repository, never()).decide(any(), any(), any());
+    }
 }

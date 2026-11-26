@@ -13,11 +13,54 @@ import io.runcycles.protocol.model.event.ActorType;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 abstract public class BaseController {
     private static final Logger LOG = LoggerFactory.getLogger(BaseController.class);
+
+    public static final String PERM_RESERVATIONS_CREATE = "reservations:create";
+    public static final String PERM_RESERVATIONS_COMMIT = "reservations:commit";
+    public static final String PERM_RESERVATIONS_RELEASE = "reservations:release";
+    public static final String PERM_RESERVATIONS_EXTEND = "reservations:extend";
+    public static final String PERM_RESERVATIONS_LIST = "reservations:list";
+    public static final String PERM_BALANCES_READ = "balances:read";
+
+    /**
+     * Kill switch for API-key permission enforcement. Enforced by default; an operator
+     * whose fleet still carries keys minted without a permission list can set this to
+     * false while those keys are re-issued.
+     */
+    @Value("${cycles.auth.enforce-permissions:true}")
+    private boolean enforcePermissions = true;
+
+    /**
+     * Enforce the governance spec's tenant runtime permissions (Permission schema:
+     * reservations:create/commit/release/extend/list, balances:read). The key must
+     * carry EVERY listed permission. Wildcards follow the spec's normative rule:
+     * admin:read satisfies any {@code *:read} requirement; nothing satisfies the
+     * reservation permissions except the permission itself. Admin-on-behalf-of
+     * requests are authorised by the admin key and bypass this check.
+     */
+    protected void requirePermission(String... required) {
+        if (!enforcePermissions || isAdminAuth()) return;
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        java.util.Set<String> granted = new java.util.HashSet<>();
+        if (auth != null) {
+            for (GrantedAuthority authority : auth.getAuthorities()) {
+                granted.add(authority.getAuthority());
+            }
+        }
+        for (String permission : required) {
+            boolean satisfied = granted.contains(permission)
+                    || (permission.endsWith(":read") && granted.contains("admin:read"));
+            if (!satisfied) {
+                throw CyclesProtocolException.insufficientPermissions(permission);
+            }
+        }
+    }
 
     public String extractAuthTenantId(){
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();

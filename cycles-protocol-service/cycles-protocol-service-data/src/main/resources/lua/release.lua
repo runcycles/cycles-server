@@ -10,15 +10,27 @@ local audit_tenant    = ARGV[6] or ""
 local audit_ttl       = tonumber(ARGV[7] or 0)
 local audit_score     = tonumber(ARGV[8] or 0)
 
+local expected_tenant = ARGV[9] or ""
+
 local reservation_key = "reservation:res_" .. reservation_id
 
--- Check reservation exists
-if redis.call('EXISTS', reservation_key) == 0 then
-    return cjson.encode({error = "NOT_FOUND"})
-end
+-- Fetch every field the script needs in one round-trip (also the existence check)
+local rdata = redis.call('HMGET', reservation_key,
+    'state', 'released_idempotency_key', 'tenant', 'expires_at', 'grace_ms',
+    'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
 
-local state = redis.call('HGET', reservation_key, 'state')
-local stored_idempotency_key = redis.call('HGET', reservation_key, 'released_idempotency_key')
+local state = rdata[1]
+if not state then
+    return cjson.encode({error = "NOT_FOUND", message = reservation_id})
+end
+local stored_idempotency_key = rdata[2]
+
+-- Ownership (spec: a reservation owned by a different effective tenant MUST
+-- return 403). Checked in-script, ahead of replay handling and every state
+-- error, so the caller needs no separate owner lookup round-trip.
+if expected_tenant ~= "" and rdata[3] ~= expected_tenant then
+    return cjson.encode({error = "FORBIDDEN"})
+end
 
 -- Idempotent replay: same (state, key) as the original release. Replay
 -- handling stays FIRST — ahead of the closed-tenant guard (Rule 2(b):
@@ -59,7 +71,7 @@ end
 -- no mutation) — matching the admin
 -- plane's TenantRepository, which propagates parse failures instead of
 -- treating a corrupt governance record as an open tenant.
-local owner_tenant = redis.call('HGET', reservation_key, 'tenant')
+local owner_tenant = rdata[3]
 if owner_tenant and owner_tenant ~= "" then
     local tenant_json = redis.call('GET', 'tenant:' .. owner_tenant)
     if tenant_json then
@@ -93,21 +105,19 @@ elseif state ~= "ACTIVE" then
 end
 
 -- Spec: release disallowed beyond expires_at_ms + grace_period_ms
-local current_expires_at = tonumber(redis.call('HGET', reservation_key, 'expires_at') or 0)
-local grace_ms = tonumber(redis.call('HGET', reservation_key, 'grace_ms') or 0)
+local current_expires_at = tonumber(rdata[4] or 0)
+local grace_ms = tonumber(rdata[5] or 0)
 local t = redis.call('TIME')
 local now_ms = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 if now_ms > current_expires_at + grace_ms then
     return cjson.encode({error = "RESERVATION_EXPIRED"})
 end
 
--- Get reservation data using HMGET for efficiency
-local rvals = redis.call('HMGET', reservation_key, 'estimate_amount', 'estimate_unit', 'affected_scopes', 'budgeted_scopes')
-local estimate_amount = normalize_int(rvals[1])
-local estimate_unit = rvals[2]
-local affected_scopes_json = rvals[3]
+local estimate_amount = normalize_int(rdata[6])
+local estimate_unit = rdata[7]
+local affected_scopes_json = rdata[8]
 -- Use budgeted_scopes for budget mutations (only scopes with actual budgets)
-local budgeted_scopes_json = rvals[4]
+local budgeted_scopes_json = rdata[9]
 
 -- Guard against corrupted reservation data
 if not estimate_amount or not estimate_unit then

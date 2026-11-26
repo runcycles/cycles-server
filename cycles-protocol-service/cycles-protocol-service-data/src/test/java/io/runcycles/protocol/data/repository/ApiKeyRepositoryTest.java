@@ -147,9 +147,9 @@ class ApiKeyRepositoryTest {
             assertThat(result.getTenantId()).isEqualTo("acme-corp");
             assertThat(result.getKeyId()).isEqualTo(keyId);
             assertThat(result.getPermissions()).containsExactly("reservations:create");
-            // Lookup connection is released before BCrypt, then a short-lived
-            // second connection performs the tenant-status read.
-            verify(jedis, times(2)).close();
+            // All three reads share one connection, released before BCrypt.
+            verify(jedis, times(1)).close();
+            verify(jedisPool, times(1)).getResource();
         }
 
         @Test
@@ -242,7 +242,7 @@ class ApiKeyRepositoryTest {
         }
 
         @Test
-        void shouldReturnInvalidForSuspendedTenant() throws Exception {
+        void shouldAuthenticateSuspendedTenantSoCommitAndReleaseStillWork() throws Exception {
             stubJedis();
             when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
 
@@ -255,8 +255,10 @@ class ApiKeyRepositoryTest {
 
             ApiKeyValidationResponse result = repository.validate(secret);
 
-            assertThat(result.isValid()).isFalse();
-            assertThat(result.getReason()).isEqualTo("TENANT_SUSPENDED");
+            // Governance: SUSPENDED is read-only + "no new reservations"; existing reservations
+            // can still commit/release. The block is enforced per operation, not at auth.
+            assertThat(result.isValid()).isTrue();
+            assertThat(result.getTenantId()).isEqualTo("acme-corp");
         }
 
         @Test
@@ -455,7 +457,7 @@ class ApiKeyRepositoryTest {
             assertThat(result2.isValid()).isFalse();
             assertThat(result2.getReason()).isEqualTo("KEY_REVOKED");
 
-            verify(jedisPool, times(3)).getResource();
+            verify(jedisPool, times(2)).getResource();
         }
 
         @Test
@@ -475,7 +477,7 @@ class ApiKeyRepositoryTest {
 
             assertThat(result1.isValid()).isTrue();
             assertThat(result2.isValid()).isTrue();
-            verify(jedisPool, times(4)).getResource();
+            verify(jedisPool, times(2)).getResource();
             verify(jedis, times(2)).get("apikey:" + keyId);
         }
 
@@ -517,7 +519,7 @@ class ApiKeyRepositoryTest {
             assertThat(result3.isValid()).isTrue();
             verify(spyRepository, times(1)).verifyKey(secret, staleHash);
             verify(spyRepository, times(1)).verifyKey(secret, rotatedHash);
-            verify(jedisPool, times(4)).getResource();
+            verify(jedisPool, times(3)).getResource();
             verify(jedis, times(3)).get("apikey:" + keyId);
         }
 
@@ -561,7 +563,7 @@ class ApiKeyRepositoryTest {
             ApiKeyValidationResponse result2 = repository.validate(secret);
             assertThat(result2.isValid()).isTrue();
 
-            verify(jedisPool, times(3)).getResource();
+            verify(jedisPool, times(2)).getResource();
         }
     }
 }

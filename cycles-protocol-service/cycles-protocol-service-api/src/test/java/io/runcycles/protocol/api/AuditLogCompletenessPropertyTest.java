@@ -77,7 +77,7 @@ class AuditLogCompletenessPropertyTest extends BaseIntegrationTest {
                 .keyHash(hash)
                 .name("Audit property test key")
                 .status(io.runcycles.protocol.model.auth.ApiKeyStatus.ACTIVE)
-                .permissions(java.util.Collections.emptyList())
+                .permissions(java.util.List.of("reservations:create", "reservations:commit", "reservations:release", "reservations:extend", "reservations:list", "balances:read"))
                 .createdAt(java.time.Instant.now())
                 .build();
         jedis.set("apikey:lookup:" + prefix, "key-a");

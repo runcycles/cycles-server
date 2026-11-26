@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
@@ -45,7 +46,9 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * <ul>
  *   <li><b>Tenant-key HTTP requests</b> — {@code ApiKeyRepository.validate}
  *       already reads {@code tenant:<id>} per request and rejects
- *       SUSPENDED/CLOSED tenants with 401 at the auth filter (the pending
+ *       CLOSED tenants with 401 at the auth filter (SUSPENDED tenants still
+ *       authenticate - governance makes them read-only, enforced per operation;
+ *       the pending
  *       spec revision's "usually surfaces as 401"). Pinned below.</li>
  *   <li><b>Admin-key HTTP requests</b> — admin auth carries no tenant-status
  *       check; before this change, {@code POST .../release} with a valid
@@ -382,16 +385,23 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void activeAndSuspendedTenants_eventApplies() {
+        void activeTenantEventApplies_suspendedTenantEventRejected() {
             seedTenantWithStatus(TENANT_A, "ACTIVE");
             assertThat(reservationRepository.createEvent(eventRequest(100), TENANT_A).getStatus())
                     .isEqualTo(Enums.EventStatus.APPLIED);
+            Map<String, String> before = getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS");
 
-            // SUSPENDED is not gated at the debit layer (mutation guard is
-            // CLOSED-only; SUSPENDED semantics live in tenant-key auth).
+            // Governance: SUSPENDED = read-only, no new budget claims. A direct-debit
+            // event is a new claim, so it is refused (403) and the ledger is untouched.
             seedTenantWithStatus(TENANT_A, "SUSPENDED");
-            assertThat(reservationRepository.createEvent(eventRequest(100), TENANT_A).getStatus())
-                    .isEqualTo(Enums.EventStatus.APPLIED);
+            assertThatThrownBy(() -> reservationRepository.createEvent(eventRequest(100), TENANT_A))
+                    .isInstanceOf(CyclesProtocolException.class)
+                    .satisfies(e -> {
+                        CyclesProtocolException ex = (CyclesProtocolException) e;
+                        assertThat(ex.getErrorCode()).isEqualTo(Enums.ErrorCode.FORBIDDEN);
+                        assertThat(ex.getHttpStatus()).isEqualTo(403);
+                    });
+            assertThat(getBudgetFromRedis("tenant:" + TENANT_A, "TOKENS")).isEqualTo(before);
         }
     }
 
@@ -519,25 +529,40 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void suspendedTenant_notGuarded_atMutationLayer() {
-            // Governance Rule 2 and runtime spec v0.1.25.13 cover CLOSED
-            // only. SUSPENDED already has runtime semantics at the AUTH
-            // layer (401 for tenant keys — pre-existing, pinned below);
-            // the mutation-layer guard must NOT add anything for SUSPENDED.
+        void suspendedTenant_blocksNewReservations_butExistingOnesStillSettle() {
+            // Governance tenant status SUSPENDED: "Read-only, no new reservations";
+            // ACTIVE -> SUSPENDED "blocks new reservations, existing active
+            // reservations can still commit/release".
+            seedTenantWithStatus(TENANT_A, "ACTIVE");
+            String toCommit = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
+            String toRelease = createReservationAndGetId(TENANT_A, API_KEY_SECRET_A, 100);
+
             seedTenantWithStatus(TENANT_A, "SUSPENDED");
 
-            String reservationId = reserveViaRepository(100);
-            CommitRequest commit = new CommitRequest();
-            commit.setActual(new Amount(Enums.UnitEnum.TOKENS, 100L));
-            commit.setIdempotencyKey(UUID.randomUUID().toString());
-            assertThat(reservationRepository.commitReservation(reservationId, commit, TENANT_A)
-                    .getStatus()).isEqualTo(Enums.CommitStatus.COMMITTED);
-            assertThat(getReservationStateFromRedis(reservationId).get("state")).isEqualTo("COMMITTED");
-
-            // Pre-existing auth-layer behavior for SUSPENDED, unchanged.
-            ResponseEntity<Map> http = postRaw("/v1/reservations", API_KEY_SECRET_A,
+            // The key still authenticates (no 401): new reserve is refused with 403.
+            ResponseEntity<Map> reserve = postRaw("/v1/reservations", API_KEY_SECRET_A,
                     reservationBody(TENANT_A, 100));
-            assertThat(http.getStatusCode().value()).isEqualTo(401);
+            assertThat(reserve.getStatusCode().value()).isEqualTo(403);
+            assertThat(reserve.getBody().get("error")).isEqualTo("FORBIDDEN");
+            assertThat(String.valueOf(reserve.getBody().get("message"))).contains("suspended");
+
+            // Existing reservations still settle over HTTP with the tenant's own key.
+            Map<String, Object> commitBody = new java.util.HashMap<>();
+            commitBody.put("idempotency_key", UUID.randomUUID().toString());
+            commitBody.put("actual", Map.of("unit", "TOKENS", "amount", 100));
+            ResponseEntity<Map> commit = postRaw("/v1/reservations/" + toCommit + "/commit",
+                    API_KEY_SECRET_A, commitBody);
+            assertThat(commit.getStatusCode().value()).isEqualTo(200);
+            assertThat(getReservationStateFromRedis(toCommit).get("state")).isEqualTo("COMMITTED");
+
+            ResponseEntity<Map> release = postRaw("/v1/reservations/" + toRelease + "/release",
+                    API_KEY_SECRET_A, Map.of("idempotency_key", UUID.randomUUID().toString()));
+            assertThat(release.getStatusCode().value()).isEqualTo(200);
+            assertThat(getReservationStateFromRedis(toRelease).get("state")).isEqualTo("RELEASED");
+
+            // Reads stay available.
+            ResponseEntity<Map> balances = get("/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            assertThat(balances.getStatusCode().value()).isEqualTo(200);
         }
 
         @Test
@@ -937,18 +962,22 @@ class TenantClosedGuardIntegrationTest extends BaseIntegrationTest {
         }
 
         @Test
-        void activeAndSuspendedTenants_evaluationsUnchanged() {
+        void activeTenantAllows_suspendedTenantEvaluationsDeny() {
             seedTenantWithStatus(TENANT_A, "ACTIVE");
             assertThat(reservationRepository.createReservation(dryRunRequest(100), TENANT_A)
                     .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
 
-            // SUSPENDED is not gated at the evaluation layer (spec covers CLOSED
-            // only; SUSPENDED semantics live in tenant-key auth - pinned elsewhere).
+            // A live reserve is refused for a SUSPENDED tenant, so the as-if-live
+            // evaluations answer DENY / TENANT_SUSPENDED (reason_code is an open string).
             seedTenantWithStatus(TENANT_A, "SUSPENDED");
-            assertThat(reservationRepository.createReservation(dryRunRequest(100), TENANT_A)
-                    .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
-            assertThat(reservationRepository.decide(decisionRequest(100), TENANT_A)
-                    .getDecision()).isEqualTo(Enums.DecisionEnum.ALLOW);
+            ReservationCreateResponse dryRun =
+                    reservationRepository.createReservation(dryRunRequest(100), TENANT_A);
+            assertThat(dryRun.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(dryRun.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
+            io.runcycles.protocol.model.DecisionResponse decision =
+                    reservationRepository.decide(decisionRequest(100), TENANT_A);
+            assertThat(decision.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(decision.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
         }
     }
 

@@ -50,7 +50,14 @@ local vals = redis.call('HMGET', reservation_key, 'state', 'expires_at', 'extens
 local state = vals[1]
 
 if not state then
-    return cjson.encode({error = "NOT_FOUND"})
+    return cjson.encode({error = "NOT_FOUND", message = reservation_id})
+end
+
+-- Ownership (spec: a reservation owned by a different effective tenant MUST
+-- return 403). ARGV[4] is the caller's effective tenant; checked in-script so
+-- the caller needs no separate owner lookup round-trip.
+if tenant ~= nil and tenant ~= "" and vals[5] ~= tenant then
+    return cjson.encode({error = "FORBIDDEN"})
 end
 
 -- Governance CASCADE SEMANTICS Rule 2: reject extend when the owning tenant

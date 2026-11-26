@@ -37,6 +37,9 @@ public class EventController extends BaseController {
             HttpServletRequest httpRequest) {
         logRequest(LOG, httpRequest, "POST /v1/events",
                 request.getSubject() != null ? request.getSubject().getTenant() : null);
+        // A direct-debit event claims AND spends budget in one call - the equivalent of
+        // reserve + commit - so the key must hold both permissions.
+        requirePermission(PERM_RESERVATIONS_CREATE, PERM_RESERVATIONS_COMMIT);
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
@@ -48,8 +51,10 @@ public class EventController extends BaseController {
                 return ResponseEntity.status(HttpStatus.CREATED).body(response);
             }
             Actor actor = buildActor(httpRequest);
-            String policy = request.getOveragePolicy() != null
-                    ? request.getOveragePolicy().name() : "ALLOW_IF_AVAILABLE";
+            // The policy actually applied: request value, else the tenant default the
+            // repository resolved (NOT a hardcoded ALLOW_IF_AVAILABLE).
+            String policy = response.getOveragePolicy() != null
+                    ? response.getOveragePolicy() : "ALLOW_IF_AVAILABLE";
             eventEmitter.emitBalanceEvents(response.getBalances(), tenant, actor,
                     null, policy, response.getScopeDebtIncurred(),
                     response.getPreRemaining(), response.getPreIsOverLimit(),

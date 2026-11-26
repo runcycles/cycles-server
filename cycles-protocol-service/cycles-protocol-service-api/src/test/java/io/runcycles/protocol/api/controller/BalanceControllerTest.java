@@ -187,4 +187,21 @@ class BalanceControllerTest {
                         .param("cursor", "cursor_abc"))
                 .andExpect(status().isOk());
     }
+
+    @Test
+    void balancesRequireBalancesReadPermission() throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("reservations:create")));
+
+        mockMvc.perform(get("/v1/balances").param("tenant", TENANT))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+    }
+
+    @Test
+    void nonNumericLimitIs400NotInternalError() throws Exception {
+        mockMvc.perform(get("/v1/balances").param("tenant", TENANT).param("limit", "abc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_REQUEST"));
+    }
 }

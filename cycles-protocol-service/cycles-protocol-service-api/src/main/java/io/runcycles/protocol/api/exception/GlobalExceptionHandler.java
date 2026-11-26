@@ -18,6 +18,7 @@ import org.springframework.http.*;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.HandlerMapping;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -280,11 +281,62 @@ public class GlobalExceptionHandler {
             .build());
     }
 
+    /** A query/path parameter that cannot be converted to its declared type (e.g. limit=abc). */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        String requestId = resolveRequestId(request);
+        String traceId = resolveTraceId(request);
+        logRequestError("Request parameter type mismatch", request, HttpStatus.BAD_REQUEST.value(),
+            Enums.ErrorCode.INVALID_REQUEST, requestId, traceId);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.builder()
+            .error(Enums.ErrorCode.INVALID_REQUEST)
+            .message("Invalid value for parameter: " + ex.getName())
+            .requestId(requestId)
+            .traceId(traceId)
+            .build());
+    }
+
+    /**
+     * Spring MVC's own client-error exceptions (unknown path, unsupported method or media
+     * type, missing parameter/header, ...) all implement {@link org.springframework.web.ErrorResponse}
+     * and carry the correct 4xx status. Without this mapping they fall into the catch-all
+     * below and surface as 500 INTERNAL_ERROR with an ERROR-level stack trace.
+     */
+    private ResponseEntity<ErrorResponse> handleFrameworkClientError(
+            org.springframework.web.ErrorResponse springError, HttpServletRequest request,
+            String requestId, String traceId) {
+        int status = springError.getStatusCode().value();
+        Enums.ErrorCode code = status == HttpStatus.NOT_FOUND.value()
+            ? Enums.ErrorCode.NOT_FOUND : Enums.ErrorCode.INVALID_REQUEST;
+        String message;
+        switch (status) {
+            case 404: message = "Resource not found"; break;
+            case 405: message = "Method not allowed"; break;
+            case 406: message = "Not acceptable"; break;
+            case 415: message = "Unsupported media type"; break;
+            default:
+                String detail = springError.getBody().getDetail();
+                message = org.springframework.util.StringUtils.hasText(detail) ? detail : "Invalid request";
+        }
+        logRequestError("Framework client error", request, status, code, requestId, traceId);
+        // Preserve framework headers such as Allow (405) and Accept (415).
+        return ResponseEntity.status(status).headers(springError.getHeaders()).body(ErrorResponse.builder()
+            .error(code)
+            .message(message)
+            .requestId(requestId)
+            .traceId(traceId)
+            .build());
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex, HttpServletRequest request) {
 
         String requestId = resolveRequestId(request);
         String traceId = resolveTraceId(request);
+        if (ex instanceof org.springframework.web.ErrorResponse springError
+                && springError.getStatusCode().is4xxClientError()) {
+            return handleFrameworkClientError(springError, request, requestId, traceId);
+        }
         if (ex instanceof CyclesProtocolException){
             LOG.warn("CyclesProtocolException reached generic handler unexpectedly; check @ControllerAdvice ordering. class={} method={} path={} route={} request_id={} trace_id={}",
                 ex.getClass().getName(),

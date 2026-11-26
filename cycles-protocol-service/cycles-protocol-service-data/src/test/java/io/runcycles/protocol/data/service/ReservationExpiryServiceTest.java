@@ -314,4 +314,65 @@ class ReservationExpiryServiceTest {
 
         verify(eventEmitter, never()).emit(any(), any(), any(), any(), any(), any(), any(), any());
     }
+
+    // --- backlog drain (multiple batches per sweep) ---
+
+    private static List<String> fullBatch(String prefix) {
+        List<String> ids = new java.util.ArrayList<>(1000);
+        for (int i = 0; i < 1000; i++) ids.add(prefix + i);
+        return ids;
+    }
+
+    @Test
+    void shouldDrainFollowUpBatchWhenFirstBatchIsFullAndProgresses() {
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(fullBatch("a"), List.of("tail-1", "tail-2"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
+                .thenReturn("{\"status\":\"NOT_FOUND\"}");
+
+        service.expireReservations();
+
+        verify(jedis, times(2)).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000));
+        verify(luaScripts).eval(eq(jedis), eq("expire"), anyString(), eq("tail-2"));
+    }
+
+    @Test
+    void shouldStopDrainingWhenFullBatchMakesNoProgress() {
+        // Every candidate is still in its grace period: nothing leaves reservation:ttl,
+        // so re-querying would return the same 1000 ids in a tight loop.
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(fullBatch("g"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
+                .thenReturn("{\"status\":\"SKIP\",\"reason\":\"in_grace_period\"}");
+
+        service.expireReservations();
+
+        verify(jedis, times(1)).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000));
+    }
+
+    @Test
+    void shouldCapBatchesPerSweep() throws Exception {
+        setField(service, "maxBatchesPerSweep", 3);
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(fullBatch("c"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
+                .thenReturn("{\"status\":\"NOT_FOUND\"}");
+
+        service.expireReservations();
+
+        verify(jedis, times(3)).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000));
+    }
+
+    @Test
+    void shouldAlwaysRunAtLeastOneBatchWhenCapIsMisconfigured() throws Exception {
+        setField(service, "maxBatchesPerSweep", 0);
+        when(jedis.zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000)))
+                .thenReturn(fullBatch("z"));
+        when(luaScripts.eval(eq(jedis), eq("expire"), anyString(), anyString()))
+                .thenReturn("{\"status\":\"NOT_FOUND\"}");
+
+        service.expireReservations();
+
+        verify(jedis, times(1)).zrangeByScore(eq("reservation:ttl"), eq((double) 0), anyDouble(), eq(0), eq(1000));
+    }
 }
