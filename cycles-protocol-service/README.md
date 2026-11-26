@@ -223,7 +223,7 @@ The `ApiKeyAuthenticationFilter` runs on every non-public request and performs a
 5. **Expiration check** — if `expires_at` is set and in the past, returns `401 KEY_EXPIRED`.
 6. **Hash verification** — the submitted secret is verified against the stored bcrypt hash; `401 INVALID_KEY` on mismatch.
 7. **Tenant association** — the key must have a non-blank `tenant_id`; `401 KEY_NOT_OWNED_BY_TENANT` otherwise.
-8. **Tenant status** — the tenant record (`tenant:{tenantId}`) is checked; `SUSPENDED` or `CLOSED` tenants return `401`.
+8. **Tenant status** — a `CLOSED` tenant returns `401`. A `SUSPENDED` tenant can authenticate, read and settle existing reservations. Fresh reserves, extensions and direct debits return `403`.
 
 On success the filter stores an `ApiKeyAuthentication` in the Spring `SecurityContext` containing the resolved `tenant_id` and any `permissions`.
 
@@ -277,7 +277,7 @@ Evaluate whether a budget operation would be allowed **without** reserving. Retu
 }
 ```
 
-Only `decision` is required. `affected_scopes`, `reason_code`, `retry_after_ms`, and `caps` are optional.
+Only `decision` is required. `affected_scopes`, `reason_code`, `retry_after_ms`, and `caps` are optional. A suspended tenant receives `DENY`. After all replicas are upgraded, operators can enable `cycles.decisions.emit-tenant-suspended-reason` to include `reason_code=TENANT_SUSPENDED` on decisions and reservation dry runs.
 
 On `DENY`. Possible `reason_code` values: `BUDGET_EXCEEDED`, `BUDGET_FROZEN`, `BUDGET_CLOSED`, `BUDGET_NOT_FOUND`, `OVERDRAFT_LIMIT_EXCEEDED`, `DEBT_OUTSTANDING`, and `TENANT_CLOSED` — the last appears on fresh (non-replay) `/v1/decide` and `dry_run` evaluations when the owning tenant's status is `CLOSED` (spec revision v0.1.25.13); cached pre-close replays keep their original payload:
 ```json
@@ -871,4 +871,4 @@ event snapshot when that legacy body is still available.
 |---|---|
 | `apikey:{keyId}` | JSON-serialised `ApiKey` object (key hash, tenant, status, permissions, expiry) |
 | `apikey:lookup:{prefix}` | Maps key prefix → `keyId` for O(1) lookup |
-| `tenant:{tenantId}` | Tenant metadata hash; includes `status` (`ACTIVE`, `SUSPENDED`, `CLOSED`) checked during API key validation |
+| `tenant:{tenantId}` | JSON tenant record with `status` (`ACTIVE`, `SUSPENDED`, `CLOSED`) checked during API key validation |

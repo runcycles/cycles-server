@@ -89,6 +89,13 @@ if tenant ~= nil and tenant ~= "" then
         if tenant_rec['status'] == 'CLOSED' then
             return cjson.encode({error = "TENANT_CLOSED", tenant = tenant})
         end
+        -- Governance tenant status SUSPENDED: "Read-only, no new
+        -- reservations ... existing active reservations can still
+        -- commit/release". New budget claims (reserve, direct-debit event)
+        -- are rejected here. Existing reservations can still commit or release.
+        if tenant_rec['status'] == 'SUSPENDED' then
+            return cjson.encode({error = "TENANT_SUSPENDED", tenant = tenant})
+        end
         if tenant_rec['status'] ~= 'ACTIVE' and tenant_rec['status'] ~= 'SUSPENDED' then
             -- The governance TenantStatus enum is a closed set (ACTIVE|
             -- SUSPENDED|CLOSED) and the cascade revision explicitly

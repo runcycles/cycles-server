@@ -104,7 +104,7 @@ class RedisDisconnectResilienceIntegrationTest {
                     .keyHash(hash)
                     .name("Resilience test key")
                     .status(ApiKeyStatus.ACTIVE)
-                    .permissions(Collections.emptyList())
+                    .permissions(java.util.List.of("reservations:create", "reservations:commit", "reservations:release", "reservations:extend", "reservations:list", "balances:read"))
                     .createdAt(Instant.now())
                     .build();
             jedis.set("apikey:lookup:" + prefix, "key-r");

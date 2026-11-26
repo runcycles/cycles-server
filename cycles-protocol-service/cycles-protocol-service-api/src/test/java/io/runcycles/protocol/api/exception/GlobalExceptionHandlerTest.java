@@ -561,4 +561,94 @@ class GlobalExceptionHandlerTest {
         assertThat(handler.handleGenericException(new RuntimeException("boom"), null)
             .getStatusCode().value()).isEqualTo(500);
     }
+
+    // ---- framework client errors must not surface as 500 ----
+
+    @Test
+    void typeMismatchOnParameterIs400InvalidRequest() {
+        org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex =
+                new org.springframework.web.method.annotation.MethodArgumentTypeMismatchException(
+                        "abc", Integer.class, "limit", null, new NumberFormatException("abc"));
+
+        ResponseEntity<ErrorResponse> response = handler.handleTypeMismatch(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).isEqualTo("Invalid value for parameter: limit");
+        assertThat(response.getBody().getRequestId()).isEqualTo("req-test-123");
+        assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    void unknownPathIs404NotFound() {
+        Exception ex = new org.springframework.web.servlet.resource.NoResourceFoundException(
+                org.springframework.http.HttpMethod.GET, "/v1/nope", "/v1/nope");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.NOT_FOUND);
+        assertThat(response.getBody().getMessage()).isEqualTo("Resource not found");
+        assertThat(response.getBody().getTraceId()).isEqualTo(TRACE_ID);
+    }
+
+    @Test
+    void unsupportedMethodIs405AndKeepsAllowHeader() {
+        Exception ex = new org.springframework.web.HttpRequestMethodNotSupportedException(
+                "DELETE", java.util.List.of("GET", "POST"));
+
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).isEqualTo("Method not allowed");
+        assertThat(response.getHeaders().getAllow()).isNotEmpty();
+    }
+
+    @Test
+    void unsupportedAndUnacceptableMediaTypesAre415And406() {
+        ResponseEntity<ErrorResponse> unsupported = handler.handleGenericException(
+                new org.springframework.web.HttpMediaTypeNotSupportedException("text/plain not supported"), request);
+        assertThat(unsupported.getStatusCode()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        assertThat(unsupported.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(unsupported.getBody().getMessage()).isEqualTo("Unsupported media type");
+
+        ResponseEntity<ErrorResponse> notAcceptable = handler.handleGenericException(
+                new org.springframework.web.HttpMediaTypeNotAcceptableException("nope"), request);
+        assertThat(notAcceptable.getStatusCode()).isEqualTo(HttpStatus.NOT_ACCEPTABLE);
+        assertThat(notAcceptable.getBody().getMessage()).isEqualTo("Not acceptable");
+    }
+
+    @Test
+    void missingRequestParameterIs400WithFrameworkDetail() {
+        Exception ex = new org.springframework.web.bind.MissingServletRequestParameterException("tenant", "String");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).contains("tenant");
+    }
+
+    @Test
+    void clientErrorWithoutDetailFallsBackToGenericMessage() {
+        Exception ex = new org.springframework.web.server.ResponseStatusException(HttpStatus.CONFLICT);
+
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INVALID_REQUEST);
+        assertThat(response.getBody().getMessage()).isEqualTo("Invalid request");
+    }
+
+    @Test
+    void frameworkServerErrorStillMapsTo500InternalError() {
+        Exception ex = new org.springframework.web.server.ResponseStatusException(HttpStatus.BAD_GATEWAY, "upstream");
+
+        ResponseEntity<ErrorResponse> response = handler.handleGenericException(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody().getError()).isEqualTo(Enums.ErrorCode.INTERNAL_ERROR);
+        assertThat(response.getBody().getMessage()).isEqualTo("Internal error");
+    }
 }

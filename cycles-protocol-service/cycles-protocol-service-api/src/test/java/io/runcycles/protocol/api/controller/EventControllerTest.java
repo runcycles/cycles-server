@@ -59,7 +59,7 @@ class EventControllerTest {
     @BeforeEach
     void setAuth() {
         SecurityContextHolder.getContext().setAuthentication(
-                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("reservations:create")));
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("reservations:create", "reservations:commit")));
     }
 
     private String eventJson(String tenant) throws Exception {
@@ -198,5 +198,42 @@ class EventControllerTest {
         EventController target = org.springframework.test.util.AopTestUtils.getTargetObject(controller);
         assertThatThrownBy(() -> target.create(null, request, mock(HttpServletRequest.class)))
             .isInstanceOf(CyclesProtocolException.class);
+    }
+
+    @Test
+    void balanceEventsCarryThePolicyTheRepositoryActuallyApplied() throws Exception {
+        // Request omits overage_policy; the repository resolved the tenant default.
+        EventCreateResponse resp = EventCreateResponse.builder()
+                .status(Enums.EventStatus.APPLIED)
+                .eventId("evt_policy")
+                .overagePolicy("ALLOW_WITH_OVERDRAFT")
+                .build();
+        when(repository.createEvent(any(), eq(TENANT))).thenReturn(resp);
+
+        mockMvc.perform(post("/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(eventJson(TENANT)))
+                .andExpect(status().isCreated())
+                // internal field must never leak to the wire
+                .andExpect(jsonPath("$.overage_policy").doesNotExist())
+                .andExpect(jsonPath("$.overagePolicy").doesNotExist());
+
+        org.mockito.Mockito.verify(eventEmitter).emitBalanceEvents(
+                any(), eq(TENANT), any(), any(), eq("ALLOW_WITH_OVERDRAFT"),
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void eventRequiresBothCreateAndCommitPermissions() throws Exception {
+        SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live_test", TENANT, "key-test-001", List.of("reservations:create")));
+
+        mockMvc.perform(post("/v1/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(eventJson(TENANT)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error").value("FORBIDDEN"));
+
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).createEvent(any(), any());
     }
 }

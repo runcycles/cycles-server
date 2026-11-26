@@ -32,6 +32,23 @@ class BalanceIntegrationTest extends BaseIntegrationTest {
     class Balances {
 
         @Test
+        @SuppressWarnings("unchecked")
+        void mixedLedgersRemainVisibleWhenOneBudgetIsIndexed() {
+            String parent = "tenant:" + TENANT_A;
+            String child = parent + "/app:governed";
+            try (Jedis jedis = jedisPool.getResource()) {
+                seedScopeBudget(jedis, child, "TOKENS", 1000, 0);
+                jedis.sadd("budgets:" + TENANT_A, "budget:" + child + ":TOKENS");
+                jedis.set("budget:tenant:" + TENANT_B + "/app:broken:TOKENS", "wrong-type");
+            }
+
+            ResponseEntity<Map> response = get("/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
+            assertThat(response.getStatusCode().value()).isEqualTo(200);
+            List<Map<String, Object>> balances = (List<Map<String, Object>>) response.getBody().get("balances");
+            assertThat(balances).extracting(b -> b.get("scope_path")).containsExactlyInAnyOrder(parent, child);
+        }
+
+        @Test
         void shouldQueryBalances() {
             ResponseEntity<Map> resp = get(
                     "/v1/balances?tenant=" + TENANT_A, API_KEY_SECRET_A);
@@ -130,6 +147,35 @@ class BalanceIntegrationTest extends BaseIntegrationTest {
             assertThat(balance).containsKey("reserved");
             assertThat(balance).containsKey("spent");
             assertThat(balance).containsKey("allocated");
+        }
+    }
+
+    @Nested
+    @DisplayName("API key permissions")
+    class Permissions {
+
+        @Test
+        void keyWithoutBalancesReadIsForbidden() throws Exception {
+            String secret = "cyc_live_permtest_0123456789abcdef";
+            try (Jedis jedis = jedisPool.getResource()) {
+                String prefix = secret.substring(0, 14);
+                ApiKey apiKey = ApiKey.builder()
+                        .keyId("key-perm").tenantId(TENANT_A).keyPrefix(prefix)
+                        .keyHash(BCrypt.hashpw(secret, BCrypt.gensalt()))
+                        .name("reserve-only key").status(ApiKeyStatus.ACTIVE)
+                        .permissions(List.of("reservations:create"))
+                        .createdAt(Instant.now()).build();
+                jedis.set("apikey:lookup:" + prefix, "key-perm");
+                jedis.set("apikey:key-perm", objectMapper.writeValueAsString(apiKey));
+            }
+
+            ResponseEntity<Map> balances = get("/v1/balances?tenant=" + TENANT_A, secret);
+            assertThat(balances.getStatusCode().value()).isEqualTo(403);
+            assertThat(balances.getBody().get("error")).isEqualTo("FORBIDDEN");
+
+            // ...while the permission it does hold keeps working.
+            ResponseEntity<Map> reserve = post("/v1/reservations", secret, reservationBody(TENANT_A, 100));
+            assertThat(reserve.getStatusCode().value()).isEqualTo(200);
         }
     }
 }

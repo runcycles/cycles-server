@@ -638,7 +638,9 @@ class RedisReservationCommitReleaseTest extends BaseRedisReservationRepositoryTe
 
             org.mockito.ArgumentCaptor<String[]> args = org.mockito.ArgumentCaptor.forClass(String[].class);
             verify(luaScripts).eval(eq(jedis), eq("release"), eq("RELEASE_SCRIPT"), args.capture());
-            assertThat(args.getValue()).hasSize(8);
+            assertThat(args.getValue()).hasSize(9);
+            // ARGV[9]: expected owner for the in-script ownership check
+            assertThat(args.getValue()[8]).isEqualTo("tenant-a");
             assertThat(args.getValue()[3]).contains("\"log_id\":\"log_atomic\"")
                     .contains("\"operation\":\"reservation.release\"");
             assertThat(args.getValue()[4]).isEqualTo("log_atomic");

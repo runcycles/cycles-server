@@ -179,10 +179,78 @@ class BaseControllerTest {
 
     private static final class TestController extends BaseController {
         Actor actor(HttpServletRequest request) { return buildActor(request); }
+        void require(String... permissions) { requirePermission(permissions); }
         String requestId(HttpServletRequest request) { return resolveRequestId(request); }
         String safe(Object value) { return safeLogValue(value); }
         void requestLog(Logger logger, HttpServletRequest request) {
             logRequest(logger, request, "operation", "tenant", "reservation");
         }
+    }
+
+    // ---- requirePermission ----
+
+    private static void authWith(String... permissions) {
+        SecurityContextHolder.getContext().setAuthentication(
+                new ApiKeyAuthentication("cyc_live_test", "acme-corp", "key-test-001", List.of(permissions)));
+    }
+
+    @Test
+    void requirePermissionPassesWhenKeyHoldsEveryPermission() {
+        authWith("reservations:create", "reservations:commit");
+        assertThatNoException().isThrownBy(() ->
+                controller.require("reservations:create", "reservations:commit"));
+    }
+
+    @Test
+    void requirePermissionRejectsMissingPermissionWith403() {
+        authWith("reservations:create");
+        assertThatThrownBy(() -> controller.require("reservations:create", "reservations:commit"))
+                .isInstanceOf(CyclesProtocolException.class)
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.FORBIDDEN)
+                .hasFieldOrPropertyWithValue("httpStatus", 403)
+                .hasMessageContaining("reservations:commit");
+    }
+
+    @Test
+    void requirePermissionRejectsKeyWithNoPermissions() {
+        authWith();
+        assertThatThrownBy(() -> controller.require("balances:read"))
+                .isInstanceOf(CyclesProtocolException.class)
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    void adminReadWildcardSatisfiesReadPermissionsOnly() {
+        authWith("admin:read");
+        assertThatNoException().isThrownBy(() -> controller.require("balances:read"));
+        // reservations:* are not *:read permissions - the wildcard must not cover them
+        assertThatThrownBy(() -> controller.require("reservations:list"))
+                .isInstanceOf(CyclesProtocolException.class);
+        assertThatThrownBy(() -> controller.require("reservations:create"))
+                .isInstanceOf(CyclesProtocolException.class);
+    }
+
+    @Test
+    void requirePermissionIsBypassedForAdminAuth() {
+        SecurityContextHolder.getContext().setAuthentication(new AdminApiKeyAuthentication("admin"));
+        assertThatNoException().isThrownBy(() -> controller.require("reservations:release"));
+    }
+
+    @Test
+    void requirePermissionRejectsWhenUnauthenticated() {
+        SecurityContextHolder.clearContext();
+        assertThatThrownBy(() -> controller.require("balances:read"))
+                .isInstanceOf(CyclesProtocolException.class)
+                .hasFieldOrPropertyWithValue("errorCode", Enums.ErrorCode.FORBIDDEN);
+    }
+
+    @Test
+    void requirePermissionCanBeDisabledByOperator() throws Exception {
+        TestController relaxed = new TestController();
+        java.lang.reflect.Field f = BaseController.class.getDeclaredField("enforcePermissions");
+        f.setAccessible(true);
+        f.setBoolean(relaxed, false);
+        authWith();
+        assertThatNoException().isThrownBy(() -> relaxed.require("reservations:create"));
     }
 }

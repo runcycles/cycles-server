@@ -164,9 +164,15 @@ public class EventEmitterService implements DisposableBean {
             String unit = b.getRemaining() != null ? b.getRemaining().getUnit().name() : null;
             long preRemainingVal = preRem.getOrDefault(scopePath, Long.MAX_VALUE);
             boolean preOverLimitVal = preOvl.getOrDefault(scopePath, false);
-            // budget.exhausted — transition: pre_remaining > 0 && remaining == 0
+            // budget.exhausted — transition: pre_remaining > 0 && remaining <= 0. An overdraft
+            // commit/event can take remaining straight from positive to negative without
+            // ever resting on 0; that is still the moment the budget ran out.
+            // A negative remaining only counts when the pre-state is actually known - without
+            // it an already-overdrawn budget would re-fire on every operation.
             if (b.getRemaining() != null && b.getRemaining().getAmount() != null
-                    && b.getRemaining().getAmount() == 0L && preRemainingVal > 0L) {
+                    && preRemainingVal > 0L
+                    && (b.getRemaining().getAmount() == 0L
+                        || (b.getRemaining().getAmount() < 0L && preRem.containsKey(scopePath)))) {
                 // Spec: use EventDataBudgetThreshold with threshold=1.0, direction=rising
                 Double utilization = null;
                 Long allocated = b.getAllocated() != null ? b.getAllocated().getAmount() : null;
@@ -184,7 +190,7 @@ public class EventEmitterService implements DisposableBean {
                                 .threshold(1.0)
                                 .utilization(utilization)
                                 .allocated(allocated)
-                                .remaining(0L)
+                                .remaining(b.getRemaining().getAmount())
                                 .spent(spent)
                                 .reserved(reserved)
                                 .direction("rising")

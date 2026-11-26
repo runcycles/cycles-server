@@ -39,6 +39,7 @@ public class BalanceController extends BaseController{
             @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
             @RequestParam(required = false) String cursor,
             HttpServletRequest httpRequest) {
+        requirePermission(PERM_BALANCES_READ);
         // Spec NORMATIVE: at least one subject filter must be provided
         if (tenant == null && workspace == null && app == null && workflow == null && agent == null && toolset == null) {
             throw new CyclesProtocolException(Enums.ErrorCode.INVALID_REQUEST,

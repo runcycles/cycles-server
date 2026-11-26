@@ -42,7 +42,12 @@ public class Enums {
         // with 409 TENANT_CLOSED (spec revision v0.1.25.13,
         // runcycles/cycles-protocol#125, which adds TENANT_CLOSED to the
         // documented DecisionReasonCode values).
-        TENANT_CLOSED
+        TENANT_CLOSED,
+        // 200-DENY on the non-persisting evaluations when the owning tenant is
+        // SUSPENDED (governance: "no new reservations"): the live reserve is
+        // refused, so the as-if-live answer is DENY. DecisionReasonCode is an
+        // open string in the runtime spec, so this value is additive.
+        TENANT_SUSPENDED
     }
 
     public enum CommitOveragePolicy {

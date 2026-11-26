@@ -18,6 +18,8 @@ public class EventCreateResponse {
     @Valid @JsonProperty("balances") private List<Balance> balances;
     /** Internal: true when this is an idempotent replay. Not serialized. */
     @JsonIgnore private boolean idempotentReplay;
+    /** Internal: the overage policy actually applied (request value or resolved tenant default). Not serialized. */
+    @JsonIgnore private String overagePolicy;
     /** Internal: per-scope debt incurred during this event for event emission. Not serialized. */
     @JsonIgnore private Map<String, Long> scopeDebtIncurred;
     /** Internal: per-scope pre-mutation remaining for transition detection. Not serialized. */

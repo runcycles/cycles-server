@@ -1,5 +1,21 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-11-26 — Server review fixes (bugs, spec compliance, performance)
+
+**Suspended tenants.** A suspended tenant can read, commit and release. Fresh reserve, extend and event requests return 403 `FORBIDDEN`. A prior successful extension remains replayable. Dry runs and decisions return `DENY`. The optional `TENANT_SUSPENDED` reason is disabled by default so v0.1.25.59 replicas can deserialize shared idempotency responses. Authentication returns 500 for a present record with an invalid status.
+
+**API-key permissions.** Controllers enforce the governance `Permission` values (`reservations:create|commit|release|extend|list`, `balances:read`; `admin:read` satisfies `*:read`) with 403; `/decide` needs `reservations:create`, `/events` needs create + commit. Kill switch: `cycles.auth.enforce-permissions=false`. `scope_filter` is still not enforced.
+
+**Error mapping.** Spring MVC client errors (unknown path, 405, 415, missing/mistyped parameter) return their 4xx instead of 500; a key-store outage during auth returns 500 `INTERNAL_ERROR` instead of 401.
+
+**Expiry.** The admin tenant-close cascade credits each budget's outstanding holds when it marks that ledger CLOSED. After expiry plus grace, the runtime validates every scope, preserves closed ledger snapshots and refunds scopes still holding funds. An open ledger with insufficient reserved funds triggers `CORRUPT_BUDGET` before any credit. If the owning tenant is CLOSED, the reservation transitions to `RELEASED` with `release_reason=tenant_closed` and a release timestamp. Admin GET can read the finalized row. Ordinary expiry still records `EXPIRED`. Within a tick the sweeper advances past retained candidates, up to `cycles.expiry.max-batches-per-sweep` batches (default 20).
+
+**Events.** `reservation.denied` is emitted for live 409 reserve denials and uses the deepest scope on `/decide`; `budget.exhausted` fires when remaining crosses below zero; event balance events carry the resolved overage policy.
+
+**Performance.** Balance queries use SCAN by default so mixed deployments retain externally seeded budgets. Operators can enable `cycles.balances.use-governance-index` when all budgets are indexed. Both pagination paths skip unreadable rows. Reservation ownership is checked inside commit/release/extend Lua and the GET read. Authentication uses one pooled connection, and `release.lua` uses one HMGET.
+
+Runtime and governance YAML are unchanged. Full suite incl. Redis integration and contract tests passes with the 95% line/branch gates.
+
 ## 2026-11-23 — Dependency review
 
 PR #299 updates the Java setup action used by CI, nightly jobs, and releases to v6.3.0 (`d1374f8`). PR #300 updates the Scorecard action to v2.6.0 (`23f22cd`). Both pins match their upstream release tags.

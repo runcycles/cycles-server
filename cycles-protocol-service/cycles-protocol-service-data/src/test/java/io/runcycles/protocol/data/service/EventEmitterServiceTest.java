@@ -392,4 +392,40 @@ class EventEmitterServiceTest {
             event.getEventType() == EventType.BUDGET_DEBT_INCURRED
                 && "valid".equals(event.getScope())));
     }
+
+    // --- budget.exhausted when an overdraft jumps straight past zero ---
+
+    @Test
+    void emitBalanceEvents_exhausted_emitsWhenRemainingCrossesBelowZero() throws Exception {
+        Balance b = Balance.builder()
+                .scope("tenant:t1").scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, -250L))
+                .allocated(new Amount(Enums.UnitEnum.USD_MICROCENTS, 10000L))
+                .spent(new Amount(Enums.UnitEnum.USD_MICROCENTS, 10250L))
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+
+        service.emitBalanceEvents(List.of(b), "t1", actor,
+                null, null, null, Map.of("tenant:t1", 500L), null, null, null);
+
+        verify(repository, timeout(5000)).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_EXHAUSTED
+                        && e.getData() != null
+                        && Long.valueOf(-250L).equals(((Number) e.getData().get("remaining")).longValue())));
+    }
+
+    @Test
+    void emitBalanceEvents_exhausted_doesNotEmitForNegativeRemainingWithoutKnownPreState() throws Exception {
+        // Already overdrawn and no pre-state: cannot be shown to be a transition.
+        Balance b = Balance.builder()
+                .scope("tenant:t1").scopePath("tenant:t1")
+                .remaining(new SignedAmount(Enums.UnitEnum.USD_MICROCENTS, -250L))
+                .build();
+        Actor actor = Actor.builder().type(ActorType.API_KEY).build();
+
+        service.emitBalanceEvents(List.of(b), "t1", actor, null, null);
+
+        verify(repository, after(200).never()).emit(argThat(e ->
+                e.getEventType() == EventType.BUDGET_EXHAUSTED));
+    }
 }

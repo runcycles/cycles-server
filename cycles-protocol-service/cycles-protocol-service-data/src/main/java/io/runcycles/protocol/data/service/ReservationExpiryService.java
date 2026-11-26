@@ -30,7 +30,8 @@ import java.util.Map;
  * is in the past, then invokes expire.lua per reservation, which:
  *   1. Checks the reservation is still ACTIVE and past expires_at + grace_ms.
  *   2. Releases reserved budget back to all affected scopes.
- *   3. Sets state = EXPIRED and removes the entry from reservation:ttl.
+ *   3. Marks the reservation RELEASED for a CLOSED tenant or EXPIRED otherwise,
+ *      then removes the entry from reservation:ttl.
  */
 @Service
 public class ReservationExpiryService {
@@ -44,8 +45,17 @@ public class ReservationExpiryService {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private RedisMaintenanceRunner maintenanceRunner;
 
-    /** Max candidates per sweep to avoid OOM after prolonged outages. */
+    /** Max candidates per batch to avoid OOM after prolonged outages. */
     private static final int SWEEP_BATCH_SIZE = 1000;
+
+    /**
+     * Upper bound on batches drained in one sweep. A single batch per 5s tick caps
+     * throughput at ~200 expiries/s; above that the backlog (and the budget it keeps
+     * locked in {@code reserved}) grows without bound. Draining up to this many full
+     * batches per tick lifts the ceiling while keeping one sweep bounded.
+     */
+    @org.springframework.beans.factory.annotation.Value("${cycles.expiry.max-batches-per-sweep:20}")
+    private int maxBatchesPerSweep = 20;
 
     /** HMGET projection for the reservation.expired event payload. */
     private static final List<String> EXPIRED_EVENT_FIELDS = List.of(
@@ -70,55 +80,76 @@ public class ReservationExpiryService {
 
     private void expireReservationsOnce() {
         try (Jedis jedis = jedisPool.getResource()) {
-            // Use Redis TIME (not System.currentTimeMillis) so the candidate query is
-            // consistent with the Lua scripts, which all use Redis TIME internally.
-            List<String> timeResult = jedis.time();
-            long now = Long.parseLong(timeResult.get(0)) * 1000
-                     + Long.parseLong(timeResult.get(1)) / 1000;
-
-            // Fetch up to SWEEP_BATCH_SIZE reservation IDs whose score (expires_at_ms) <= now.
-            // Any that are still in their grace period will be skipped by the Lua script.
-            List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now, 0, SWEEP_BATCH_SIZE);
-            if (candidates.isEmpty()) return;
-
-            LOG.debug("Expiry sweep: {} candidate(s)", candidates.size());
-
-            // One TraceContext per sweep batch correlates all reservation.expired
+            // One TraceContext per sweep correlates all reservation.expired
             // events from the same sweep. Sweepers have no originating HTTP
             // request, so request_id stays null (spec permits) and the
             // trace context defaults to not-inbound-W3C with trace-flags=01.
-            TraceContext batchTrace = TraceContext.generated(TraceIdGenerator.generate());
+            TraceContext batchTrace = null;
+            int batches = Math.max(1, maxBatchesPerSweep);
+            int retained = 0;
+            for (int batch = 0; batch < batches; batch++) {
+                // Use Redis TIME (not System.currentTimeMillis) so the candidate query is
+                // consistent with the Lua scripts, which all use Redis TIME internally.
+                List<String> timeResult = jedis.time();
+                long now = Long.parseLong(timeResult.get(0)) * 1000
+                         + Long.parseLong(timeResult.get(1)) / 1000;
 
-            for (String reservationId : candidates) {
-                try {
-                    // expire.lua now uses Redis TIME internally for consistent time-source
-                    // with reserve/commit/release/extend scripts. We still pass reservation_id only.
-                    Object result = luaScripts.eval(jedis, "expire", expireScript, reservationId);
-                    LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
-                    JsonNode resultNode = objectMapper.readTree(
-                            result != null ? result.toString() : "");
-                    if ("ERROR".equals(resultNode.path("status").asText())) {
-                        String quarantineReason = resultNode.path("quarantine_reason")
-                                .asText("UNKNOWN");
-                        LOG.warn("Expiry quarantined reservation after Lua error: "
-                                        + "reservation_id={} reason={} error={} message={}",
-                                LogSanitizer.sanitize(reservationId),
-                                LogSanitizer.sanitize(quarantineReason),
-                                LogSanitizer.sanitize(resultNode.path("error").asText()),
-                                LogSanitizer.sanitize(resultNode.path("message").asText()));
-                        JsonNode tenantNode = resultNode.path("tenant");
-                        String tenantId = tenantNode.isTextual()
-                                ? tenantNode.asText(null) : null;
-                        metrics.recordQuarantined(tenantId, quarantineReason);
-                        continue;
-                    }
-                    // Emit reservation.expired event if the Lua script actually expired this reservation
-                    emitExpiredEvent(jedis, reservationId, resultNode, batchTrace);
-                } catch (Exception e) {
-                    LOG.warn("Failed to expire reservation: {}", LogSanitizer.sanitize(reservationId), e);
+                // Fetch up to SWEEP_BATCH_SIZE reservation IDs whose score (expires_at_ms) <= now.
+                // Any that are still in their grace period will be skipped by the Lua script.
+                List<String> candidates = jedis.zrangeByScore("reservation:ttl", 0, now, retained, SWEEP_BATCH_SIZE);
+                if (candidates.isEmpty()) return;
+
+                LOG.debug("Expiry sweep: {} candidate(s)", candidates.size());
+                if (batchTrace == null) {
+                    batchTrace = TraceContext.generated(TraceIdGenerator.generate());
                 }
+
+                int removed = sweepBatch(jedis, candidates, batchTrace);
+                if (candidates.size() < SWEEP_BATCH_SIZE) return;
+                // Removed entries no longer occupy a rank. Skip the entries still in
+                // grace or awaiting retry. Each new sweep starts at rank zero, including
+                // after concurrent commits or extensions change ranks between batches.
+                retained += candidates.size() - removed;
             }
         }
+    }
+
+    /** @return how many candidates left {@code reservation:ttl} (expired, finalised, missing or quarantined). */
+    private int sweepBatch(Jedis jedis, List<String> candidates, TraceContext batchTrace) {
+        int removed = 0;
+        for (String reservationId : candidates) {
+            try {
+                // expire.lua now uses Redis TIME internally for consistent time-source
+                // with reserve/commit/release/extend scripts. We still pass reservation_id only.
+                Object result = luaScripts.eval(jedis, "expire", expireScript, reservationId);
+                LOG.debug("Expire result: reservationId={} result={}", reservationId, result);
+                JsonNode resultNode = objectMapper.readTree(
+                        result != null ? result.toString() : "");
+                if (!"in_grace_period".equals(resultNode.path("reason").asText())) {
+                    removed++;
+                }
+                if ("ERROR".equals(resultNode.path("status").asText())) {
+                    String quarantineReason = resultNode.path("quarantine_reason")
+                            .asText("UNKNOWN");
+                    LOG.warn("Expiry quarantined reservation after Lua error: "
+                                    + "reservation_id={} reason={} error={} message={}",
+                            LogSanitizer.sanitize(reservationId),
+                            LogSanitizer.sanitize(quarantineReason),
+                            LogSanitizer.sanitize(resultNode.path("error").asText()),
+                            LogSanitizer.sanitize(resultNode.path("message").asText()));
+                    JsonNode tenantNode = resultNode.path("tenant");
+                    String tenantId = tenantNode.isTextual()
+                            ? tenantNode.asText(null) : null;
+                    metrics.recordQuarantined(tenantId, quarantineReason);
+                    continue;
+                }
+                // Emit reservation.expired event if the Lua script actually expired this reservation
+                emitExpiredEvent(jedis, reservationId, resultNode, batchTrace);
+            } catch (Exception e) {
+                LOG.warn("Failed to expire reservation: {}", LogSanitizer.sanitize(reservationId), e);
+            }
+        }
+        return removed;
     }
 
     private void emitExpiredEvent(Jedis jedis, String reservationId, JsonNode luaResult,

@@ -118,7 +118,8 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
         }
 
         @Test
-        void activeAndSuspendedTenants_proceedToNormalEvaluation() throws Exception {
+        void upgradedReplicasCanEmitSuspendedReasonOnBothSurfaces() throws Exception {
+            setField("emitTenantSuspendedReason", true);
             baseStubs();
             // No budgets mocked: passing the gate lands in DENY/BUDGET_NOT_FOUND,
             // proving the gate did not short-circuit the evaluation.
@@ -129,8 +130,12 @@ class RedisReservationDecideEventTest extends BaseRedisReservationRepositoryTest
 
             when(jedis.get("tenant:acme"))
                     .thenReturn("{\"tenant_id\":\"acme\",\"status\":\"SUSPENDED\"}");
-            assertThat(repository.decide(decideRequest("gate-susp"), "acme").getReasonCode())
-                    .isEqualTo(Enums.ReasonCode.BUDGET_NOT_FOUND);
+            // Governance: SUSPENDED = "no new reservations" -> the as-if-live answer is DENY.
+            DecisionResponse suspended = repository.decide(decideRequest("gate-susp"), "acme");
+            assertThat(suspended.getDecision()).isEqualTo(Enums.DecisionEnum.DENY);
+            assertThat(suspended.getReasonCode()).isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
+            assertThat(repository.createReservation(dryRunRequest("gate-susp-dry"), "acme").getReasonCode())
+                    .isEqualTo(Enums.ReasonCode.TENANT_SUSPENDED);
         }
 
         @Test

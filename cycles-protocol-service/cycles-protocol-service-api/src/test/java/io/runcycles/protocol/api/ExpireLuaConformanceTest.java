@@ -11,9 +11,11 @@ import redis.clients.jedis.Jedis;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Direct conformance tests for {@code lua/expire.lua}.
@@ -24,10 +26,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Java orchestration with Mockito).
  *
  * Invariants enforced here (from expire.lua source):
- *   C1. Only ACTIVE → EXPIRED. Any other incoming state returns SKIP with that state,
+ *   C1. ACTIVE becomes RELEASED for a closed owner or EXPIRED otherwise. Other states return SKIP,
  *       never rewrites the hash.
- *   C2. Releases the held estimate_amount back to `remaining` at every budgeted scope,
- *       and decrements `reserved` by the same amount — atomically.
+ *   C2. Refunds the held estimate atomically at each scope still holding funds.
+ *       CLOSED budgets retain the final balances recorded by the close cascade.
  *   C3. Removes the reservation id from the `reservation:ttl` sorted set.
  *   C4. Idempotent: re-invoking on the same reservation after it expired is a no-op
  *       that returns SKIP state=EXPIRED.
@@ -97,6 +99,76 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
     @Nested
     @DisplayName("C1 / C2 / C3 — ACTIVE → EXPIRED happy path")
     class ActiveToExpired {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"CLOSED", "ACTIVE", "FROZEN"})
+        void releasesAfterCascadeRefundingOnlyScopesThatStillHoldFunds(String childStatus) throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                String parent = "tenant:" + TENANT_A;
+                jedis.set(parent, "{\"status\":\"CLOSED\"}");
+                String child = parent + "/app:worker";
+                String resId = seedActiveReservation(jedis, 500, System.currentTimeMillis() - 10_000, 0, parent, 500);
+                String reservationKey = "reservation:res_" + resId;
+                String scopes = objectMapper.writeValueAsString(List.of(parent, child));
+                jedis.hset(reservationKey, Map.of("affected_scopes", scopes, "budgeted_scopes", scopes));
+
+                // The admin cascade closes one budget at a time and credits its entire hold.
+                String parentKey = "budget:" + parent + ":TOKENS";
+                jedis.hset(parentKey, Map.of("status", "CLOSED", "reserved", "0", "remaining", "1000000"));
+                Map<String, String> closedSnapshot = jedis.hgetAll(parentKey);
+                String childKey = "budget:" + child + ":TOKENS";
+                boolean childClosed = "CLOSED".equals(childStatus);
+                jedis.hset(childKey, Map.of("status", childStatus, "reserved", childClosed ? "0" : "500",
+                        "remaining", childClosed ? "2000" : "1500"));
+
+                assertThat(evalExpire(jedis, resId)).containsEntry("status", "RELEASED");
+                assertThat(jedis.hgetAll(reservationKey)).containsEntry("state", "RELEASED")
+                        .containsEntry("release_reason", "tenant_closed").containsKey("released_at")
+                        .doesNotContainKeys("expired_at", "quarantined_at", "quarantine_reason");
+                assertThat(jedis.zscore("reservation:ttl", resId)).isNull();
+                assertThat(jedis.pttl(reservationKey)).isPositive();
+                assertThat(evalExpire(jedis, resId)).containsEntry("status", "SKIP");
+                assertThat(jedis.hgetAll(parentKey)).isEqualTo(closedSnapshot);
+                assertThat(jedis.hgetAll(childKey)).containsEntry("reserved", "0")
+                        .containsEntry("remaining", "2000").containsEntry("status", childStatus);
+            }
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"broken-json", "false", "{\"status\":\"UNKNOWN\"}"})
+        void malformedTenantLeavesHoldAndIndexIntactForRetry(String tenantRecord) throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                String owner = "tenant:" + TENANT_A;
+                String id = seedActiveReservation(jedis, 500, System.currentTimeMillis() - 10_000, 0, owner, 500);
+                String budgetKey = "budget:" + owner + ":TOKENS";
+                Map<String, String> before = jedis.hgetAll(budgetKey);
+                jedis.set(owner, tenantRecord);
+
+                assertThatThrownBy(() -> evalExpire(jedis, id))
+                        .isInstanceOf(redis.clients.jedis.exceptions.JedisDataException.class);
+                assertThat(jedis.hgetAll(budgetKey)).isEqualTo(before);
+                assertThat(jedis.hget("reservation:res_" + id, "state")).isEqualTo("ACTIVE");
+                assertThat(jedis.zscore("reservation:ttl", id)).isNotNull();
+
+                jedis.set(owner, "{\"status\":\"SUSPENDED\"}");
+                assertThat(evalExpire(jedis, id)).containsEntry("status", "EXPIRED");
+            }
+        }
+
+        @Test
+        void closingOnlyTheBudgetPreservesItsSnapshotOnOrdinaryExpiry() throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                String owner = "tenant:" + TENANT_A;
+                jedis.set(owner, "{\"status\":\"ACTIVE\"}");
+                String id = seedActiveReservation(jedis, 500, System.currentTimeMillis() - 10_000, 0, owner, 0);
+                String budget = "budget:" + owner + ":TOKENS";
+                jedis.hset(budget, "status", "CLOSED");
+                Map<String, String> snapshot = jedis.hgetAll(budget);
+
+                assertThat(evalExpire(jedis, id)).containsEntry("status", "EXPIRED");
+                assertThat(jedis.hgetAll(budget)).isEqualTo(snapshot);
+            }
+        }
 
         @Test
         void expiresPastGraceAndReleasesReservedBudget() throws Exception {
@@ -295,7 +367,7 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
     class CorruptReservationData {
 
         @ParameterizedTest
-        @ValueSource(strings = {"__missing__", "not-an-integer", "-1"})
+        @ValueSource(strings = {"__missing__", "not-an-integer", "-1", "9223372036854775808"})
         void removesPoisonEntryWithoutChangingStateOrBudget(String corruptAmount)
                 throws Exception {
             try (Jedis jedis = jedisPool.getResource()) {
@@ -332,7 +404,7 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"__missing__", "not-json", "{}", "[]", "[123]"})
+        @ValueSource(strings = {"__missing__", "not-json", "{}", "[]", "[123]", "[\"scope\",\"scope\"]"})
         void malformedScopesCannotFinalizeWithoutRefund(String corruptScopes)
                 throws Exception {
             try (Jedis jedis = jedisPool.getResource()) {
@@ -425,6 +497,81 @@ class ExpireLuaConformanceTest extends BaseIntegrationTest {
                 Map<String, Object> result = objectMapper.readValue(
                         raw.toString(), new TypeReference<Map<String, Object>>() {});
                 assertThat(result).containsEntry("status", "EXPIRED");
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("C9 — a corrupt budget row never causes a partial release")
+    class CorruptBudgetRow {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"wrong-type", "non-integer-reserved", "non-integer-remaining",
+                "leading-zero", "negative-zero", "missing-ledger", "missing-remaining",
+                "insufficient-reserved", "refund-overflow"})
+        void quarantinesWithoutTouchingAnyScope(String corruption) throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String parent = "tenant:" + TENANT_A;
+                String child = parent + "/app:corrupt";
+                String resId = seedActiveReservation(jedis, 500, pastExpires, 0, parent, 500);
+                String reservationKey = "reservation:res_" + resId;
+                String scopes = "[\"" + parent + "\",\"" + child + "\"]";
+                jedis.hset(reservationKey, Map.of("affected_scopes", scopes, "budgeted_scopes", scopes));
+
+                // The SECOND scope is the broken one: without pre-validation the first
+                // scope would already have been released when the script failed.
+                String childKey = "budget:" + child + ":TOKENS";
+                switch (corruption) {
+                    case "wrong-type" -> jedis.set(childKey, "not-a-hash");
+                    case "non-integer-reserved" ->
+                            jedis.hset(childKey, Map.of("reserved", "abc", "remaining", "100"));
+                    case "non-integer-remaining" -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", "1.5e3"));
+                    case "leading-zero" -> jedis.hset(childKey, Map.of("reserved", "0500", "remaining", "100"));
+                    case "negative-zero" -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", "-0"));
+                    case "missing-ledger" -> assertThat(jedis.exists(childKey)).isFalse();
+                    case "missing-remaining" -> jedis.hset(childKey, "reserved", "500");
+                    case "insufficient-reserved" -> jedis.hset(childKey, Map.of("reserved", "499", "remaining", "100"));
+                    case "refund-overflow" -> jedis.hset(childKey, Map.of("reserved", "500", "remaining", Long.toString(Long.MAX_VALUE)));
+                    default -> throw new AssertionError(corruption);
+                }
+
+                Map<String, Object> result = evalExpire(jedis, resId);
+
+                assertThat(result)
+                        .containsEntry("status", "ERROR")
+                        .containsEntry("quarantine_reason", "CORRUPT_BUDGET")
+                        .containsEntry("tenant", TENANT_A);
+                assertThat(jedis.hget(reservationKey, "state")).isEqualTo("ACTIVE");
+                assertThat(jedis.zscore("reservation:ttl", resId)).isNull();
+                if ("missing-ledger".equals(corruption)) {
+                    assertThat(jedis.exists(childKey)).isFalse();
+                }
+                assertThat(jedis.hgetAll("budget:" + parent + ":TOKENS"))
+                        .as("healthy scope must not be partially released")
+                        .containsEntry("reserved", "500")
+                        .containsEntry("remaining", "999500");
+            }
+        }
+
+        @Test
+        void healthyMultiScopeReservationStillReleasesEveryScope() throws Exception {
+            try (Jedis jedis = jedisPool.getResource()) {
+                long pastExpires = System.currentTimeMillis() - 10_000;
+                String parent = "tenant:" + TENANT_A;
+                String child = parent + "/app:healthy";
+                String resId = seedActiveReservation(jedis, 500, pastExpires, 0, parent, 500);
+                String scopes = "[\"" + parent + "\",\"" + child + "\"]";
+                jedis.hset("reservation:res_" + resId,
+                        Map.of("affected_scopes", scopes, "budgeted_scopes", scopes));
+                jedis.hset("budget:" + child + ":TOKENS", Map.of("reserved", "500", "remaining", "1500"));
+
+                assertThat(evalExpire(jedis, resId)).containsEntry("status", "EXPIRED");
+
+                assertThat(jedis.hgetAll("budget:" + parent + ":TOKENS"))
+                        .containsEntry("reserved", "0").containsEntry("remaining", "1000000");
+                assertThat(jedis.hgetAll("budget:" + child + ":TOKENS"))
+                        .containsEntry("reserved", "0").containsEntry("remaining", "2000");
             }
         }
     }

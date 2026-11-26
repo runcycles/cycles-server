@@ -20,6 +20,7 @@ local idempotency_key = ARGV[4]
 local payload_hash    = ARGV[5] or ""
 local metrics_json    = ARGV[6] or ""
 local metadata_json   = ARGV[7] or ""
+local expected_tenant = ARGV[8] or ""
 
 if not actual_amount or compare_int(actual_amount, "0") < 0 then
     return cjson.encode({error = "INVALID_REQUEST", message = "actual amount must be a non-negative int64"})
@@ -35,7 +36,15 @@ local rdata = redis.call('HMGET', reservation_key,
 
 local state = rdata[1]
 if not state then
-    return cjson.encode({error = "NOT_FOUND"})
+    return cjson.encode({error = "NOT_FOUND", message = reservation_id})
+end
+
+-- Ownership (spec: a reservation owned by a different effective tenant MUST
+-- return 403). Checked in-script, ahead of replay handling and every state
+-- error, so the caller needs no separate owner lookup round-trip and a
+-- foreign caller learns nothing about the reservation's state.
+if expected_tenant ~= "" and rdata[11] ~= expected_tenant then
+    return cjson.encode({error = "FORBIDDEN"})
 end
 
 local estimate_amount = normalize_int(rdata[2])

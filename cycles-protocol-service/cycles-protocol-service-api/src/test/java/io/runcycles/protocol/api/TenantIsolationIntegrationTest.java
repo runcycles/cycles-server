@@ -164,7 +164,7 @@ class TenantIsolationIntegrationTest extends BaseIntegrationTest {
                         .keyHash(hash)
                         .name("Revoked key")
                         .status(ApiKeyStatus.REVOKED)
-                        .permissions(Collections.emptyList())
+                        .permissions(java.util.List.of("reservations:create", "reservations:commit", "reservations:release", "reservations:extend", "reservations:list", "balances:read"))
                         .createdAt(Instant.now())
                         .build();
 

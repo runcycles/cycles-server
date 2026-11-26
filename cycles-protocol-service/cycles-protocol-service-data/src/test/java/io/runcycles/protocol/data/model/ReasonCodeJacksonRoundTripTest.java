@@ -58,7 +58,9 @@ class ReasonCodeJacksonRoundTripTest {
             Enums.ReasonCode.BUDGET_NOT_FOUND,
             Enums.ReasonCode.OVERDRAFT_LIMIT_EXCEEDED,
             Enums.ReasonCode.DEBT_OUTSTANDING,
-            Enums.ReasonCode.TENANT_CLOSED
+            Enums.ReasonCode.TENANT_CLOSED,
+            // Governance tenant status SUSPENDED ("no new reservations") on dry_run / decide.
+            Enums.ReasonCode.TENANT_SUSPENDED
     );
 
     @Test
@@ -70,7 +72,7 @@ class ReasonCodeJacksonRoundTripTest {
         // documented known values; the spec MAY list additional values the server
         // hasn't adopted yet (e.g., v0.1.26 extension codes).
         assertThat(Enums.ReasonCode.values())
-                .hasSize(7)
+                .hasSize(8)
                 .containsExactlyElementsOf(V_0_1_25_BASE_VALUES);
     }
 

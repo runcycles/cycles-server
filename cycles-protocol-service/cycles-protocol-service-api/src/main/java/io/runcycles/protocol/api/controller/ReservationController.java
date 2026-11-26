@@ -4,12 +4,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.runcycles.protocol.data.exception.CyclesProtocolException;
 import io.runcycles.protocol.data.repository.RedisReservationRepository;
 import io.runcycles.protocol.data.service.EventEmitterService;
+import io.runcycles.protocol.data.service.ScopeDerivationService;
 import io.runcycles.protocol.model.*;
 import io.runcycles.protocol.model.audit.AuditLogEntry;
 import io.runcycles.protocol.model.event.*;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import io.swagger.v3.oas.annotations.*;
@@ -42,6 +45,23 @@ public class ReservationController extends BaseController{
     @Autowired
     private ObjectMapper objectMapper;
 
+    /** Stateless; used only to name the scope on a live-denial event. */
+    private final ScopeDerivationService scopeDerivation = new ScopeDerivationService();
+
+    /**
+     * Live (non-dry) reserve denials. The spec expresses these as 409 errors rather
+     * than decision=DENY, but they are the enforcement outcome operators subscribe to
+     * {@code reservation.denied} for, so they are emitted the same way as dry_run and
+     * /decide denials.
+     */
+    private static final Set<Enums.ErrorCode> LIVE_DENIAL_CODES = EnumSet.of(
+            Enums.ErrorCode.BUDGET_EXCEEDED,
+            Enums.ErrorCode.BUDGET_FROZEN,
+            Enums.ErrorCode.BUDGET_CLOSED,
+            Enums.ErrorCode.OVERDRAFT_LIMIT_EXCEEDED,
+            Enums.ErrorCode.DEBT_OUTSTANDING,
+            Enums.ErrorCode.TENANT_CLOSED);
+
     @PostMapping
     @Operation(operationId = "createReservation", summary = "Create budget reservation")
     public ResponseEntity<ReservationCreateResponse> create(
@@ -53,6 +73,7 @@ public class ReservationController extends BaseController{
         // Stash the parsed request so a budget-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
+        requirePermission(PERM_RESERVATIONS_CREATE);
         validateSubject(request.getSubject());
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
         // Spec: validate subject.tenant against auth, but effective tenant always comes from auth context
@@ -61,8 +82,13 @@ public class ReservationController extends BaseController{
         // CyclesEvidence: emitting + stamping cycles_evidence + idempotent caching all happen
         // inside createReservation (the idempotent unit), covering reserve AND dry_run; the
         // trace id is threaded through for the envelope's trace_id.
-        ReservationCreateResponse response = repository.createReservation(request, tenant,
-                resolveTraceId(httpRequest));
+        ReservationCreateResponse response;
+        try {
+            response = repository.createReservation(request, tenant, resolveTraceId(httpRequest));
+        } catch (CyclesProtocolException denial) {
+            emitLiveDenialEvent(denial, request, tenant, httpRequest);
+            throw denial;
+        }
         try {
             // Idempotent replay: the original create already emitted its events (the
             // RESERVATION_DENIED deny event and any budget-state transition events);
@@ -116,15 +142,64 @@ public class ReservationController extends BaseController{
         return ResponseEntity.ok(response);
     }
 
+    /**
+     * Emit {@code reservation.denied} for a live reserve that was refused with one of
+     * {@link #LIVE_DENIAL_CODES}. Never throws: the denial itself must still reach the
+     * client unchanged.
+     */
+    private void emitLiveDenialEvent(CyclesProtocolException denial, ReservationCreateRequest request,
+                                     String tenant, HttpServletRequest httpRequest) {
+        if (!LIVE_DENIAL_CODES.contains(denial.getErrorCode())) {
+            return;
+        }
+        try {
+            List<String> scopes = scopeDerivation.deriveScopes(request.getSubject());
+            // subject and estimate are bean-validated before the repository call
+            String scopePath = scopes.get(scopes.size() - 1);
+            Map<String, Object> actionMap = objectMapper.convertValue(request.getAction(),
+                    new com.fasterxml.jackson.core.type.TypeReference<>() {});
+            Map<String, Object> subjectMap = objectMapper.convertValue(request.getSubject(),
+                    new com.fasterxml.jackson.core.type.TypeReference<>() {});
+            eventEmitter.emit(EventType.RESERVATION_DENIED, tenant, scopePath,
+                    buildActor(httpRequest),
+                    EventDataReservationDenied.builder()
+                            .scope(scopePath)
+                            .unit(request.getEstimate().getUnit().name())
+                            .reasonCode(denial.getErrorCode().name())
+                            .requestedAmount(request.getEstimate().getAmount())
+                            .action(actionMap)
+                            .subject(subjectMap)
+                            .build(),
+                    null,
+                    resolveRequestId(httpRequest),
+                    resolveTraceContext(httpRequest));
+        } catch (Exception e) {
+            logSideEffectFailure(LOG, httpRequest, "emit reservation denial event", tenant, null, e);
+        }
+    }
+
+    /**
+     * Effective owner tenant for a reservation-scoped mutation. Tenant-key callers ARE
+     * the expected owner: the Lua script verifies ownership atomically (403 on mismatch,
+     * 404 when absent), so no separate lookup round-trip is needed. Admin-on-behalf-of
+     * callers have no effective tenant, so the owner is read from the reservation.
+     */
+    private String resolveReservationTenant(String reservationId) {
+        return isAdminAuth()
+                ? repository.findReservationTenantById(reservationId)
+                : extractAuthTenantId();
+    }
+
     @GetMapping("/{reservation_id}")
     @Operation(operationId = "getReservation", summary = "Get reservation by ID")
     public ResponseEntity<ReservationDetail> get(
             @PathVariable("reservation_id") @Size(min = 1, max = 128) String reservationId,
             HttpServletRequest httpRequest) {
-        String tenant = repository.findReservationTenantById(reservationId);
-        logRequest(LOG, httpRequest, "GET /v1/reservations/{reservation_id}", tenant, reservationId);
-        authorizeTenant(tenant);
-        ReservationDetail detail = repository.getReservationById(reservationId);
+        requirePermission(PERM_RESERVATIONS_LIST);
+        // Ownership is enforced inside the single read (null = admin, any tenant).
+        String expectedTenant = isAdminAuth() ? null : extractAuthTenantId();
+        logRequest(LOG, httpRequest, "GET /v1/reservations/{reservation_id}", expectedTenant, reservationId);
+        ReservationDetail detail = repository.getReservationById(reservationId, expectedTenant);
         return ResponseEntity.ok(detail);
     }
 
@@ -138,10 +213,10 @@ public class ReservationController extends BaseController{
         // Stash the parsed request so a lifecycle-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
+        requirePermission(PERM_RESERVATIONS_COMMIT);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
-        String tenant = repository.findReservationTenantById(reservationId);
+        String tenant = resolveReservationTenant(reservationId);
         logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/commit", tenant, reservationId);
-        authorizeTenant(tenant);
         CommitResponse response = repository.commitReservation(reservationId, request, tenant,
                 resolveTraceId(httpRequest));
         // Idempotent replay: the original commit already emitted its events; do not re-emit.
@@ -198,10 +273,10 @@ public class ReservationController extends BaseController{
         // Stash the parsed request so a lifecycle-denial `error` envelope can carry it (audit trail).
         httpRequest.setAttribute(
                 io.runcycles.protocol.api.exception.GlobalExceptionHandler.EVIDENCE_REQUEST_ATTRIBUTE, request);
+        requirePermission(PERM_RESERVATIONS_RELEASE);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
-        String tenant = repository.findReservationTenantById(reservationId);
+        String tenant = resolveReservationTenant(reservationId);
         logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/release", tenant, reservationId);
-        authorizeTenant(tenant);
         String actorType = isAdminAuth() ? "admin_on_behalf_of" : "tenant";
         String safeReason = request.getReason() != null
                 ? request.getReason().replaceAll("[\\r\\n]", " ") : null;
@@ -246,10 +321,10 @@ public class ReservationController extends BaseController{
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyHeader,
             @Valid @RequestBody ReservationExtendRequest request,
             HttpServletRequest httpRequest) {
+        requirePermission(PERM_RESERVATIONS_EXTEND);
         validateIdempotencyHeader(idempotencyHeader, request.getIdempotencyKey());
-        String tenant = repository.findReservationTenantById(reservationId);
+        String tenant = resolveReservationTenant(reservationId);
         logRequest(LOG, httpRequest, "POST /v1/reservations/{reservation_id}/extend", tenant, reservationId);
-        authorizeTenant(tenant);
         ReservationExtendResponse response = repository.extendReservation(reservationId, request, tenant);
         return ResponseEntity.ok(response);
     }
@@ -277,6 +352,7 @@ public class ReservationController extends BaseController{
             @RequestParam(value = "finalized_to", required = false) String finalizedTo,
             @RequestParam(value = "include", required = false) String include,
             HttpServletRequest httpRequest) {
+        requirePermission(PERM_RESERVATIONS_LIST);
         // Validate status against ReservationStatus enum if provided
         if (status != null) {
             try {
