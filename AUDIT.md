@@ -1,5 +1,9 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 0.1.25.61 — Webhook subscription compatibility
+
+The runtime event router accepts the encrypted custom-header envelope introduced by admin 0.1.25.56. Only the delivery worker reads the credentials.
+
 ## 2026-11-26 — Server review fixes (bugs, spec compliance, performance)
 
 **Suspended tenants.** A suspended tenant can read, commit and release. Fresh reserve, extend and event requests return 403 `FORBIDDEN`. A prior successful extension remains replayable. Dry runs and decisions return `DENY`. The optional `TENANT_SUSPENDED` reason is disabled by default so v0.1.25.59 replicas can deserialize shared idempotency responses. Authentication returns 500 for a present record with an invalid status.

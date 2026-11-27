@@ -14,6 +14,10 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## 0.1.25.61 — Webhook subscription compatibility
+
+Runtime webhook routing supports subscriptions written by admin 0.1.25.56 with encrypted custom headers.
+
 ## [0.1.25.60] — 2026-11-26
 
 - Suspended tenants can read and settle existing reservations. Fresh reserves, extensions and direct-debit events return 403. A retry of a successful extension retains its original expiry. Dry runs and decisions return `DENY`. Enable `cycles.decisions.emit-tenant-suspended-reason` after upgrading all replicas to include the `TENANT_SUSPENDED` reason.

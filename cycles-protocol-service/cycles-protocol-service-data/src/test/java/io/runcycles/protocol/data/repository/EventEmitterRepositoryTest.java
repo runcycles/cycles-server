@@ -122,7 +122,8 @@ class EventEmitterRepositoryTest {
                 .status(WebhookStatus.ACTIVE)
                 .consecutiveFailures(0).disableAfterFailures(10).build();
         stubPipelineForSubscriptions(Set.of("whsub_1"), Collections.emptySet(),
-                Map.of("whsub_1", objectMapper.writeValueAsString(sub)));
+                Map.of("whsub_1", objectMapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(sub)
+                        .put("encrypted_headers", "opaque-to-router").toString()));
 
         Event event = Event.builder()
                 .eventType(EventType.RESERVATION_DENIED)
