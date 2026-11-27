@@ -6,6 +6,8 @@ import lombok.*;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+// Routing uses selectors only. The delivery worker owns the encrypted credentials.
+@JsonIgnoreProperties("encrypted_headers")
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class WebhookSubscription {
     @JsonProperty("subscription_id") private String subscriptionId;
