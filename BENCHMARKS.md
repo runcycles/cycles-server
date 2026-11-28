@@ -1,6 +1,6 @@
 # Cycles Protocol Server - Benchmark History
 
-Performance benchmark history across versions. All benchmarks use `CyclesProtocolBenchmarkTest`,
+Performance benchmark history across versions. The release benchmarks use `CyclesProtocolBenchmarkTest`,
 `CyclesProtocolReadBenchmarkTest`, and `CyclesProtocolConcurrentBenchmarkTest` (Spring Boot + Jedis + Redis 7 via Testcontainers). 200 measured iterations after 50 warmup per operation.
 
 Results are environment-dependent. Use for relative comparison across versions on the same hardware, not as absolute SLA targets. Latencies include the full HTTP round-trip: Spring Boot request handling, auth filter, JSON serialization, Redis EVALSHA, Lua execution, and response building.
@@ -10,6 +10,31 @@ The concurrent suite also runs sustained reserve fan-outs at 1, 10, 50, and
 sharded across independent agent-level leaf budgets. It records reserve p99,
 throughput, and error rate, and fails on any mismatch between successful
 reservations and the resulting Redis `reserved` totals.
+
+### API-key cache expiry under load — v0.1.25.62 (2026-11-28)
+
+We compared the released 0.1.25.61 image with the packaged 0.1.25.62 JAR mounted in the same image.
+Each version started on a fresh Docker stack on the same Threadripper 3990X host. The runtime had an
+eight-CPU quota, the Node generator had two CPUs, and standalone Redis 7.4.9 had one CPU with persistence disabled.
+
+The quiet tenant offered ten reserve-commit cycles per second. The background offered 200 cycles per second,
+first from one other tenant, then round-robin from sixteen. Each window lasted 100 seconds, longer than the
+60-second verification cache lifetime. Each cycle reserved and immediately committed one token.
+To reproduce the workload, use the pinned harness and Compose file, retain their per-tenant priming and
+20-second warm-up, then run `await measure(200, 1, 100)` followed by `await measure(200, 16, 100)`.
+[Load generator and environment](https://github.com/runcycles/cycles-docs/tree/0833b8f60900795755118b4ef9b7a7fc0d7af8f8/public/examples/noisy-neighbor)
+
+| Server | Background tenants | Quiet p50 | Quiet p99 | Missed background starts out of 20,000 |
+| --- | ---: | ---: | ---: | ---: |
+| 0.1.25.61 | 1 | 6.76 ms | 228.04 ms | 544 |
+| 0.1.25.62 | 1 | 6.73 ms | 24.98 ms | 0 |
+| 0.1.25.61 | 16 | 6.55 ms | 195.12 ms | 574 |
+| 0.1.25.62 | 16 | 6.75 ms | 22.32 ms | 5 |
+
+All 1,000 quiet-tenant cycles completed in each window. Both versions recorded zero request errors
+and timeouts. A missed start is a scheduled cycle the generator dropped before dispatch.
+In these single windows per version and workload, sharing verification reduced quiet-tenant p99
+by 89.0% with one neighbor and 88.6% with sixteen.
 
 ### Fresh-process reserve fan-out — v0.1.25.59 (2026-07-30)
 

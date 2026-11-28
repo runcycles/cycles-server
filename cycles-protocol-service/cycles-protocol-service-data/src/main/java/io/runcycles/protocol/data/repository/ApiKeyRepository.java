@@ -124,18 +124,10 @@ public class ApiKeyRepository {
 
     private boolean verifyKeyWithCache(String keySecret, String hash) {
         String cacheKey = hashKeyForCache(keySecret, hash);
-        if (cacheKey != null) {
-            Boolean cached = bcryptVerificationCache.getIfPresent(cacheKey);
-            if (cached != null) {
-                LOG.debug("API key bcrypt cache hit");
-                return cached;
-            }
+        if (cacheKey == null) {
+            return verifyKey(keySecret, hash);
         }
-        boolean verified = verifyKey(keySecret, hash);
-        if (cacheKey != null) {
-            bcryptVerificationCache.put(cacheKey, verified);
-        }
-        return verified;
+        return bcryptVerificationCache.get(cacheKey, ignored -> verifyKey(keySecret, hash));
     }
 
     public boolean verifyKey(String keySecret, String hash) {

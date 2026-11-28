@@ -2,6 +2,7 @@ package io.runcycles.protocol.data.repository;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import io.runcycles.protocol.model.auth.ApiKey;
 import io.runcycles.protocol.model.auth.ApiKeyStatus;
 import io.runcycles.protocol.model.auth.ApiKeyValidationResponse;
@@ -20,10 +21,16 @@ import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 
-import java.time.Instant;
 import java.lang.reflect.Method;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -498,6 +505,40 @@ class ApiKeyRepositoryTest {
             assertThat(result2.isValid()).isTrue();
             verify(jedisPool, times(2)).getResource();
             verify(jedis, times(2)).get("apikey:" + keyId);
+        }
+
+        @Test
+        void concurrentRequestsShareOneVerificationAfterCacheExpiry() throws Exception {
+            AtomicLong clock = new AtomicLong();
+            setField(repository, "bcryptVerificationCache", Caffeine.newBuilder()
+                    .ticker(clock::get).expireAfterWrite(60, TimeUnit.SECONDS).build());
+            ApiKeyRepository checked = spy(repository);
+            ApiKey active = ApiKey.builder().keyId(keyId).tenantId("acme-corp")
+                    .keyHash(hash).status(ApiKeyStatus.ACTIVE).build();
+            when(jedisPool.getResource()).thenReturn(jedis);
+            when(jedis.get("apikey:lookup:" + prefix)).thenReturn(keyId);
+            when(jedis.get("apikey:" + keyId)).thenReturn(objectMapper.writeValueAsString(active));
+
+            assertThat(checked.validate(secret).isValid()).isTrue();
+            clock.addAndGet(TimeUnit.SECONDS.toNanos(61));
+
+            int callers = 8;
+            CyclicBarrier redisReadsFinished = new CyclicBarrier(callers);
+            doAnswer(invocation -> {
+                redisReadsFinished.await(10, TimeUnit.SECONDS);
+                return null;
+            }).when(jedis).close();
+            try (var executor = Executors.newFixedThreadPool(callers)) {
+                List<Future<ApiKeyValidationResponse>> results = new ArrayList<>();
+                for (int i = 0; i < callers; i++) {
+                    results.add(executor.submit(() -> checked.validate(secret)));
+                }
+                for (var result : results) {
+                    assertThat(result.get(15, TimeUnit.SECONDS).isValid()).isTrue();
+                }
+            }
+            verify(checked, times(2)).verifyKey(secret, hash); // Once to prime, once after expiry.
+            verify(jedis, times(callers + 1)).get("apikey:" + keyId);
         }
 
         @Test
