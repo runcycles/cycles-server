@@ -14,6 +14,10 @@ changes to request/response bodies or Lua-script semantics would require a
 minor bump. "Internal signature changes" (e.g. Java method parameters) are
 called out but are not breaking to API clients.
 
+## [0.1.25.62] — 2026-11-28
+
+- Concurrent requests presenting the same API key now share one BCrypt verification per server instance when its cache entry expires. This reduces contention on the authentication path. Each request still checks the current key and tenant records.
+
 ## 0.1.25.61 — Webhook subscription compatibility
 
 Runtime webhook routing supports subscriptions written by admin 0.1.25.56 with encrypted custom headers.

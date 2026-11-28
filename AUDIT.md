@@ -1,5 +1,11 @@
 # Cycles Protocol v0.1.25 — Server Implementation Audit
 
+## 2026-11-28 — Share concurrent API-key verifications (0.1.25.62)
+
+The runtime now uses Caffeine's atomic per-key load for the 60-second BCrypt cache. Its key incorporates the presented secret and the stored hash, so rotation selects a new entry. Each request still reads the key and tenant records and releases its Redis connection before waiting for verification.
+
+The regression test primes a real BCrypt result, advances a test clock past expiry, then synchronizes eight concurrent validations after their Redis reads. On 0.1.25.61 the initial verification plus the eight refreshes produced nine BCrypt calls. The fixed path requires two in total. Existing tests cover cached failures, rotation, revocation, expiry and tenant status.
+
 ## 0.1.25.61 — Webhook subscription compatibility
 
 The runtime event router accepts the encrypted custom-header envelope introduced by admin 0.1.25.56. Only the delivery worker reads the credentials.
